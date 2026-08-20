@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
     openai_transcribe_model: str = "whisper-1"  # notas de voz → texto
+    # Proveedor OpenAI-compatible (OpenRouter, Ollama, etc.). Vacío = api.openai.com
+    openai_base_url: str = ""
     history_window: int = 10
 
     # Guardarraíles y tiempos
