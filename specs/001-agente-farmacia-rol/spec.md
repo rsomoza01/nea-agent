@@ -16,6 +16,16 @@
 
 `nea-agent` pasa de ser un agente de agendamiento de citas a un **farmacéutico virtual**. Su rol (system prompt) se reorienta para atender consultas de disponibilidad y precio de medicamentos. Se le añaden herramientas que consultan el catálogo del negocio (por el gateway `/api/bot/products` del CRM), y se carga el conocimiento de las reglas de negocio de Gentefarma (Markdown). Cada instancia atiende a UNA farmacia (tenant) con su `providerId`.
 
+## Clarifications
+
+### Session 2026-08-20
+
+- Q: ¿Qué modelo usar para el OCR de recetas? → A: El LLM configurado (OpenRouter) con un modelo con visión (no depende de OpenAI).
+- Q: ¿El agente gestiona un carrito de pedido? → A: Sí, carrito completo (selección, cantidades, resumen, LISTO) replicando Gentefarma.
+- Q: ¿Dónde se persiste el carrito? → A: En la base de datos propia de `nea-agent` (Postgres).
+- Q: ¿Cómo se finaliza el pedido? → A: Se registra en el CRM (conversación/lead + nota) y se notifica a un humano.
+- Q: ¿Frescura del catálogo de precios? → A: En tiempo real, sin caché (o < 1 min).
+
 ---
 
 ## User Scenarios & Testing
@@ -56,10 +66,12 @@ Un cliente pregunta por un medicamento (ej. "¿tienen losartán 50 mg?"). El age
 ### Functional Requirements
 
 - **FR-1**: El agente MUST responder consultas de disponibilidad y precio consultando el catálogo del tenant (por el CRM `/api/bot/products`), NO inventando precios.
-- **FR-2**: El agente MUST tener herramientas: `buscar_medicamento`, `sugerir_generico`, `precio_por_droguero` (si el tenant tiene varios providers), `info_provider`.
+- **FR-2**: El agente MUST tener herramientas: `buscar_medicamento`, `sugerir_generico`, `precio_por_droguero` (si el tenant tiene varios providers), `info_provider`. El catálogo se consulta en tiempo real (sin caché o caché < 1 min) para que el precio mostrado sea actual.
 - **FR-3**: El agente MUST cargar el `providerId` de su tenant desde variable de entorno (`PROVIDER_ID`) y usarlo en las consultas al catálogo.
 - **FR-4**: El agente MUST responder con las reglas de negocio de Gentefarma (intención, carrito, OCR, mensajes, precio USD/Bs con tasa BCV, sin fee).
-- **FR-5**: El agente MUST procesar recetas por foto (OCR) en el MVP.
+- **FR-8**: El agente MUST gestionar un carrito de pedido completo, replicando las reglas de Gentefarma: seleccionar opciones del catálogo (por número), indicar cantidades ("quiero 2 cajas de la opción 3"), ver resumen con "LISTO", y acumular productos con sus cantidades y precios. El carrito se persiste en la base de datos propia de `nea-agent` (Postgres) como parte del estado de conversación.
+- **FR-9**: Al confirmar el pedido (cliente dice "LISTO"), el agente MUST registrar el pedido en el CRM (vía `/api/bot/*`, p. ej. nota/conversación del lead) y notificar a un humano para que lo procese.
+- **FR-5**: El agente MUST procesar recetas por foto (OCR) en el MVP, usando el proveedor LLM configurado (OpenRouter) con un modelo con capacidad de visión (no depende de OpenAI).
 - **FR-6**: El agente MUST escalar a humano (`handoff`) ante duda médica seria, receta nueva, o medicamento fuera de catálogo.
 - **FR-7**: El system prompt del agente MUST reorientarse de "agendador de citas" a "farmacéutico" (desactivar tools de agenda: propose_slots, book_session, reschedule_session).
 
