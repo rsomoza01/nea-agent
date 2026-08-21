@@ -11,6 +11,8 @@ Endpoints:
   PATCH /api/bot/bookings  {conversationId, startUtc} → mueve la próxima cita
   GET  /api/bot/media/{mediaId}                       → binario + content-type
   POST /api/bot/reset      {conversationId}           → reinicio de pruebas (002)
+  GET  /api/bot/products?q=&providerId=              → catálogo de medicamentos (farma)
+  GET  /api/bot/providers?providerId=                → info de la farmacia (farma)
 """
 from __future__ import annotations
 
@@ -253,6 +255,36 @@ class CrmClient:
         )
         if resp.status_code != 200:
             raise CrmError(f"reset devolvió {resp.status_code}")
+
+    async def get_products(
+        self,
+        provider_id: str,
+        q: str | None = None,
+        limit: int = 8,
+    ) -> dict[str, Any]:
+        """Catálogo de medicamentos del tenant (farmacia).
+
+        GET /api/bot/products?q=&providerId=&limit=
+        Devuelve `{products, missing, provider}` o {} si el CRM no responde.
+        """
+        params: dict[str, Any] = {"providerId": provider_id, "limit": limit}
+        if q:
+            params["q"] = q
+        resp = await self._request("GET", "/api/bot/products", params=params)
+        if resp.status_code != 200:
+            raise CrmError(f"products devolvió {resp.status_code}")
+        data: dict[str, Any] = resp.json()
+        return data
+
+    async def get_providers(self, provider_id: str) -> dict[str, Any]:
+        """Info de la farmacia del tenant (dirección, horario, ciudad)."""
+        resp = await self._request(
+            "GET", "/api/bot/providers", params={"providerId": provider_id}
+        )
+        if resp.status_code != 200:
+            raise CrmError(f"providers devolvió {resp.status_code}")
+        data: dict[str, Any] = resp.json()
+        return data
 
     async def get_media(self, media_id: str) -> tuple[bytes, str]:
         """Descarga un binario de Meta A TRAVÉS del CRM (el token vive allá).

@@ -17,6 +17,35 @@ from app.state import AppContext, Conversation, OfferedSlot
 
 logger = logging.getLogger("nea.tools")
 
+# Tools de AGENDA (rol original de Nea). En el rol farmacéutico (spec 001) se
+# retiran: el agente consulta disponibilidad/precio, no agenda citas. Se
+# mantienen en el schema por compatibilidad, pero `active_tool_schemas()`
+# filtra cuáles se exponen al LLM según el rol.
+AGENDA_TOOLS = frozenset({"propose_slots", "book_session", "reschedule_session", "route_out"})
+
+# Tools que se exponen SIEMPRE (transversales).
+CORE_TOOLS = frozenset({"update_ficha", "handoff"})
+
+# Tools del rol farmacéutico (spec 001).
+FARMACIA_TOOLS = frozenset({"buscar_medicamento", "sugerir_generico", "info_provider"})
+
+
+def active_tool_schemas(*, farmacia: bool = False) -> list[dict[str, Any]]:
+    """Schemas de tools que se exponen al LLM en este turno.
+
+    - Rol farmacia: se quitan las de agenda (propose/book/reschedule/route_out),
+      se mantienen las transversales (update_ficha, handoff) y se añaden las de
+      catálogo (buscar_medicamento, sugerir_generico, info_provider).
+    - Rol agenda (default): schema completo (compatibilidad con el rol original).
+    """
+    if not farmacia:
+        return list(TOOL_SCHEMAS)
+    return [
+        t
+        for t in TOOL_SCHEMAS
+        if t["function"]["name"] in CORE_TOOLS or t["function"]["name"] in FARMACIA_TOOLS
+    ]
+
 # Cuántos huecos quedan RESERVABLES tras un propose_slots. El agente muestra 3
 # a la vez (regla del prompt), pero guardar solo 3 lo dejaba sin nada que
 # ofrecer cuando el lead pedía otro día: el catálogo reservable es más ancho
@@ -159,6 +188,62 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "buscar_medicamento",
+            "description": (
+                "Consulta la disponibilidad y el precio de un medicamento en el "
+                "catálogo de la farmacia. Devuelve el producto con su precio y si "
+                "está disponible. Llámala cuando el cliente pregunte por un "
+                "medicamento (por nombre, presentación o genérico). NUNCA inventes "
+                "precios: si no aparece aquí, no está en el catálogo."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "nombre": {
+                        "type": "string",
+                        "description": "Nombre del medicamento a buscar (p. ej. 'losartán 50 mg')",
+                    },
+                },
+                "required": ["nombre"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "sugerir_generico",
+            "description": (
+                "Busca alternativas genéricas de un medicamento en el catálogo de "
+                "la farmacia. Úsala para ofrecer la opción más económica cuando el "
+                "cliente lo pida o cuando tenga sentido."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "nombre": {
+                        "type": "string",
+                        "description": "Nombre del medicamento del que se buscan genéricos",
+                    },
+                },
+                "required": ["nombre"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "info_provider",
+            "description": (
+                "Devuelve la información de la farmacia: dirección, horario y "
+                "ciudad. Úsala cuando el cliente pregunte dónde está la farmacia, "
+                "su horario o su ubicación."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
 ]
 
 
@@ -250,6 +335,12 @@ class ToolRuntime:
                 return await self._route_out()
             if name == "handoff":
                 return self._handoff(args)
+            if name == "buscar_medicamento":
+                return await self._buscar_medicamento(args)
+            if name == "sugerir_generico":
+                return await self._sugerir_generico(args)
+            if name == "info_provider":
+                return await self._info_provider()
             logger.warning("tools: herramienta desconocida %r", name)
             return {"ok": False, "error": f"herramienta desconocida: {name}"}
         except CrmError as exc:
@@ -437,4 +528,77 @@ class ToolRuntime:
             "nota": (
                 "el pase a humano se ejecutará después de tu mensaje de despedida"
             ),
+        }
+
+    # ------------------------------------------------------------- farmacia ---
+    # Tools del rol farmacéutico (spec 001). Consultan el catálogo del tenant vía
+    # el CRM; NUNCA inventan precios (la fuente es el catálogo por providerId).
+
+    @property
+    def _provider_id(self) -> str:
+        return self._ctx.settings.provider_id
+
+    async def _buscar_medicamento(self, args: dict[str, Any]) -> dict[str, Any]:
+        nombre = str(args.get("nombre") or "").strip()
+        if not nombre:
+            return {"ok": False, "error": "nombre_vacio", "detalle": "indica qué medicamento buscas"}
+        if not self._provider_id:
+            return {
+                "ok": False,
+                "error": "sin_provider",
+                "detalle": "no hay catálogo configurado; di que consultarás o haz handoff",
+            }
+        data = await self._ctx.crm.get_products(self._provider_id, q=nombre, limit=8)
+        products = data.get("products") or []
+        if not products:
+            return {
+                "ok": False,
+                "error": "sin_resultados",
+                "detalle": f"no encontrado '{nombre}' en el catálogo; di que lo consultarás o haz handoff",
+                "busqueda": nombre,
+            }
+        return {
+            "ok": True,
+            "products": products,
+            "provider": data.get("provider"),
+            "instrucciones": (
+                "responde con disponibilidad y precio de cada producto; si el "
+                "cliente pregunta por precio en Bs, menciona que se convierte "
+                "con la tasa BCV (sin cargo adicional)"
+            ),
+        }
+
+    async def _sugerir_generico(self, args: dict[str, Any]) -> dict[str, Any]:
+        nombre = str(args.get("nombre") or "").strip()
+        if not nombre:
+            return {"ok": False, "error": "faltante", "detalle": "indica el medicamento"}
+        if not self._provider_id:
+            return {"ok": False, "error": "sin_provider", "detalle": "sin catálogo configurado"}
+        data = await self._ctx.crm.get_products(self._provider_id, q=nombre, limit=8)
+        products = data.get("products") or []
+        # Genéricos = los que tienen nombre generico distinto del nombre buscado
+        genericos = [p for p in products if p.get("generico")]
+        if not genericos:
+            return {
+                "ok": False,
+                "error": "sin_generico",
+                "detalle": "no encontré alternativas genéricas; ofrece el producto original",
+            }
+        return {
+            "ok": True,
+            "genericos": genericos,
+            "instrucciones": "ofrece la opción genérica con su precio como alternativa más económica",
+        }
+
+    async def _info_provider(self) -> dict[str, Any]:
+        if not self._provider_id:
+            return {"ok": False, "error": "sin_provider", "detalle": "no hay farmacia configurada"}
+        data = await self._ctx.crm.get_providers(self._provider_id)
+        provider = data.get("provider")
+        if not provider:
+            return {"ok": False, "error": "sin_provider_info", "detalle": "no hay info de la farmacia"}
+        return {
+            "ok": True,
+            "provider": provider,
+            "instrucciones": "responde con dirección, horario y ciudad de la farmacia",
         }

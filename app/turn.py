@@ -23,7 +23,7 @@ from app.stall import ALERTA as STALL_ALERT, racha_vacia, sin_rumbo
 from app.profile import resolve_profile
 from app.prompt import build_system_prompt
 from app.state import AppContext, InboundMessage, utcnow
-from app.tools import TOOL_SCHEMAS, ToolRuntime
+from app.tools import ToolRuntime, active_tool_schemas
 
 logger = logging.getLogger("nea.turn")
 
@@ -237,8 +237,11 @@ async def run_turn(
 
     # --- LLM con tools ----------------------------------------------------
     runtime = ToolRuntime(ctx, conv, str(crm_conv_id), profile=profile)
+    # Modo farmacia si hay provider_id configurado (spec 001): se exponen las
+    # tools de catálogo y se retiran las de agenda.
+    farmacia = bool(settings.provider_id)
     try:
-        final_text = await _tool_loop(ctx, messages, runtime)
+        final_text = await _tool_loop(ctx, messages, runtime, farmacia=farmacia)
     except LlmExhausted as exc:
         logger.error(
             "turno %s: LLM agotó reintentos (%s) — silencio + handoff error",
@@ -333,11 +336,16 @@ async def _fetch_context(ctx: AppContext, identity: str) -> dict[str, Any] | Non
 
 
 async def _tool_loop(
-    ctx: AppContext, messages: list[dict[str, Any]], runtime: ToolRuntime
+    ctx: AppContext,
+    messages: list[dict[str, Any]],
+    runtime: ToolRuntime,
+    *,
+    farmacia: bool = False,
 ) -> str | None:
     """Rondas de tool-calling hasta obtener texto final (o rendirse)."""
+    schemas = active_tool_schemas(farmacia=farmacia)
     for _ in range(MAX_TOOL_ROUNDS):
-        reply = await ctx.llm.complete(messages, tools=TOOL_SCHEMAS)
+        reply = await ctx.llm.complete(messages, tools=schemas)
         if not reply.tool_calls:
             return reply.content  # turno de puro texto
         # content vacío con tool_calls es normal (turno solo-herramientas)

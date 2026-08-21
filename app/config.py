@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     agent_timezone: str = "America/Mexico_City"  # IANA; fechas del prompt
     brief_path: str = ""  # markdown local, fallback si el CRM no tiene perfil
 
+    # Farmacia (rol farmacéutico, spec 001): providerId del tenant en Firebase.
+    # Cada instancia atiende a UNA farmacia con su propio catálogo (aislamiento).
+    provider_id: str = ""
+
     # LLM
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"

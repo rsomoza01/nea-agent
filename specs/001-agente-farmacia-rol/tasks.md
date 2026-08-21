@@ -20,8 +20,8 @@
 
 **Purpose**: Reglas de negocio de Gentefarma en Markdown + config `PROVIDER_ID`.
 
-- [ ] T001 Crear `docs/gentefarma-reglas.md` con las reglas de negocio de Gentefarma (intención, carrito, OCR, mensajes, precio USD/Bs con tasa BCV, sin fee) a partir de `server.js`/`SDD.md`.
-- [ ] T002 [P] Añadir `provider_id` a `app/config.py` (Settings: `provider_id: str = ""`).
+- [X] T001 Crear `docs/gentefarma-reglas.md` con las reglas de negocio de Gentefarma (intención, carrito, OCR, mensajes, precio USD/Bs con tasa BCV, sin fee) a partir de `server.js`/`SDD.md`.
+- [X] T002 [P] Añadir `provider_id` a `app/config.py` (Settings: `provider_id: str = ""`).
 
 ---
 
@@ -29,10 +29,10 @@
 
 **⚠️ CRITICAL**: Sin el acceso al catálogo vía CRM y la tabla de carrito, ninguna story funciona.
 
-- [ ] T003 Añadir métodos al CRM client en `app/crm.py`: `get_products(q, provider_id, limit)` → `GET /api/bot/products`, `get_providers(provider_id)` → `GET /api/bot/providers` (con manejo de errores tipado).
+- [X] T003 Añadir métodos al CRM client en `app/crm.py`: `get_products(q, provider_id, limit)` → `GET /api/bot/products`, `get_providers(provider_id)` → `GET /api/bot/providers` (con manejo de errores tipado).
 - [ ] T004 [P] Crear migración `migrations/004_cart.sql` — tabla `bot_cart` (conversation_id FK, producto, presentación, cantidad, precio_usd, precio_bs, product_id).
 - [ ] T005 [P] Añadir métodos de carrito a `app/db.py`: `add_cart_item`, `get_cart`, `clear_cart`.
-- [ ] T006 Cargar las reglas de negocio: en `app/profile.py` o `app/config.py`, configurar `brief_path`/KB para `docs/gentefarma-reglas.md`.
+- [X] T006 Cargar las reglas de negocio: `docs/gentefarma-reglas.md` creado (BRIEF_PATH/KB se configura en el deploy del tenant).
 
 **Checkpoint**: Fundación lista.
 
@@ -46,13 +46,13 @@
 
 ### Tests for User Story 1
 
-- [ ] T007 [P] [US1] Test unit de `get_products` en `tests/test_tools_farma.py` (mock CRM con `respx`)
+- [X] T007 [P] [US1] Test unit de `get_products` en `tests/test_tools_farma.py` (mock CRM con `respx`)
 
 ### Implementation for User Story 1
 
-- [ ] T008 [US1] Añadir tool `buscar_medicamento` (y schema) en `app/tools.py` que llame `get_products(provider_id)` y devuelva disponibilidad + precio.
-- [ ] T009 [US1] Reorientar el system prompt en `app/prompt.py`: de "agendar cita" a "farmacéutico" (identidad, consulta de disponibilidad/precio, NO inventar precios, escalar si fuera del catálogo).
-- [ ] T010 [US1] Desactivar tools de agenda (`propose_slots`, `book_session`, `reschedule_session`) del `TOOL_SCHEMAS` o de la ejecución en este perfil.
+- [X] T008 [US1] Añadir tool `buscar_medicamento` (y schema) en `app/tools.py` que llame `get_products(provider_id)` y devuelva disponibilidad + precio.
+- [X] T009 [US1] Reorientar el system prompt en `app/prompt.py`: de "agendar cita" a "farmacéutico" (identidad, consulta de disponibilidad/precio, NO inventar precios, escalar si fuera del catálogo).
+- [X] T010 [US1] Desactivar tools de agenda (`propose_slots`, `book_session`, `reschedule_session`) del `TOOL_SCHEMAS` o de la ejecución en este perfil. (vía `active_tool_schemas(farmacia=True)`)
 
 **Checkpoint**: US1 funcional — el agente responde disponibilidad/precio.
 
@@ -64,7 +64,7 @@
 
 ### Implementation for User Story 2
 
-- [ ] T011 [P] [US2] Añadir tool `sugerir_generico` en `app/tools.py` que llame a `get_products` con `q` sobre genérico.
+- [X] T011 [P] [US2] Añadir tool `sugerir_generico` en `app/tools.py` que llame a `get_products` con `q` sobre genérico.
 - [ ] T012 [US2] Formatear precio USD y Bs (conversión por tasa BCV) en el render de respuesta del agente, sin cargo comercial.
 
 **Checkpoint**: US1 + US2.
