@@ -248,7 +248,12 @@ _HANDLERS = {
 
 async def describe_item(ctx: AppContext, msg: InboundMessage) -> MediaPart:
     """Convierte un ítem no-texto en contenido del turno. Nunca lanza."""
-    handler = _HANDLERS.get(msg.type, _fallback)
+    # El puente Evolution ingesta la imagen como type="text" con image_base64
+    # inyectada (foto de receta sin caption). Enrutar a _image en ese caso.
+    if msg.image_base64 or msg.media_id:
+        handler = _HANDLERS.get(msg.type, _image)
+    else:
+        handler = _HANDLERS.get(msg.type, _fallback)
     try:
         return await handler(ctx, msg)
     except Exception:

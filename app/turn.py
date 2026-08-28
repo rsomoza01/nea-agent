@@ -253,6 +253,16 @@ async def run_turn(
         if m.text:
             parts.append(m.text)
             continue
+        # Un mensaje con imagen (base64 inyectada por el puente Evolution o
+        # media_id de Meta) se procesa como media aunque type sea "text" y el
+        # texto venga vacío (foto de receta sin caption).
+        if m.image_base64 or m.media_id:
+            part = await media.describe_item(ctx, m)
+            if part.text:
+                parts.append(part.text)
+            if part.image_data_uri:
+                image_uris.append(part.image_data_uri)
+            continue
         if m.type in ("text", "button", "interactive"):
             continue  # texto vacío raro: nada que procesar
         part = await media.describe_item(ctx, m)
