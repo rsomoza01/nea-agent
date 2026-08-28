@@ -205,7 +205,13 @@ async def chat(request: Request) -> Any:
     send = bool((payload or {}).get("send"))
     # En modo producción (send=true) la conversación se resuelve por identidad
     # (el webhook Evolution ya la creó en el CRM); conversationId es opcional.
-    if not text or not wa_identity:
+    # text puede venir vacío si la imagen no tiene caption (OCR de receta).
+    has_image = bool((payload or {}).get("imageBase64"))
+    if not wa_identity:
+        return JSONResponse(
+            {"error": "faltan waIdentity"}, status_code=400
+        )
+    if not text and not has_image:
         return JSONResponse(
             {"error": "faltan text, waIdentity"}, status_code=400
         )
