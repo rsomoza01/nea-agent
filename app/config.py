@@ -1,0 +1,105 @@
+"""Configuración tipada del bot (pydantic-settings).
+
+Todas las variables se documentan en `.env.example`. Los defaults permiten
+importar el módulo sin entorno (los tests inyectan valores explícitos);
+la validación de lo obligatorio ocurre al arranque real.
+"""
+from __future__ import annotations
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def canonical_identity(wa_id: str) -> str:
+    """Canonicaliza una identidad de WhatsApp para comparaciones.
+
+    México: Meta a veces reporta `521XXXXXXXXXX` (13 dígitos con el "1" de
+    móvil) y a veces `52XXXXXXXXXX` — son la misma persona. Los BSUID y otros
+    identificadores pasan tal cual.
+    """
+    s = wa_id.strip()
+    if s.startswith("521") and len(s) == 13 and s.isdigit():
+        return "52" + s[3:]
+    return s
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
+
+    # Webhook de Meta
+    verify_token: str = ""
+    meta_app_secret: str = ""  # vacío = no se verifica la firma (dev)
+
+    # CRM (vocero-crm, bot gateway /api/bot/*)
+    crm_base_url: str = "http://localhost:3000"
+    crm_webhook_url: str = ""  # incluye el segmento del verify token del CRM
+    crm_bot_api_key: str = ""
+
+    # Perfil del negocio (capa de persona; ver app/profile.py)
+    agent_name: str = "Nea"  # se usa si el CRM no define nombre
+    agent_timezone: str = "America/Caracas"  # IANA; fechas del prompt (Venezuela)
+    brief_path: str = ""  # markdown local, fallback si el CRM no tiene perfil
+
+    # Farmacia (rol farmacéutico, spec 001): providerId del tenant en Firebase.
+    # Cada instancia atiende a UNA farmacia con su propio catálogo (aislamiento).
+    provider_id: str = ""
+
+    # LLM
+    openai_api_key: str = ""
+    openai_model: str = "gpt-4o-mini"
+    openai_transcribe_model: str = "whisper-1"  # notas de voz → texto
+    # Proveedor OpenAI-compatible (OpenRouter, Ollama, etc.). Vacío = api.openai.com
+    openai_base_url: str = ""
+    # Proveedor SEPARADO para transcripción de audio (Groq, etc.): OpenRouter
+    # no expone /audio/transcriptions (403). Vacío = usa el mismo cliente del chat.
+    transcribe_api_key: str = ""
+    transcribe_base_url: str = ""  # p.ej. https://api.groq.com/openai/v1
+    history_window: int = 10
+
+    # Guardarraíles y tiempos
+    allowed_wa_ids: str = ""
+    # Identidades que pueden usar el comando /reset. Va SEPARADA de
+    # allowed_wa_ids a propósito: en producción esa lista va vacía (el agente
+    # atiende a todos los leads), y cuando el /reset colgaba de ella el
+    # comando quedaba muerto justo donde hace falta — para correr una ronda
+    # de pruebas en vivo había que cerrarle la puerta a los leads reales.
+    tester_wa_ids: str = ""  # CSV; vacía = responde a todos (Constitución V)
+    coalesce_seconds: float = 4.0
+    followup_hours: float = 4.0
+    # Ventana de sesión del carrito (horas): los ítems que no se tocan en este
+    # tiempo se descartan — el carrito no acumula medicamentos de sesiones
+    # anteriores del mismo chat.
+    cart_session_hours: float = 12.0
+    # "Escribiendo…" casi inmediato al recibir un mensaje (antes del coalesce).
+    typing_delay_seconds: float = 0.5
+
+    # Infra
+    database_url: str = ""
+    port: int = 8000
+
+    # Langfuse (observabilidad + evals). Vacío = instrumentación desactivada
+    # (no-op): el agente funciona igual sin Langfuse. Self-hosted en Railway.
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_host: str = ""  # p.ej. https://langfuse-production-xxxx.up.railway.app
+
+    # Desarrollo: loguear el JSON crudo de mensajes no-texto entrantes para
+    # capturar los formatos reales de Meta (spec 002). Apagar al terminar.
+    capture_payloads: bool = False
+
+    @staticmethod
+    def _identities(csv: str) -> frozenset[str]:
+        return frozenset(
+            canonical_identity(part) for part in csv.split(",") if part.strip()
+        )
+
+    @property
+    def allowed_identities(self) -> frozenset[str]:
+        """Allowlist canonicalizada; vacía = sin restricción."""
+        return self._identities(self.allowed_wa_ids)
+
+    @property
+    def tester_identities(self) -> frozenset[str]:
+        """Quién puede correr /reset. Vacía = comando apagado."""
+        return self._identities(self.tester_wa_ids)
