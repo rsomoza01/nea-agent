@@ -90,10 +90,22 @@ async def _audio(ctx: AppContext, msg: InboundMessage) -> MediaPart:
 
 
 async def _image(ctx: AppContext, msg: InboundMessage) -> MediaPart:
-    if not msg.media_id:
-        return _honest_failure(msg)
-    data, mime = await ctx.crm.get_media(msg.media_id)
     caption = _caption_line(msg, "la imagen")
+    # Canal Evolution: el puente del CRM ya descargó la imagen y la inyecta
+    # como base64 (Evolution no expone mediaId de Meta). Si no viene, se
+    # descarga por /api/bot/media/{mediaId} (canal Meta).
+    if msg.image_base64:
+        try:
+            data = base64.b64decode(msg.image_base64)
+        except Exception:
+            logger.warning("media image: base64 inválido — fallback honesto")
+            return _honest_failure(msg)
+        mime_clean = (msg.image_mime or msg.media_mime or "image/jpeg").split(";")[0].strip()
+    else:
+        if not msg.media_id:
+            return _honest_failure(msg)
+        data, mime = await ctx.crm.get_media(msg.media_id)
+        mime_clean = (mime or msg.media_mime or "image/jpeg").split(";")[0].strip()
     if len(data) > MAX_IMAGE_BYTES:
         return MediaPart(
             text=(
@@ -101,7 +113,6 @@ async def _image(ctx: AppContext, msg: InboundMessage) -> MediaPart:
                 f"{caption} Sé honesta si hace falta.]"
             )
         )
-    mime_clean = (mime or msg.media_mime or "image/jpeg").split(";")[0].strip()
     uri = f"data:{mime_clean};base64,{base64.b64encode(data).decode()}"
     # OCR con visión: si la imagen es de un medicamento/receta, extraemos su
     # texto (nombre, dosis, presentación) para que el backstop anti-alucinación

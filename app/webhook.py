@@ -202,7 +202,14 @@ async def chat(request: Request) -> Any:
     conversation_id = (payload or {}).get("conversationId")
     text = (payload or {}).get("text")
     wa_identity = (payload or {}).get("waIdentity")
-    if not conversation_id or not text or not wa_identity:
+    send = bool((payload or {}).get("send"))
+    # En modo producción (send=true) la conversación se resuelve por identidad
+    # (el webhook Evolution ya la creó en el CRM); conversationId es opcional.
+    if not text or not wa_identity:
+        return JSONResponse(
+            {"error": "faltan text, waIdentity"}, status_code=400
+        )
+    if not send and not conversation_id:
         return JSONResponse(
             {"error": "faltan conversationId, text, waIdentity"}, status_code=400
         )
@@ -213,10 +220,13 @@ async def chat(request: Request) -> Any:
         type="text",
         text=str(text),
         conversation_id=conversation_id,
+        image_base64=(payload or {}).get("imageBase64"),
+        image_mime=(payload or {}).get("imageMime"),
     )
     outbox: list[str] = []
     prev = ctx.lab_outbox
-    ctx.lab_outbox = outbox
+    if not send:
+        ctx.lab_outbox = outbox
     try:
         await handle_flush(ctx, wa_identity, [msg])
     finally:

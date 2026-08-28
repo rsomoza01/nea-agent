@@ -133,6 +133,11 @@ class InboundMessage:
     media_filename: str | None = None
     media_caption: str | None = None
     media_voice: bool = False
+    # Imagen ya descargada (base64) — la inyecta el puente del CRM cuando el
+    # canal es Evolution (que no expone mediaId de Meta). Si viene, media.py
+    # la usa directamente en vez de llamar a /api/bot/media/{mediaId}.
+    image_base64: str | None = None
+    image_mime: str | None = None
     location: dict[str, Any] | None = None
     contact_names: list[str] = field(default_factory=list)
 
