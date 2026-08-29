@@ -1204,13 +1204,18 @@ def _extraer_eleccion_multiple(texto: str) -> list[tuple[int, int]] | None:
         return [(cant_each, i) for i in range(1, 51)]
     # Detectar intención: menciona "opción" o hay una lista de números con
     # unidad de caja ("1 caja de 1,4,7") o separada por comas/y, o "quiero"
-    # seguido de lista de números ("quiero 1,6,12,20 y 31").
+    # seguido de lista de números ("quiero 1,6,12,20 y 31"), o "N caja(s) de M"
+    # con número ÚNICO ("1 caja de 3" → opción 3, cantidad 1).
     es_eleccion = ("opci" in t) or (
         re.search(r"\b(caja|cajas|unidad|unidades)\b", t)
         and re.search(r"\d{1,2}\s*[,y]\s*\d{1,2}", t)
     ) or (
         re.search(r"\b(quiero|quisiera|necesito|dame|me das)\b", t)
         and re.search(r"\d{1,2}\s*[,y]\s*\d{1,2}", t)
+    ) or (
+        re.search(
+            r"\b(caja|cajas|unidad|unidades)\s+de\s+(\d{1,2})\b", t
+        )
     )
     if not es_eleccion:
         return None
