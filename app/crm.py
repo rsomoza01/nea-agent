@@ -81,7 +81,9 @@ def _booking_conflict(response: httpx.Response) -> CrmConflict:
 # libres ("pidió humano", "duda técnica") — aquí se normalizan SIEMPRE:
 # certificación 002 cazó en vivo que un reason fuera de catálogo era 422 y el
 # handoff se perdía con la IA aún activa.
-HANDOFF_REASONS = frozenset({"cliente", "modelo", "error", "ventana", "hostilidad"})
+HANDOFF_REASONS = frozenset(
+    {"cliente", "modelo", "error", "ventana", "hostilidad", "medicamento_no_disponible"}
+)
 
 
 def canonical_handoff_reason(reason: str | None) -> str:
