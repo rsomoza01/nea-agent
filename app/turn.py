@@ -993,7 +993,16 @@ async def _tool_loop(
                     continue
                 # Búsqueda por texto del cliente (no OCR).
                 term = None
-                if _parece_consulta_medicamento(user_text):
+                # Si es una nota de voz/audio, el término se extrae de la
+                # TRANSCRIPCIÓN (entre comillas), NUNCA del marcador completo
+                # del sistema ("Es una CONSULTA del lead: interpreta la
+                # transcripción, extrae el/los medicamento(s)..."). Usar el
+                # marcador completo como término devolvía 20 productos
+                # irrelevantes (DOL, ALCOHOL, GOTAS DEL CARMEN...).
+                trans_term_2 = _extraer_termino_transcripcion(user_text)
+                if trans_term_2:
+                    term = trans_term_2
+                elif _parece_consulta_medicamento(user_text):
                     term = _extraer_termino_medicamento(user_text)
                 # Forzar búsqueda si:
                 # 1. El LLM no consultó el catálogo (not consulted_catalog)
