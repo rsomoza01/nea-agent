@@ -68,12 +68,24 @@ def _honest_failure(msg: InboundMessage) -> MediaPart:
 
 
 async def _audio(ctx: AppContext, msg: InboundMessage) -> MediaPart:
-    if not msg.media_id:
-        return _honest_failure(msg)
-    data, mime = await ctx.crm.get_media(msg.media_id)
+    # Canal Evolution: el CRM inyecta el audio como base64 (audio_base64).
+    # Canal Meta: se descarga por /api/bot/media/{mediaId}.
+    if msg.audio_base64:
+        try:
+            data = base64.b64decode(msg.audio_base64)
+        except Exception:
+            logger.warning("media audio: base64 inválido — fallback honesto")
+            return _honest_failure(msg)
+        mime_clean = (msg.audio_mime or msg.media_mime or "audio/ogg").split(";")[0].strip()
+    else:
+        if not msg.media_id:
+            return _honest_failure(msg)
+        data, mime = await ctx.crm.get_media(msg.media_id)
+        if len(data) > MAX_MEDIA_BYTES:
+            return _honest_failure(msg)
+        mime_clean = (mime or msg.media_mime or "audio/ogg").split(";")[0].strip()
     if len(data) > MAX_MEDIA_BYTES:
         return _honest_failure(msg)
-    mime_clean = (mime or msg.media_mime or "audio/ogg").split(";")[0].strip()
     ext = _AUDIO_EXT.get(mime_clean, "ogg")
     transcript = await ctx.llm.transcribe(
         data, mime_clean, filename=f"nota-de-voz.{ext}"
@@ -249,9 +261,12 @@ _HANDLERS = {
 async def describe_item(ctx: AppContext, msg: InboundMessage) -> MediaPart:
     """Convierte un ítem no-texto en contenido del turno. Nunca lanza."""
     # El puente Evolution ingesta la imagen como type="text" con image_base64
-    # inyectada (foto de receta sin caption). Enrutar a _image en ese caso.
+    # inyectada (foto de receta sin caption) o el audio como audio_base64.
+    # Enrutar al handler correcto aunque type sea "text".
     if msg.image_base64 or msg.media_id:
         handler = _HANDLERS.get(msg.type, _image)
+    elif msg.audio_base64:
+        handler = _audio
     else:
         handler = _HANDLERS.get(msg.type, _fallback)
     try:

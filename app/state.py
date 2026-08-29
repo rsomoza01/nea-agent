@@ -138,6 +138,9 @@ class InboundMessage:
     # la usa directamente en vez de llamar a /api/bot/media/{mediaId}.
     image_base64: str | None = None
     image_mime: str | None = None
+    # Audio ya descargado (base64) — canal Evolution (el CRM lo inyecta).
+    audio_base64: str | None = None
+    audio_mime: str | None = None
     location: dict[str, Any] | None = None
     contact_names: list[str] = field(default_factory=list)
 

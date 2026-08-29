@@ -208,11 +208,12 @@ async def chat(request: Request) -> Any:
     # (el webhook Evolution ya la creó en el CRM); conversationId es opcional.
     # text puede venir vacío si la imagen no tiene caption (OCR de receta).
     has_image = bool((payload or {}).get("imageBase64"))
+    has_audio = bool((payload or {}).get("audioBase64"))
     if not wa_identity:
         return JSONResponse(
             {"error": "faltan waIdentity"}, status_code=400
         )
-    if not text and not has_image:
+    if not text and not has_image and not has_audio:
         return JSONResponse(
             {"error": "faltan text, waIdentity"}, status_code=400
         )
@@ -229,6 +230,8 @@ async def chat(request: Request) -> Any:
         conversation_id=conversation_id,
         image_base64=(payload or {}).get("imageBase64"),
         image_mime=(payload or {}).get("imageMime"),
+        audio_base64=(payload or {}).get("audioBase64"),
+        audio_mime=(payload or {}).get("audioMime"),
     )
     # Dedupe por wa_message_id: si el CRM reintenta /chat (timeout de 60s al
     # procesar recetas largas), no reprocesar el mismo mensaje ni reenviar la
