@@ -5,6 +5,7 @@ Implementa el protocolo `Store` de app/state.py contra Postgres.
 from __future__ import annotations
 
 import logging
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -169,6 +170,10 @@ class PgStore:
             raise ValueError(f"columnas desconocidas en update_conversation: {unknown}")
         if not fields:
             return
+        # last_product / last_options se guardan como JSON string en columnas text.
+        for col in ("last_product", "last_options"):
+            if col in fields and not isinstance(fields[col], str):
+                fields[col] = json.dumps(fields[col], ensure_ascii=False)
         sets = ", ".join(f"{col} = ${i + 2}" for i, col in enumerate(fields))
         await self.pool.execute(
             f"UPDATE bot_conversation SET {sets}, updated_at = now() WHERE id = $1",
