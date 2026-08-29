@@ -32,6 +32,9 @@ _CONV_COLUMNS = frozenset(
         "followup_sent",
         "last_inbound_at",
         "stalled_at",
+        "last_product",
+        "last_term",
+        "last_options",
     }
 )
 
@@ -48,6 +51,9 @@ def _conv_from_row(row: asyncpg.Record) -> Conversation:
         followup_sent=row["followup_sent"],
         last_inbound_at=row["last_inbound_at"],
         stalled_at=row["stalled_at"],
+        last_product=row.get("last_product"),
+        last_term=row.get("last_term"),
+        last_options=row.get("last_options"),
     )
 
 
