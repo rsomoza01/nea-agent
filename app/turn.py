@@ -226,8 +226,27 @@ async def run_turn(
         logger.warning("turno %s: contexto sin conversationId — silencio", identity)
         return
     if not conversation_info.get("aiEnabled", False):
-        logger.info("turno %s: aiEnabled=false (handoff activo) — silencio", identity)
-        return
+        # Handoff por medicamento no disponible: el cliente vuelve con OTRA
+        # consulta (p. ej. un audio pidiendo otro medicamento). Reactivar la
+        # conversación automáticamente para no dejar al cliente en silencio.
+        # Otros handoffs (cliente pidió humano, hostilidad, error) NO se
+        # reactivan solos: ahí el humano debe decidir.
+        if conversation_info.get("handoffReason") == "medicamento_no_disponible":
+            logger.info(
+                "turno %s: handoff por medicamento_no_disponible — reactivo y continúo",
+                identity,
+            )
+            try:
+                await ctx.crm.post_reset(str(crm_conv_id))
+            except CrmError as exc:
+                logger.warning(
+                    "turno %s: no pude reactivar en el CRM (%s) — silencio",
+                    identity, exc,
+                )
+                return
+        else:
+            logger.info("turno %s: aiEnabled=false (handoff activo) — silencio", identity)
+            return
     if not conversation_info.get("windowOpen", False):
         logger.info("turno %s: ventana de 24 h cerrada — silencio", identity)
         return
