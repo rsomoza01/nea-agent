@@ -530,6 +530,9 @@ async def run_turn(
         and not runtime.med_not_found
         and not _es_despedida_o_handoff(final_text)
     ):
+        # Quitar frases redundantes del LLM que duplican el bloque estándar
+        # ("Si deseas agregarlo a tu carrito...", "indícame cuántas cajas").
+        final_text = _quitar_invito_carrito(final_text)
         final_text = final_text.rstrip()
         if not final_text.endswith(MENSAJE_SUGERIDO_CARRITO):
             logger.info(
@@ -1511,6 +1514,39 @@ def _quitar_ofrecimiento_consulta(texto: str) -> str:
     if not texto:
         return texto
     return _MENTIRA_CONSULTA.sub("", texto).strip()
+
+
+# Frases redundantes del LLM que invitan al carrito de forma libre y duplican
+# el MENSAJE_SUGERIDO_CARRITO estándar que se adjunta al final ("Si deseas
+# agregarlo a tu carrito, solo indícame cuántas cajas quieres. 🛒"). Se retiran
+# para que el cliente vea UNA sola instrucción de carrito (la canónica).
+_INVITO_CARRITO = re.compile(
+    r"""\s*[Ss]i\s+deseas\s+agregarlo?\s+(?:al\s+carrito|a\s+tu\s+carrito)\s*[,.:]?\s*(?:solo\s+)?[Ii]nd[ií]came\s+(?:cu[aá]ntas\s+cajas\s+quieres|la\s+cantidad|cu[aá]ntas\s+cajas)[^\n]*?\n?\s*""",
+    re.X,
+)
+
+
+def _quitar_invito_carrito(texto: str) -> str:
+    """Elimina frases redundantes de invitación al carrito del texto final."""
+    if not texto:
+        return texto
+    
+    new_text = _INVITO_CARITO.sub("", texto)
+    # Casos de variantes que no cayeron en el patrón exacto (emojis o redactado
+    # distinto): retira cualquier línea final que mencione "cuántas cajas" y
+    # "carrito" a la vez (invitación libre que se duplica con el bloque).
+    lines = new_text.split("\n")
+    lines = [
+        l
+        for l in lines
+        if not (
+            "cuántas cajas" in l.lower()
+            and "carrito" in l.lower()
+            and "opción" not in l.lower()
+        )
+    ]
+    out = "\n".join(lines).strip()
+    return out
 
 
 def _parece_consulta_medicamento(texto: str) -> bool:
