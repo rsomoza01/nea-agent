@@ -1559,7 +1559,7 @@ def _quitar_invito_carrito(texto: str) -> str:
     if not texto:
         return texto
     
-    new_text = _INVITO_CARITO.sub("", texto)
+    new_text = _INVITO_CARRITO.sub("", texto)
     # Casos de variantes que no cayeron en el patrón exacto (emojis o redactado
     # distinto): retira cualquier línea final que mencione "cuántas cajas" y
     # "carrito" a la vez (invitación libre que se duplica con el bloque).
