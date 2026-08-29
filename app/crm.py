@@ -284,6 +284,17 @@ class CrmClient:
         if resp.status_code != 200:
             raise CrmError(f"products devolvió {resp.status_code}")
         data: dict[str, Any] = resp.json()
+        # Normalizar el contrato del endpoint: el CRM devuelve {id, nombre,
+        # precio, precioBs, disponible}, pero el resto del bot espera
+        # {productId, producto, ...}. Sin este mapeo, _dedupe_por_nombre
+        # descarta TODOS los productos (p.get("producto") == "") → "sin
+        # resultados" aunque el catálogo sí tenga el medicamento.
+        products = data.get("products") or []
+        for p in products:
+            if "productId" not in p and "id" in p:
+                p["productId"] = p["id"]
+            if "producto" not in p and "nombre" in p:
+                p["producto"] = p["nombre"]
         return data
 
     async def get_providers(self, provider_id: str) -> dict[str, Any]:
