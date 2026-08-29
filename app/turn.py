@@ -517,6 +517,27 @@ async def run_turn(
         final_text = _formatear_lista_productos(
             runtime.last_products, runtime.last_term or ""
         ) + "\n\n" + MENSAJE_SUGERIDO_CARRITO
+
+    # Backstop de bloque de carrito: SIEMPRE que se consultaron productos
+    # (last_products) y el texto final es una lista de presentaciones (no un
+    # handoff), garantizar que el MENSAJE_SUGERIDO_CARRITO esté al final. El
+    # LLM a veces genera la lista correcta pero omite el bloque, dejando al
+    # cliente sin saber cómo agregar al carrito.
+    if (
+        farmacia
+        and runtime.last_products
+        and final_text
+        and not runtime.med_not_found
+        and not _es_despedida_o_handoff(final_text)
+    ):
+        final_text = final_text.rstrip()
+        if not final_text.endswith(MENSAJE_SUGERIDO_CARRITO):
+            logger.info(
+                "backstop bloque carrito: adjuntar MENSAJE_SUGERIDO_CARRITO a la lista de %d productos",
+                len(runtime.last_products),
+            )
+            final_text += "\n\n" + MENSAJE_SUGERIDO_CARRITO
+
     sent = False
     if final_text and final_text.strip():
         # Sanitiza el markup interno de handoff (si el modelo lo escribió como
