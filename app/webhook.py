@@ -202,6 +202,7 @@ async def chat(request: Request) -> Any:
     conversation_id = (payload or {}).get("conversationId")
     text = (payload or {}).get("text")
     wa_identity = (payload or {}).get("waIdentity")
+    wa_message_id = (payload or {}).get("waMessageId")
     send = bool((payload or {}).get("send"))
     # En modo producción (send=true) la conversación se resuelve por identidad
     # (el webhook Evolution ya la creó en el CRM); conversationId es opcional.
@@ -221,7 +222,7 @@ async def chat(request: Request) -> Any:
         )
 
     msg = InboundMessage(
-        wa_message_id=None,
+        wa_message_id=wa_message_id,
         identity=wa_identity,
         type="text",
         text=str(text),
@@ -229,6 +230,14 @@ async def chat(request: Request) -> Any:
         image_base64=(payload or {}).get("imageBase64"),
         image_mime=(payload or {}).get("imageMime"),
     )
+    # Dedupe por wa_message_id: si el CRM reintenta /chat (timeout de 60s al
+    # procesar recetas largas), no reprocesar el mismo mensaje ni reenviar la
+    # respuesta dos veces.
+    if wa_message_id:
+        fresh = await ctx.store.mark_processed(wa_message_id)
+        if not fresh:
+            logger.info("dedup /chat: %s ya procesado — ignorado", wa_message_id)
+            return JSONResponse({"replies": [], "dedup": True})
     outbox: list[str] = []
     prev = ctx.lab_outbox
     if not send:
