@@ -558,8 +558,9 @@ class PgStore:
         patterns = [r["pattern"] for r in pat_rows]
         # OR de ILIKE por patrón (substring). Los términos se guardan tal cual
         # los escribió el usuario, así que comparamos en minúsculas.
+        # $1 = provider_id, $2 = wa_identity, patrones desde $3.
         like_clause = " OR ".join(
-            f"LOWER(mq.term) LIKE '%' || ${i} || '%'" for i in range(2, 2 + len(patterns))
+            f"LOWER(mq.term) LIKE '%' || ${i} || '%'" for i in range(3, 3 + len(patterns))
         )
         params: list[Any] = [provider_id, wa_identity, *patterns]
         rows = await self.pool.fetch(
