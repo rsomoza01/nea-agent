@@ -589,27 +589,48 @@ class PgStore:
         self,
         provider_id: str,
         solo_consentidos: bool = False,
-    ) -> list[dict[str, Any]]:
+        condicion: str | None = None,
+        wa_identitys: list[str] | None = None,
+        page: int = 1,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """Pacientes crónicos con paginación y filtros opcionales.
+
+        Devuelve {pacientes, total}. Filtros: condicion (exacto) y
+        wa_identitys (lista de identidades a incluir, para que el CRM filtre
+        por nombre/teléfono desde su propia tabla contact).
+        """
+        where = ["provider_id = $1"]
+        params: list[Any] = [provider_id]
         if solo_consentidos:
-            rows = await self.pool.fetch(
-                """
-                SELECT wa_identity, condicion, confianza, nivel, consent,
-                       first_seen_at, updated_at
-                FROM patient_profiles WHERE provider_id = $1 AND consent = TRUE
-                ORDER BY updated_at DESC
-                """,
-                provider_id,
-            )
-        else:
-            rows = await self.pool.fetch(
-                """
-                SELECT wa_identity, condicion, confianza, nivel, consent,
-                       first_seen_at, updated_at
-                FROM patient_profiles WHERE provider_id = $1
-                ORDER BY updated_at DESC
-                """,
-                provider_id,
-            )
+            where.append("consent = TRUE")
+        if condicion:
+            params.append(condicion)
+            where.append(f"condicion = ${len(params)}")
+        if wa_identitys:
+            # IN con placeholders dinámicos
+            placeholders = ", ".join(f"${len(params) + i}" for i in range(1, len(wa_identitys) + 1))
+            params.extend(wa_identitys)
+            where.append(f"wa_identity IN ({placeholders})")
+        where_sql = " AND ".join(where)
+
+        total = await self.pool.fetchval(
+            f"SELECT COUNT(*) FROM patient_profiles WHERE {where_sql}",
+            *params,
+        )
+        # Paginación: offset/limit
+        params.append(limit)
+        params.append((page - 1) * limit)
+        rows = await self.pool.fetch(
+            f"""
+            SELECT wa_identity, condicion, confianza, nivel, consent,
+                   first_seen_at, updated_at
+            FROM patient_profiles WHERE {where_sql}
+            ORDER BY updated_at DESC
+            LIMIT ${len(params) - 1} OFFSET ${len(params)}
+            """,
+            *params,
+        )
         out: list[dict[str, Any]] = []
         for r in rows:
             medicamentos = await self._medicamentos_condicion(
@@ -627,7 +648,7 @@ class PgStore:
                     "medicamentos": medicamentos,
                 }
             )
-        return out
+        return {"pacientes": out, "total": total}
 
     async def marcar_consent(
         self, provider_id: str, wa_identity: str, consent: bool = True

@@ -383,6 +383,10 @@ async def analytics_chronic_patients(
     request: Request,
     provider_id: str = "",
     consentidos: str = "",
+    condicion: str = "",
+    wa_identitys: str = "",
+    page: int = 1,
+    limit: int = 20,
 ) -> JSONResponse:
     ctx: AppContext = request.app.state.ctx
     api_key = request.headers.get("X-API-Key", "")
@@ -391,11 +395,18 @@ async def analytics_chronic_patients(
     if not provider_id:
         return JSONResponse({"error": "provider_id requerido"}, status_code=400)
     try:
-        rows = await ctx.store.chronic_patients(
+        # wa_identitys llega como lista separada por comas (el CRM filtra por
+        # nombre/teléfono desde su tabla contact y pasa las identidades).
+        ids = [x.strip() for x in wa_identitys.split(",") if x.strip()] if wa_identitys else None
+        result = await ctx.store.chronic_patients(
             provider_id=provider_id,
             solo_consentidos=consentidos.lower() in ("1", "true", "si", "sí"),
+            condicion=condicion or None,
+            wa_identitys=ids,
+            page=max(1, page),
+            limit=max(1, min(limit, 100)),
         )
-        return JSONResponse({"provider_id": provider_id, "pacientes": rows})
+        return JSONResponse({"provider_id": provider_id, **result})
     except Exception as exc:
         logger.exception("analytics_chronic_patients: error")
         return JSONResponse({"error": str(exc)}, status_code=500)
