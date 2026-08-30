@@ -45,6 +45,34 @@ MENSAJE_SUGERIDO_CARRITO = (
 
 MAX_TOOL_ROUNDS = 5
 
+# El indicador "composing" de Evolution GO dura solo ~25 s (007). Una consulta
+# de medicamento pasa por varias rondas LLM + búsqueda en Firebase y lo supera,
+# así que los 3 puntitos desaparecen antes de llegar las opciones. Este es el
+# intervalo de reenvío del heartbeat para mantenerlos vivos mientras se procesa.
+TYPING_HEARTBEAT_SECONDS = 12.0
+
+
+async def _typing_heartbeat(ctx: AppContext, crm_conv_id: str, stop: asyncio.Event) -> None:
+    """Reenvía \"escribiendo…\" cada TYPING_HEARTBEAT_SECONDS hasta que se cancele.
+
+    Best-effort absoluto: un fallo aquí jamás afecta el turno (mismo contrato
+    que el typing inicial). Mantiene vivos los 3 puntitos durante las consultas
+    de medicamento que exceden la vida del composing individual de Evolution.
+    """
+    try:
+        while not stop.is_set():
+            try:
+                await ctx.crm.post_typing(crm_conv_id)
+            except Exception as exc:
+                logger.debug("typing heartbeat de %s falló (%s) — sigo", crm_conv_id, exc)
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=TYPING_HEARTBEAT_SECONDS)
+            except asyncio.TimeoutError:
+                continue
+    except asyncio.CancelledError:
+        pass
+
+
 # WhatsApp: límite duro por mensaje (el CRM valida ≤4096 y WhatsApp corta/da
 # error por encima). Margen de seguridad para encabezados de partes.
 WA_MAX_CHARS = 4000
@@ -383,6 +411,13 @@ async def run_turn(
     # Modo farmacia si hay providerId: se exponen las tools de catálogo y se
     # retiran las de agenda.
     farmacia = bool(provider_id)
+    # Heartbeat de typing: mantiene los 3 puntitos vivos mientras el turno
+    # procesa (la consulta de medicamento excede la vida del composing de
+    # Evolution, ~25 s). Se cancela al salir del tool_loop.
+    typing_stop = asyncio.Event()
+    typing_task = asyncio.create_task(
+        _typing_heartbeat(ctx, str(crm_conv_id), typing_stop)
+    )
     try:
         final_text = await _tool_loop(ctx, messages, runtime, farmacia=farmacia, user_text=user_text)
     except LlmExhausted as exc:
@@ -396,6 +431,15 @@ async def run_turn(
             conv.id, phase="cerrada", followup_due_at=None
         )
         return
+    finally:
+        typing_stop.set()
+        typing_task.cancel()
+        # Reenviar una vez más justo antes de enviar la respuesta: el composing
+        # previo pudo expirar mientras el LLM armaba el texto final.
+        try:
+            await ctx.crm.post_typing(str(crm_conv_id))
+        except Exception:
+            pass
 
     # Backstop determinista: al tercer strike el handoff SUCEDE, lo haya
     # llamado el modelo o no (la regla de negocio no depende de su humor).
