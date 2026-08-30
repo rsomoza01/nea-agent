@@ -83,6 +83,40 @@ def _es_solo_saludo(term: str) -> bool:
     # Todas las palabras son saludos/cortesía (p. ej. "buen dia saludos").
     palabras = set(t.split())
     return bool(palabras) and palabras <= _SALUDOS
+
+
+def _quitar_saludos(term: str) -> str:
+    """Quita los saludos/cortesía del INICIO de un término de búsqueda.
+
+    El LLM a veces deja el saludo pegado al medicamento ('epa panadol',
+    'hola losartan'), y ese saludo falsea la búsqueda (epa → EPAX, hola →
+    ...). Quita las palabras iniciales que sean saludos/cortesía O verbos de
+    consulta, devolviendo el resto. 'epa panadol' → 'panadol'.
+    'buenos dias, quiero daflon' → 'daflon'. Devuelve '' si todo era ruido.
+    """
+    t = (term or "").strip().lower()
+    if not t:
+        return ""
+    # Quitar tildes para comparar contra _SALUDOS (sin tildes).
+    t_sin = t.replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u")
+    tokens = re.findall(r"[a-z0-9]+", t_sin)
+    # Ruido inicial que quitar: saludos/cortesía + verbos de consulta comunes.
+    ruido = _SALUDOS | {
+        # Palabras sueltas de saludos compuestos ('buenos dias', 'buenas tardes').
+        "dia", "dias", "tardes", "noches", "mañana", "tarde", "buenos", "buenas",
+        "tienes", "tiene", "tengan", "tienen", "hay", "hay", "venden", "vendes",
+        "quiero", "quiere", "quieres", "quería", "quisiera", "necesito", "busco",
+        "buscando", "buscar", "busca", "buscan", "consiguen", "consigues",
+        "conseguir", "me", "dan", "dame", "da", "saber", "cuanto", "cuesta",
+        "cuestan", "precio", "disponible", "disponibles", "traen", "mande",
+    }
+    for w in tokens:
+        if w in ruido:
+            continue
+        # Primera palabra que NO es ruido: cortar el término a partir de ella.
+        idx = t.find(w)
+        return t[idx:].strip()
+    return ""
 from app.profile import BusinessProfile
 from app.state import AppContext, Conversation, OfferedSlot
 
@@ -916,6 +950,16 @@ class ToolRuntime:
                     "necesita. NO muestres lista de productos."
                 ),
             }
+        # Quitar saludos/cortesía que el LLM dejó pegados al medicamento
+        # ('epa panadol' → 'panadol'). Sin esto, 'epa' matchea con 'EPAX'
+        # en el catálogo y devuelve el producto equivocado.
+        nombre_limpio = _quitar_saludos(nombre)
+        if nombre_limpio and nombre_limpio != nombre.lower():
+            logger.info(
+                "buscar_medicamento: término '%s' → limpio '%s' (quité saludos)",
+                nombre, nombre_limpio,
+            )
+            nombre = nombre_limpio
         if not self._provider_id:
             return {
                 "ok": False,
