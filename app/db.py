@@ -537,6 +537,53 @@ class PgStore:
                 provider_id, wa_identity, cond,
             )
 
+    async def _medicamentos_condicion(
+        self,
+        provider_id: str,
+        wa_identity: str,
+        condicion: str,
+    ) -> list[dict[str, Any]]:
+        """Medicamentos que el paciente consultó y que sustentan la condición.
+
+        Une med_queries (términos consultados) con bot_conversation (para
+        resolver wa_identity) y matchea cada término contra los patrones de la
+        condición en condiciones_cronicas (substring, igual que la detección).
+        """
+        pat_rows = await self.pool.fetch(
+            "SELECT pattern FROM condiciones_cronicas WHERE activo = TRUE AND condicion = $1",
+            condicion,
+        )
+        if not pat_rows:
+            return []
+        patterns = [r["pattern"] for r in pat_rows]
+        # OR de ILIKE por patrón (substring). Los términos se guardan tal cual
+        # los escribió el usuario, así que comparamos en minúsculas.
+        like_clause = " OR ".join(
+            f"LOWER(mq.term) LIKE '%' || ${i} || '%'" for i in range(2, 2 + len(patterns))
+        )
+        params: list[Any] = [provider_id, wa_identity, *patterns]
+        rows = await self.pool.fetch(
+            f"""
+            SELECT mq.term, COUNT(*) AS veces, MAX(mq.created_at) AS ultima
+            FROM med_queries mq
+            JOIN bot_conversation bc ON bc.id = mq.conversation_id
+            WHERE mq.provider_id = $1
+              AND bc.wa_identity = $2
+              AND ({like_clause})
+            GROUP BY mq.term
+            ORDER BY veces DESC, ultima DESC
+            """,
+            *params,
+        )
+        return [
+            {
+                "term": r["term"],
+                "veces": r["veces"],
+                "ultima": r["ultima"].isoformat() if r["ultima"] else None,
+            }
+            for r in rows
+        ]
+
     async def chronic_patients(
         self,
         provider_id: str,
@@ -562,18 +609,24 @@ class PgStore:
                 """,
                 provider_id,
             )
-        return [
-            {
-                "wa_identity": r["wa_identity"],
-                "condicion": r["condicion"],
-                "confianza": r["confianza"],
-                "nivel": r["nivel"],
-                "consent": r["consent"],
-                "first_seen_at": r["first_seen_at"].isoformat() if r["first_seen_at"] else None,
-                "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
-            }
-            for r in rows
-        ]
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            medicamentos = await self._medicamentos_condicion(
+                provider_id, r["wa_identity"], r["condicion"]
+            )
+            out.append(
+                {
+                    "wa_identity": r["wa_identity"],
+                    "condicion": r["condicion"],
+                    "confianza": r["confianza"],
+                    "nivel": r["nivel"],
+                    "consent": r["consent"],
+                    "first_seen_at": r["first_seen_at"].isoformat() if r["first_seen_at"] else None,
+                    "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
+                    "medicamentos": medicamentos,
+                }
+            )
+        return out
 
     async def marcar_consent(
         self, provider_id: str, wa_identity: str, consent: bool = True
