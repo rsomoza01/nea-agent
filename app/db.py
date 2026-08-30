@@ -569,8 +569,8 @@ class PgStore:
                 "confianza": r["confianza"],
                 "nivel": r["nivel"],
                 "consent": r["consent"],
-                "first_seen_at": r["first_seen_at"],
-                "updated_at": r["updated_at"],
+                "first_seen_at": r["first_seen_at"].isoformat() if r["first_seen_at"] else None,
+                "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
             }
             for r in rows
         ]
