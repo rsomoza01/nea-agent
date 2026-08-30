@@ -257,7 +257,25 @@ class CrmClient:
             timeout=8.0,
         )
         if resp.status_code != 200:
-            raise CrmError(f"typing devolvió {resp.status_code}")
+            raise CrmError("typing devolvió %s" % resp.status_code)
+
+    async def post_paused(self, conversation_id: str) -> None:
+        resp = await self._request(
+            "POST", "/api/bot/typing",
+            json={"conversationId": conversation_id, "state": "paused"},
+            timeout=8.0,
+        )
+        if resp.status_code != 200:
+            raise CrmError("typing/paused devolvió %s" % resp.status_code)
+
+    async def post_typing_final(self, conversation_id: str) -> None:
+        resp = await self._request(
+            "POST", "/api/bot/typing",
+            json={"conversationId": conversation_id, "delay": 0},
+            timeout=8.0,
+        )
+        if resp.status_code != 200:
+            raise CrmError("typing/final devolvió %s" % resp.status_code)
 
     async def post_reset(self, conversation_id: str) -> None:
         """Reinicio de pruebas (spec 002): ficha limpia + IA reactivada + etapa

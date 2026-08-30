@@ -435,9 +435,11 @@ async def run_turn(
         typing_stop.set()
         typing_task.cancel()
         # Reenviar una vez más justo antes de enviar la respuesta: el composing
-        # previo pudo expirar mientras el LLM armaba el texto final.
+        # previo pudo expirar mientras el LLM armaba el texto final. Se manda en
+        # single-fire (delay=0) para NO dejar un timer que re-avive los puntitos
+        # después de que la respuesta ya llegó.
         try:
-            await ctx.crm.post_typing(str(crm_conv_id))
+            await ctx.crm.post_typing_final(str(crm_conv_id))
         except Exception:
             pass
 
@@ -614,6 +616,17 @@ async def run_turn(
             sent = await _send(ctx, conv.id, str(crm_conv_id), clean)
             if sent:
                 await ctx.store.add_message(conv.id, "assistant", clean)
+    # Apagar los puntitos explícitamente tras entregar la respuesta: el último
+    # composing (aun con delay=0) y sobre todo el del heartbeat tienen delay y
+    # Evolution los re-envía internamente; si no mandamos "paused", los 3
+    # puntitos reaparecen DESPUÉS de las opciones y se apagan solos ~3 s
+    # después. Este paused corta de raíz el indicador justo cuando el mensaje
+    # ya llegó.
+    if sent:
+        try:
+            await ctx.crm.post_paused(str(crm_conv_id))
+        except Exception:
+            pass
 
     # El handoff se ejecuta DESPUÉS de la despedida (si no, el CRM la rechaza
     # con 409 ai_paused). EXCEPCIÓN: si hay carrito activo, el cliente está en
