@@ -44,6 +44,45 @@ def _termino_busqueda_plausible(term: str) -> bool:
     if len(tokens) > 6:
         return False
     return True
+
+
+# Saludos y cortesía que NUNCA son un medicamento. Si el LLM llama
+# buscar_medicamento con un término que es SOLO esto (p. ej. "saludos",
+# "buen día"), es un error del modelo: no hay que buscar en el catálogo ni
+# devolver una lista de productos irrelevantes. Se responde con un saludo.
+_SALUDOS = {
+    "hola", "buenas", "buen", "buenos", "buena", "buen dia", "buenos dias",
+    "buenas tardes", "buenas noches", "saludos", "saludo", "que tal", "que tal",
+    "como estas", "como esta", "como estas", "como va", "epa", "hey", "ey",
+    "holi", "holis", "buen dia", "buenas", "saludos cordiales", "cordial",
+    "gracias", "por favor", "favor", "ok", "okey", "okay", "vale", "listo",
+    "perfecto", "genial", "excelente", "bien", "bueno", "buena", "si", "no",
+    "hola buenas", "hola buenos dias", "hola buenas tardes", "buen dia saludos",
+}
+
+
+def _es_solo_saludo(term: str) -> bool:
+    """True si el término es SOLO saludos/cortesía (no un medicamento).
+
+    'saludos' → True. 'losartan 50' → False. 'buen dia, saludos' → True.
+    Normaliza a minúsculas, quita tildes y puntuación; compara contra _SALUDOS.
+    """
+    t = (term or "").strip().lower()
+    if not t:
+        return False
+    # Quitar tildes (el set _SALUDOS está sin tildes: 'dia', 'como estas').
+    t = t.replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u")
+    # Quitar puntuación y normalizar espacios.
+    t = re.sub(r"[^a-z0-9\s]", " ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    if not t:
+        return False
+    # El término completo es un saludo conocido.
+    if t in _SALUDOS:
+        return True
+    # Todas las palabras son saludos/cortesía (p. ej. "buen dia saludos").
+    palabras = set(t.split())
+    return bool(palabras) and palabras <= _SALUDOS
 from app.profile import BusinessProfile
 from app.state import AppContext, Conversation, OfferedSlot
 
@@ -857,6 +896,26 @@ class ToolRuntime:
         nombre = str(args.get("nombre") or "").strip()
         if not nombre:
             return {"ok": False, "error": "nombre_vacio", "detalle": "indica qué medicamento buscas"}
+        # Guarda anti-saludo: si el LLM llamó buscar_medicamento con un término
+        # que es SOLO saludos/cortesía ("saludos", "buen día"), NO es una
+        # consulta de medicamento. Devolver una lista de productos aquí sería
+        # un error grave (el cliente saludó y le respondemos con 19 productos).
+        # Se devuelve un resultado que le dice al LLM que responda con un
+        # saludo, sin tocar el catálogo.
+        if _es_solo_saludo(nombre):
+            logger.info(
+                "buscar_medicamento: término '%s' es solo saludo — no busco en catálogo",
+                nombre,
+            )
+            return {
+                "ok": False,
+                "error": "solo_saludo",
+                "detalle": (
+                    "El cliente solo saludó (no pidió ningún medicamento). "
+                    "Responde con un saludo cálido y pregunta qué medicamento "
+                    "necesita. NO muestres lista de productos."
+                ),
+            }
         if not self._provider_id:
             return {
                 "ok": False,
