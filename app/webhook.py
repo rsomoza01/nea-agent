@@ -371,7 +371,13 @@ async def analytics_top_meds(
             limit=max(1, min(limit, 100)),
             offset=max(0, (max(1, page) - 1) * max(1, min(limit, 100))),
         )
-        return JSONResponse({"provider_id": provider_id, **data})
+        summary = await ctx.store.top_med_summary(
+            provider_id=provider_id,
+            desde=desde or None,
+            hasta=hasta or None,
+            q=q or None,
+        )
+        return JSONResponse({"provider_id": provider_id, **data, "summary": summary})
     except Exception as exc:
         logger.exception("analytics_top_meds: error")
         return JSONResponse({"error": str(exc)}, status_code=500)

@@ -465,6 +465,42 @@ class PgStore:
             result_count, added_to_cart,
         )
 
+    async def top_med_summary(
+        self,
+        provider_id: str,
+        desde: str | None = None,
+        hasta: str | None = None,
+        q: str | None = None,
+    ) -> dict[str, int]:
+        # Total de consultas, disponibles y fallas GLOBALES (sin paginar), para
+        # el encabezado del dashboard de Analítica.
+        where = ["provider_id = $1"]
+        params: list[Any] = [provider_id]
+        if desde:
+            params.append(desde[:10])
+            where.append(f"created_at >= ${len(params)}::date")
+        if hasta:
+            params.append(hasta[:10])
+            where.append(f"created_at <= (${len(params)}::date + interval '1 day')")
+        if q:
+            params.append(f"%{q.lower().strip()}%")
+            where.append(f"term ILIKE ${len(params)}")
+        where_sql = " AND ".join(where)
+        row = await self.pool.fetchrow(
+            f"""
+            SELECT COUNT(*) AS consultas,
+                   COUNT(*) FILTER (WHERE result_count > 0) AS disponibles,
+                   COUNT(*) FILTER (WHERE result_count = 0) AS fallas
+            FROM med_queries WHERE {where_sql}
+            """,
+            *params,
+        )
+        return {
+            "consultas": int(row["consultas"]),
+            "disponibles": int(row["disponibles"]),
+            "fallas": int(row["fallas"]),
+        }
+
     async def top_med_queries(
         self,
         provider_id: str,
@@ -493,13 +529,15 @@ class PgStore:
             f"SELECT COUNT(*) FROM med_queries WHERE {where_sql}", *params
         )
 
-        # Fila por término: consultas + agregados al carrito, orden descendente.
+        # Fila por término: consultas, disponibles vs fallas, agregados.
         params.append(limit)
         params.append(offset)
         rows = await self.pool.fetch(
             f"""
             SELECT term,
                    COUNT(*) AS consultas,
+                   COUNT(*) FILTER (WHERE result_count > 0) AS disponibles,
+                   COUNT(*) FILTER (WHERE result_count = 0) AS fallas,
                    COUNT(*) FILTER (WHERE added_to_cart) AS agregados
             FROM med_queries
             WHERE {where_sql}
@@ -515,6 +553,8 @@ class PgStore:
                 {
                     "term": r["term"],
                     "consultas": int(r["consultas"]),
+                    "disponibles": int(r["disponibles"]),
+                    "fallas": int(r["fallas"]),
                     "agregados": int(r["agregados"]),
                 }
                 for r in rows
