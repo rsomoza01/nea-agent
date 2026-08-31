@@ -529,19 +529,20 @@ class PgStore:
             f"SELECT COUNT(*) FROM med_queries WHERE {where_sql}", *params
         )
 
-        # Fila por término: consultas, disponibles vs fallas, agregados.
+        # Fila por término normalizado (minúsculas y sin tildes): unifica
+        # 'daflon 500 mg' / 'DAFLON 500 MG' / 'Daflón' en una sola fila.
         params.append(limit)
         params.append(offset)
         rows = await self.pool.fetch(
             f"""
-            SELECT term,
+            SELECT LOWER(term) AS term,
                    COUNT(*) AS consultas,
                    COUNT(*) FILTER (WHERE result_count > 0) AS disponibles,
                    COUNT(*) FILTER (WHERE result_count = 0) AS fallas,
                    COUNT(*) FILTER (WHERE added_to_cart) AS agregados
             FROM med_queries
             WHERE {where_sql}
-            GROUP BY term
+            GROUP BY LOWER(term)
             ORDER BY consultas DESC, term ASC
             LIMIT ${len(params) - 1} OFFSET ${len(params)}
             """,
