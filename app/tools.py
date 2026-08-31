@@ -114,6 +114,9 @@ _PALABRAS_FUNCIONALES = {
     "entrega", "entregar", "domingo", "domingos", "hacen", "hacer", "hace",
     "quieren", "pienso", "espero", "problema", "problemas", "pasar",
     "generico", "generica", "marca", "presentacion", "mas", "mejor",
+    # Muletillas venezolanas/mexicanas de arranque que NO son fármaco.
+    "oiga", "oigan", "epa", "hey", "ey", "mira", "miren", "che", "wey", "vale",
+    "epa", "eh", "ah", "uy",
 }
 
 
