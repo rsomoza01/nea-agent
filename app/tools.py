@@ -117,6 +117,19 @@ _PALABRAS_FUNCIONALES = {
     # Muletillas venezolanas/mexicanas de arranque que NO son fármaco.
     "oiga", "oigan", "epa", "hey", "ey", "mira", "miren", "che", "wey", "vale",
     "epa", "eh", "ah", "uy",
+    # Conceptos que NO son medicamentos (preguntas generales de precios,
+    # comparadores, catálogos, servicios). Si el término se reduce a esto, no
+    # es una consulta de medicamento.
+    "comparador", "comparadores", "catalogo", "catalogos", "listado", "lista",
+    "precios", "precio", "tarifa", "tarifas", "servicio", "servicios", "info",
+    "informacion", "ayuda", "ayudar", "atencion", "atender", "contacto",
+    "contactar", "horario", "horarios", "ubicacion", "direccion", "telefono",
+    "whatsapp", "web", "pagina", "tienda", "farmacia", "negocio", "producto",
+    "productos", "stock", "inventario", "disponibilidad", "existencias",
+    # Verbos/estados de consulta general que no son fármaco.
+    "interesada", "interesado", "interes", "indicar", "indica", "indicame",
+    "saber", "sabes", "conocer", "conozco", "averiguar", "consultar", "preguntar",
+    "pregunta", "quiero", "quisiera", "necesito", "buscar", "buscando",
 }
 
 
@@ -397,8 +410,12 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "description": (
                 "Consulta la disponibilidad y el precio de un medicamento en el "
                 "catálogo de la farmacia. Devuelve el producto con su precio y si "
-                "está disponible. Llámala cuando el cliente pregunte por un "
-                "medicamento (por nombre, presentación o genérico). NUNCA inventes "
+                "está disponible. Llámala SOLO cuando el cliente pida un "
+                "medicamento CONCRETO por su nombre (p. ej. 'losartán', 'daflon "
+                "500', 'paracetamol'). NO la llames para preguntas generales de "
+                "precios, comparadores, catálogos completos, saludos, reclamos u "
+                "off-topic: si el cliente no nombra un medicamento específico, "
+                "responde directamente sin usar esta herramienta. NUNCA inventes "
                 "precios: si no aparece aquí, no está en el catálogo."
             ),
             "parameters": {
@@ -1063,10 +1080,16 @@ class ToolRuntime:
                 "ok": False,
                 "error": "no_medicamento",
                 "detalle": (
-                    "El mensaje no pide un medicamento concreto (es una frase, "
-                    "reclamo o saludo). Pregunta amablemente qué medicamento "
-                    "necesita o responde según corresponda. NO muestres lista "
-                    "de productos."
+                    "El cliente NO está pidiendo un medicamento: pide otra cosa "
+                    "(un comparador de precios, un reclamo, un saludo, una "
+                    "pregunta general, etc.). NO digas que buscaste un "
+                    "medicamento ni que 'no encontraste nada' — eso confunde. "
+                    "Responde a lo que el cliente realmente pide: si pide un "
+                    "comparador de precios, aclara que solo consultas el precio "
+                    "de medicamentos específicos y pregúntale cuál quiere; si "
+                    "es un reclamo, escúchalo y escala a un humano; si es un "
+                    "saludo, saluda y pregunta qué medicamento necesita. "
+                    "NUNCA muestres lista de productos."
                 ),
             }
         # Limpio quedó un solo fármaco: usarlo como término (evita basura).
