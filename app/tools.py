@@ -113,6 +113,7 @@ _PALABRAS_FUNCIONALES = {
     "manejan", "maneja", "manejar", "receta", "recetas", "abuela", "domicilio",
     "entrega", "entregar", "domingo", "domingos", "hacen", "hacer", "hace",
     "quieren", "pienso", "espero", "problema", "problemas", "pasar",
+    "generico", "generica", "marca", "presentacion", "mas", "mejor",
 }
 
 
@@ -145,9 +146,28 @@ def _termino_es_medicamento_plausible(term: str) -> bool:
     sustantivas = [w for w in palabras if w not in _PALABRAS_FUNCIONALES and len(w) >= 3]
     if not sustantivas:
         return False
-    # Si TODAS las palabras son funcionales salvo una de ≤2 letras o el total
-    # se reduce a ruido, no es un medicamento.
     return True
+
+
+def _limpiar_termino_medicamento(term: str) -> str:
+    """Deja SOLO las palabras "sustantivas" (posible fármaco) del término.
+
+    Quita TODAS las palabras funcionales/relleno en cualquier posición (no solo
+    al inicio como _quitar_saludos): 'genérico del daflon económico' →
+    'daflon'; 'cajas opción económica 50 mg' → '50' (sin sustantivo). Devuelve
+    '' si no queda ninguna palabra sustantiva de ≥3 letras.
+    """
+    t = (term or "").strip().lower()
+    if not t:
+        return ""
+    t_sin = t.replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u")
+    palabras = re.findall(r"[a-z0-9]+", t_sin)
+    sustantivas = [
+        w for w in palabras if w not in _PALABRAS_FUNCIONALES and len(w) >= 3
+    ]
+    if not sustantivas:
+        return ""
+    return " ".join(sustantivas)
 
 
 def _quitar_saludos(term: str) -> str:
@@ -1025,6 +1045,34 @@ class ToolRuntime:
                 nombre, nombre_limpio,
             )
             nombre = nombre_limpio
+        # Limpiar TODAS las palabras funcionales/relleno en cualquier posición
+        # ('genérico del daflon económico' → 'daflon'). Si el LLM llamó la
+        # búsqueda con una frase que tras limpiar NO deja ningún sustantivo
+        # plausible, es ruido (CAJAS OPCION ECONOMICA, ...) — NO consultar el
+        # catálogo, que devolvería basura irrelevante.
+        nombre_sustantivo = _limpiar_termino_medicamento(nombre)
+        if not _termino_es_medicamento_plausible(nombre) and not nombre_sustantivo:
+            logger.info(
+                "buscar_medicamento: término '%s' sin sustantivo de fármaco — no busco en catálogo",
+                nombre,
+            )
+            return {
+                "ok": False,
+                "error": "no_medicamento",
+                "detalle": (
+                    "El mensaje no pide un medicamento concreto (es una frase, "
+                    "reclamo o saludo). Pregunta amablemente qué medicamento "
+                    "necesita o responde según corresponda. NO muestres lista "
+                    "de productos."
+                ),
+            }
+        # Limpio quedó un solo fármaco: usarlo como término (evita basura).
+        if nombre_sustantivo and nombre_sustantivo != nombre.lower():
+            logger.info(
+                "buscar_medicamento: término '%s' → sustantivo '%s'",
+                nombre, nombre_sustantivo,
+            )
+            nombre = nombre_sustantivo
         if not self._provider_id:
             return {
                 "ok": False,
