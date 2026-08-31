@@ -352,7 +352,9 @@ async def analytics_top_meds(
     provider_id: str = "",
     desde: str = "",
     hasta: str = "",
-    top: int = 20,
+    q: str = "",
+    page: int = 1,
+    limit: int = 20,
 ) -> JSONResponse:
     ctx: AppContext = request.app.state.ctx
     api_key = request.headers.get("X-API-Key", "")
@@ -361,13 +363,15 @@ async def analytics_top_meds(
     if not provider_id:
         return JSONResponse({"error": "provider_id requerido"}, status_code=400)
     try:
-        rows = await ctx.store.top_med_queries(
+        data = await ctx.store.top_med_queries(
             provider_id=provider_id,
             desde=desde or None,
             hasta=hasta or None,
-            limit=max(1, min(top, 100)),
+            q=q or None,
+            limit=max(1, min(limit, 100)),
+            offset=max(0, (max(1, page) - 1) * max(1, min(limit, 100))),
         )
-        return JSONResponse({"provider_id": provider_id, "top": rows})
+        return JSONResponse({"provider_id": provider_id, **data})
     except Exception as exc:
         logger.exception("analytics_top_meds: error")
         return JSONResponse({"error": str(exc)}, status_code=500)

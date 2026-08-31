@@ -470,27 +470,56 @@ class PgStore:
         provider_id: str,
         desde: str | None = None,
         hasta: str | None = None,
+        q: str | None = None,
         limit: int = 20,
-    ) -> list[dict[str, Any]]:
-        sql = """
-            SELECT term, COUNT(*) AS consultas
-            FROM med_queries
-            WHERE provider_id = $1
-        """
+        offset: int = 0,
+    ) -> dict[str, list[dict[str, Any]]]:
+        # Filtros dinámicos con placeholders.
+        where = ["provider_id = $1"]
         params: list[Any] = [provider_id]
         if desde:
             params.append(desde[:10])
-            sql += f" AND created_at >= ${len(params)}::date"
+            where.append(f"created_at >= ${len(params)}::date")
         if hasta:
             params.append(hasta[:10])
-            sql += f" AND created_at <= (${len(params)}::date + interval '1 day')"
-        sql += " GROUP BY term ORDER BY consultas DESC LIMIT $%d" % (len(params) + 1)
+            where.append(f"created_at <= (${len(params)}::date + interval '1 day')")
+        if q:
+            params.append(f"%{q.lower().strip()}%")
+            where.append(f"term ILIKE ${len(params)}")
+        where_sql = " AND ".join(where)
+
+        # Total (para paginación infinita).
+        total = await self.pool.fetchval(
+            f"SELECT COUNT(*) FROM med_queries WHERE {where_sql}", *params
+        )
+
+        # Fila por término: consultas + agregados al carrito, orden descendente.
         params.append(limit)
-        rows = await self.pool.fetch(sql, *params)
-        return [
-            {"term": r["term"], "consultas": r["consultas"]}
-            for r in rows
-        ]
+        params.append(offset)
+        rows = await self.pool.fetch(
+            f"""
+            SELECT term,
+                   COUNT(*) AS consultas,
+                   COUNT(*) FILTER (WHERE added_to_cart) AS agregados
+            FROM med_queries
+            WHERE {where_sql}
+            GROUP BY term
+            ORDER BY consultas DESC, term ASC
+            LIMIT ${len(params) - 1} OFFSET ${len(params)}
+            """,
+            *params,
+        )
+        return {
+            "total": int(total),
+            "top": [
+                {
+                    "term": r["term"],
+                    "consultas": int(r["consultas"]),
+                    "agregados": int(r["agregados"]),
+                }
+                for r in rows
+            ],
+        }
 
     # pacientes crónicos (Fase 2: clasificación automática)
     async def condiciones_para_termino(self, term: str) -> list[str]:
