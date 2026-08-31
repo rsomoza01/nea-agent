@@ -85,6 +85,71 @@ def _es_solo_saludo(term: str) -> bool:
     return bool(palabras) and palabras <= _SALUDOS
 
 
+# Palabras funcionales del español que NO son parte de un medicamento. Usadas
+# por _termino_es_medicamento_plausible para rechazar frases enteras del
+# cliente que el backstop intenta buscar como si fueran medicamentos (p. ej.
+# 'caja cada uno', 'medicamento llega vencido cambian', 'van responder').
+_PALABRAS_FUNCIONALES = {
+    "van", "vamos", "respondo", "responder", "respuesta", "necesito",
+    "quiero", "quieres", "quiere", "busco", "busca", "buscan", "buscar",
+    "tienes", "tiene", "tienen", "tener", "hay", "es", "son", "estan", "esta",
+    "estoy", "del", "dela", "al", "que", "cual", "como", "cuando", "donde",
+    "me", "mi", "tu", "te", "se", "lo", "la", "los", "las", "le", "les", "nos",
+    "uno", "una", "unos", "unas", "para", "por", "con", "sin", "sobre", "hasta",
+    "cada", "todo", "toda", "todos", "todas", "algo", "alguien", "nada", "nadie",
+    "ello", "este", "esta", "esto", "estos", "estas", "ese", "esa", "eso",
+    "caja", "cajas", "unidad", "unidades", "blister", "paquete", "compra",
+    "comprar", "venden", "precio", "precios", "cuanto", "cuesta", "cuestan",
+    "disponible", "disponibles", "tengo", "tienen", "traen", "mande", "dime",
+    "diga", "dian", "digas", "puedes", "puede", "podrias", "podria", "favor",
+    "gracias", "solo", "sola", "solamente", "mas", "menos", "mucho", "mucha",
+    "bueno", "buena", "bien", "porfavor", "okey", "ok", "vale", "listo",
+    "medicamento", "medicamentos", "consulta", "consultar", "opcion", "opciones",
+    "economico", "economica", "barato", "barata", "costo", "oferta",
+    # Verbos/nombres de FRASE del cliente (reclamos, garantías, entregas).
+    "van", "responda", "responden", "respondan", "solucion", "solucionar",
+    "arreglar", "llega", "llegar", "llegue", "vencio", "vencido", "vencida",
+    "cambio", "cambian", "cambien", "cambiar", "controlado", "controlada",
+    "manejan", "maneja", "manejar", "receta", "recetas", "abuela", "domicilio",
+    "entrega", "entregar", "domingo", "domingos", "hacen", "hacer", "hace",
+    "quieren", "pienso", "espero", "problema", "problemas", "pasar",
+}
+
+
+def _termino_es_medicamento_plausible(term: str) -> bool:
+    """True si el término parece un medicamento, no una frase del cliente.
+
+    Es un filtro conservador para NO disparar el fallback por principio activo
+    (que adivina con el LLM) ni consultar el catálogo con basura. Un término
+    plausible de medicamento: corto (≤4 palabras), sin verbos funcionales que
+    lo llenen de contexto ('caja cada uno'), con al menos una palabra de ≥3
+    letras que NO sea funcional. 'losartan 50' → True. 'caja cada uno' → False.
+    'medicamento llega vencido cambian' → False. 'van responder que solucion' →
+    False. 'panadol' → True.
+    """
+    t = (term or "").strip().lower()
+    if not t:
+        return False
+    # Saludos solos no son medicamentos.
+    if _es_solo_saludo(t):
+        return False
+    # Quitar tildes para comparar contra las funcionales (sin tildes).
+    t_sin = t.replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u")
+    palabras = re.findall(r"[a-z0-9]+", t_sin)
+    if not palabras:
+        return False
+    # Más de 4 palabras → probablemente una frase, no un medicamento.
+    if len(palabras) > 4:
+        return False
+    # Contar palabras "sustantivas" (no funcionales).
+    sustantivas = [w for w in palabras if w not in _PALABRAS_FUNCIONALES and len(w) >= 3]
+    if not sustantivas:
+        return False
+    # Si TODAS las palabras son funcionales salvo una de ≤2 letras o el total
+    # se reduce a ruido, no es un medicamento.
+    return True
+
+
 def _quitar_saludos(term: str) -> str:
     """Quita los saludos/cortesía del INICIO de un término de búsqueda.
 
@@ -1013,9 +1078,14 @@ class ToolRuntime:
             # Fallback por principio activo: 'depomedrol' → 'metilprednisolona'.
             # El cliente pregunta por una MARCA que no está, pero su principio
             # activo puede estar en el catálogo (p. ej. ampollas genéricas).
-            alternativas = _dedupe_por_nombre(
-                await self._buscar_por_principio_activo(nombre)
-            )
+            # SOLO se intenta si el término parece una marca de medicamento
+            # real (corto, sin frases del cliente). 'caja cada uno' o
+            # 'van responder qué solución' NO son medicamentos → no adivinar.
+            alternativas: list[dict[str, Any]] = []
+            if _termino_es_medicamento_plausible(nombre):
+                alternativas = _dedupe_por_nombre(
+                    await self._buscar_por_principio_activo(nombre)
+                )
             if alternativas:
                 self.med_not_found = False
                 self.last_term = nombre

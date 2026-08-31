@@ -30,7 +30,13 @@ from app.state import (
     CartItem,
     utcnow,
 )
-from app.tools import ToolRuntime, active_tool_schemas, _formatear_lista_productos, _fmt_ve
+from app.tools import (
+    ToolRuntime,
+    active_tool_schemas,
+    _formatear_lista_productos,
+    _fmt_ve,
+    _termino_es_medicamento_plausible,
+)
 
 logger = logging.getLogger("nea.turn")
 
@@ -1086,40 +1092,53 @@ async def _tool_loop(
                 #    usó un término distinto al deterministicamente correcto.
                 #    Re-consultar con el término extraído puede encontrar productos.
                 if term and (not runtime.consulted_catalog or (runtime.med_not_found and not runtime.catalog_retried)):
-                    runtime.catalog_retried = True
-                    logger.info(
-                        "backstop: forzando buscar_medicamento('%s') — consulted=%s med_not_found=%s",
-                        term, runtime.consulted_catalog, runtime.med_not_found,
-                    )
-                    result = await runtime.execute("buscar_medicamento", {"nombre": term})
-                    messages.append(
-                        {
-                            "role": "assistant",
-                            "content": None,
-                            "tool_calls": [
-                                {
-                                    "id": "bkp",
-                                    "type": "function",
-                                    "function": {
-                                        "name": "buscar_medicamento",
-                                        "arguments": json.dumps(
-                                            {"nombre": term}, ensure_ascii=False
-                                        ),
-                                    },
-                                }
-                            ],
-                        }
-                    )
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": "bkp",
-                            "content": json.dumps(
-                                result, ensure_ascii=False, default=str
-                            ),
-                        }
-                    )
-                    continue  # nueva ronda del LLM, ahora con datos del catálogo
+                    # Nunca forzar la búsqueda con una frase que NO parece un
+                    # medicamento (reclamos, garantías, saludos, "caja cada
+                    # uno"): consultar el catálogo con basura devuelve
+                    # productos irrelevantes que el backstop de contradicción
+                    # le muestra al cliente (GORRO DE ENFERMERA ante un
+                    # reclamo). Se deja que el LLM maneje el turno normal.
+                    if not _termino_es_medicamento_plausible(term):
+                        logger.info(
+                            "backstop: término '%s' no parece medicamento — no fuerzo búsqueda",
+                            term,
+                        )
+                        term = None
+                    else:
+                        runtime.catalog_retried = True
+                        logger.info(
+                            "backstop: forzando buscar_medicamento('%s') — consulted=%s med_not_found=%s",
+                            term, runtime.consulted_catalog, runtime.med_not_found,
+                        )
+                        result = await runtime.execute("buscar_medicamento", {"nombre": term})
+                        messages.append(
+                            {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "bkp",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "buscar_medicamento",
+                                            "arguments": json.dumps(
+                                                {"nombre": term}, ensure_ascii=False
+                                            ),
+                                        },
+                                    }
+                                ],
+                            }
+                        )
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": "bkp",
+                                "content": json.dumps(
+                                    result, ensure_ascii=False, default=str
+                                ),
+                            }
+                        )
+                        continue  # nueva ronda del LLM, ahora con datos del catálogo
             return reply.content  # turno de puro texto
         # content vacío con tool_calls es normal (turno solo-herramientas)
         # Pero si TODAS las tool-calls vienen con arguments vacíos ({}), es un
