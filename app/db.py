@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 import json
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -444,6 +444,21 @@ class PgStore:
         )
 
     # analytics (Fase 1: dashboard de medicamentos más buscados)
+    @staticmethod
+    def _parse_fecha(s: str | None) -> date | None:
+        """Convierte 'YYYY-MM-DD' a date para el filtro de fechas.
+
+        asyncpg NO acepta strings en placeholders con cast `::date` (lanza
+        DataError: 'str' object has no attribute 'toordinal'). Hay que pasar
+        un objeto date real. Devuelve None si el string no es una fecha válida.
+        """
+        if not s:
+            return None
+        try:
+            return date.fromisoformat(s[:10])
+        except ValueError:
+            return None
+
     async def log_med_query(
         self,
         conversation_id: int,
@@ -476,11 +491,13 @@ class PgStore:
         # el encabezado del dashboard de Analítica.
         where = ["provider_id = $1"]
         params: list[Any] = [provider_id]
-        if desde:
-            params.append(desde[:10])
+        desde_d = self._parse_fecha(desde)
+        hasta_d = self._parse_fecha(hasta)
+        if desde_d:
+            params.append(desde_d)
             where.append(f"created_at >= ${len(params)}::date")
-        if hasta:
-            params.append(hasta[:10])
+        if hasta_d:
+            params.append(hasta_d)
             where.append(f"created_at <= (${len(params)}::date + interval '1 day')")
         if q:
             params.append(f"%{q.lower().strip()}%")
@@ -513,11 +530,13 @@ class PgStore:
         # Filtros dinámicos con placeholders.
         where = ["provider_id = $1"]
         params: list[Any] = [provider_id]
-        if desde:
-            params.append(desde[:10])
+        desde_d = self._parse_fecha(desde)
+        hasta_d = self._parse_fecha(hasta)
+        if desde_d:
+            params.append(desde_d)
             where.append(f"created_at >= ${len(params)}::date")
-        if hasta:
-            params.append(hasta[:10])
+        if hasta_d:
+            params.append(hasta_d)
             where.append(f"created_at <= (${len(params)}::date + interval '1 day')")
         if q:
             params.append(f"%{q.lower().strip()}%")
