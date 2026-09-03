@@ -1665,16 +1665,25 @@ def _quitar_pie_carrito_duplicado(texto: str) -> str:
     incluso 2-3 veces: antes de la lista, después, y el backstop lo adjunta de
     nuevo). Este limpiador quita cualquier copia del bloque que no esté al final,
     para que el cliente vea el pie UNA sola vez.
+
+    Tolerante a espacios al final de línea: WhatsApp/markdown suele dejar
+    "opción Z  \\n" (con espacios) en vez de "opción Z\\n", y el regex literal
+    no matchea. Se construye el patrón línea por línea permitiendo [ \\t]* antes
+    de cada salto de línea.
     """
     if not texto:
         return texto
-    # El bloque estándar, con sus 4 líneas. Lo buscamos como bloque contiguo.
-    bloque = MENSAJE_SUGERIDO_CARRITO
-    # Quitar todas las apariciones del bloque (con separadores opcionales).
     import re as _re
-    # Escapar el bloque para usarlo como literal en el regex.
+    # Construir el patrón a partir de las líneas del bloque, permitiendo
+    # espacios/tabs al final de cada línea y saltos de línea flexibles.
+    lineas = MENSAJE_SUGERIDO_CARRITO.split("\n")
+    partes = []
+    for i, ln in enumerate(lineas):
+        partes.append(_re.escape(ln.rstrip()))
+        if i < len(lineas) - 1:
+            partes.append(r"[ \t]*\n[ \t]*")
     pat = _re.compile(
-        r"(?:\n\s*)*" + _re.escape(bloque) + r"(?:\s*\n)*",
+        r"(?:\n[ \t]*)*" + "".join(partes) + r"[ \t]*(?:\n[ \t]*)*",
         _re.MULTILINE,
     )
     sin_pie = pat.sub("\n", texto)
