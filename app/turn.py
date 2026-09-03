@@ -604,6 +604,10 @@ async def run_turn(
         # Quitar frases redundantes del LLM que duplican el bloque estándar
         # ("Si deseas agregarlo a tu carrito...", "indícame cuántas cajas").
         final_text = _quitar_invito_carrito(final_text)
+        # Quitar TODAS las copias del bloque del pie que el LLM haya generado
+        # por su cuenta (imitando el historial), dejando solo la que adjuntamos
+        # al final. Evita el pie duplicado 2-3 veces.
+        final_text = _quitar_pie_carrito_duplicado(final_text)
         final_text = final_text.rstrip()
         if not final_text.endswith(MENSAJE_SUGERIDO_CARRITO):
             logger.info(
@@ -1651,6 +1655,32 @@ def _quitar_invito_carrito(texto: str) -> str:
     ]
     out = "\n".join(lines).strip()
     return out
+
+
+def _quitar_pie_carrito_duplicado(texto: str) -> str:
+    """Elimina TODAS las apariciones del bloque estándar del pie (MENSAJE_SUGERIDO_CARRITO)
+    del texto del LLM, dejando solo la que el backstop adjunta al final.
+
+    El LLM a veces imita el pie del historial y lo genera por su cuenta (a veces
+    incluso 2-3 veces: antes de la lista, después, y el backstop lo adjunta de
+    nuevo). Este limpiador quita cualquier copia del bloque que no esté al final,
+    para que el cliente vea el pie UNA sola vez.
+    """
+    if not texto:
+        return texto
+    # El bloque estándar, con sus 4 líneas. Lo buscamos como bloque contiguo.
+    bloque = MENSAJE_SUGERIDO_CARRITO
+    # Quitar todas las apariciones del bloque (con separadores opcionales).
+    import re as _re
+    # Escapar el bloque para usarlo como literal en el regex.
+    pat = _re.compile(
+        r"(?:\n\s*)*" + _re.escape(bloque) + r"(?:\s*\n)*",
+        _re.MULTILINE,
+    )
+    sin_pie = pat.sub("\n", texto)
+    # Colapsar saltos de línea múltiples.
+    sin_pie = _re.sub(r"\n{3,}", "\n\n", sin_pie).strip()
+    return sin_pie
 
 
 def _parece_consulta_medicamento(texto: str) -> bool:
