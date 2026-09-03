@@ -132,6 +132,18 @@ _PALABRAS_FUNCIONALES = {
     "pregunta", "quiero", "quisiera", "necesito", "buscar", "buscando",
 }
 
+# Palabras que delatan un ACCESORIO/insumo médico, NO un medicamento. El
+# fallback por principio activo (p. ej. 'lantus' → 'insulina') puede devolver
+# accesorios (jeringas, agujas, tiras) que NO son el fármaco que el cliente
+# pidió. Si tras filtrar solo quedan accesorios, el agente debe decir
+# honestamente que el medicamento no está disponible y escalar, en vez de
+# ofrecer una jeringa como si fuera la respuesta a 'Lantus'.
+_ACCESORIOS_MEDICOS = {
+    "jeringa", "jeringas", "aguja", "agujas", "tira", "tiras", "glucotest",
+    "glucómetro", "glucometro", "lanceta", "lancetas", "tirilla",
+    "tirillas", "test", "prueba", "pruebas",
+}
+
 
 def _termino_es_medicamento_plausible(term: str) -> bool:
     """True si el término parece un medicamento, no una frase del cliente.
@@ -672,6 +684,31 @@ def _dedupe_por_nombre(products: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if prev is None or (isinstance(precio, (int, float)) and precio < (prev.get("precio") or 0)):
             mejores[n] = p
     return list(mejores.values())
+
+
+def _es_accesorio_medico(p: dict[str, Any]) -> bool:
+    """True si el producto es un ACCESORIO/insumo médico, no un medicamento.
+
+    El fallback por principio activo (p. ej. 'lantus' → 'insulina') puede
+    devolver accesorios (jeringas, agujas, tiras reactivas) que NO son el
+    fármaco que el cliente pidió. Si tras filtrar solo quedan accesorios, el
+    agente debe decir honestamente que el medicamento no está disponible y
+    escalar, en vez de ofrecer una jeringa como si fuera la respuesta a
+    'Lantus'.
+    """
+    nombre = (p.get("producto") or p.get("nombre") or "").lower()
+    if not nombre:
+        return False
+    nombre_sin = _normalizar_tildes(nombre)
+    for acc in _ACCESORIOS_MEDICOS:
+        if acc in nombre_sin:
+            return True
+    return False
+
+
+def _filtrar_accesorios(products: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Descarta accesorios/insumos médicos de una lista de productos."""
+    return [p for p in products if not _es_accesorio_medico(p)]
 
 
 def _formatear_lista_productos(
@@ -1266,7 +1303,12 @@ class ToolRuntime:
             data = await self._ctx.crm.get_products(
                 self._provider_id, q=principio, limit=20
             )
-            return data.get("products") or []
+            products = data.get("products") or []
+            # Filtrar accesorios/insumos (jeringas, agujas, tiras): el principio
+            # activo 'insulina' matchea la jeringa, que NO es el fármaco que el
+            # cliente pidió. Si solo quedan accesorios, devolver [] para que el
+            # agente diga honestamente que el medicamento no está disponible.
+            return _filtrar_accesorios(products)
         except Exception as exc:
             logger.warning("principio activo: fallo al mapear '%s': %s", nombre, exc)
             return []
