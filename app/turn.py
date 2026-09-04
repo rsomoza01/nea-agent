@@ -51,6 +51,25 @@ MENSAJE_SUGERIDO_CARRITO = (
 
 MAX_TOOL_ROUNDS = 5
 
+# Bloque de farmacia inyectado al system prompt cuando hay providerId. Guía al
+# LLM a distinguir consultas/recetas de medicamentos de otros mensajes del
+# negocio (contratos, página web, chat, comparador, horarios, etc.). Sin esto,
+# el chasis genérico de agendamiento no sabe que este negocio es una farmacia y
+# el LLM puede responder con una búsqueda de catálogo a un mensaje sobre un
+# contrato o un tema administrativo.
+_FARMACIA_BLOCK = """ERES EL AGENTE DE UNA FARMACIA. Tu trabajo principal es atender consultas y recetas de medicamentos: buscar disponibilidad y precio en el catálogo, armar el pedido y cerrar la venta.
+
+CLASIFICA LA INTENCIÓN DEL MENSAJE ANTES DE ACTUAR:
+- CONSULTA DE MEDICAMENTO (usa buscar_medicamento): el cliente nombra un medicamento concreto o describe un síntoma/condición que requiere un fármaco. Ej: "tienes losartán", "busco daflon 500", "necesito paracetamol", "me duele la cabeza, ¿qué me recomiendas?".
+- RECETA (usa el flujo de receta): el cliente manda una foto o lista de 2+ medicamentos.
+- OTRO TEMA DEL NEGOCIO (NO uses buscar_medicamento): contratos, la página web, el chat, el comparador, horarios, ubicación, facturación, proveedores, empleo, alianzas, o cualquier asunto administrativo o comercial que NO sea pedir un medicamento. Responde de forma natural y útil, o deriva al humano si no es tu área. NUNCA busques en el catálogo con palabras como "contrato", "página", "chat", "comparador", "web", "horario".
+
+REGLAS:
+- Si el cliente NO nombra un medicamento concreto, NO llames buscar_medicamento. Responde directamente.
+- Un saludo, una pregunta general o un tema administrativo NO es una consulta de medicamento.
+- Si el cliente pide hablar con una persona o plantea un tema que no es de tu competencia (contratos, página web, etc.), ofrécele pasarlo a un humano con naturalidad."""
+
+
 # El indicador "composing" de Evolution GO dura solo ~25 s (007). Una consulta
 # de medicamento pasa por varias rondas LLM + búsqueda en Firebase y lo supera,
 # así que los 3 puntitos desaparecen antes de llegar las opciones. Este es el
@@ -336,6 +355,11 @@ async def run_turn(
     referral = next((m.referral_headline for m in inbound if m.referral_headline), None)
     offered = await ctx.store.get_offered_slots(conv.id)
     profile = await resolve_profile(ctx)
+    # El providerId del catálogo lo define el CRM por tenant (organization.
+    # provider_id) y llega en el contexto — NO es variable de entorno fija.
+    # Se calcula ANTES de armar el prompt para inyectar el bloque de farmacia.
+    provider_id = (context or {}).get("providerId") or settings.provider_id or ""
+    farmacia = bool(provider_id)
     system = build_system_prompt(
         profile=profile,
         context=context,
@@ -344,6 +368,13 @@ async def run_turn(
         offered=offered,
         tz=_agent_tz(settings),
     )
+    # Bloque de farmacia: guía al LLM a distinguir consultas/recetas de
+    # medicamentos de otros mensajes del negocio (contratos, página web, chat,
+    # comparador, horarios, etc.). Sin esto, el chasis genérico de agendamiento
+    # no sabe que este negocio es una farmacia y el LLM puede responder con una
+    # búsqueda de catálogo a un mensaje sobre un contrato.
+    if farmacia:
+        system = system + "\n\n" + _FARMACIA_BLOCK
 
     # --- Resumen de estado determinista (anti-deriva) ---------------------
     # Inyecta el estado real de la conversación (de la DB, no del LLM) para que
@@ -390,9 +421,7 @@ async def run_turn(
         ]
 
     # --- LLM con tools ----------------------------------------------------
-    # El providerId del catálogo lo define el CRM por tenant (organization.
-    # provider_id) y llega en el contexto — NO es variable de entorno fija.
-    provider_id = (context or {}).get("providerId") or settings.provider_id or ""
+    # provider_id y farmacia ya se calcularon arriba (para el bloque de farmacia).
     runtime = ToolRuntime(ctx, conv, str(crm_conv_id), profile=profile, provider_id=provider_id)
     # Cargar el último producto consultado persistido en el turno anterior
     # (para el backstop de carrito cuando el cliente responde una cantidad).
@@ -414,9 +443,8 @@ async def run_turn(
             runtime.last_options = json.loads(conv.last_options)
         except Exception:
             runtime.last_options = []
-    # Modo farmacia si hay providerId: se exponen las tools de catálogo y se
-    # retiran las de agenda.
-    farmacia = bool(provider_id)
+    # Modo farmacia (providerId ya calculado arriba): se exponen las tools de
+    # catálogo y se retiran las de agenda.
     # Heartbeat de typing: mantiene los 3 puntitos vivos mientras el turno
     # procesa (la consulta de medicamento excede la vida del composing de
     # Evolution, ~25 s). Se cancela al salir del tool_loop.
