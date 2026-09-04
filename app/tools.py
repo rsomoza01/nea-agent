@@ -126,6 +126,11 @@ _PALABRAS_FUNCIONALES = {
     "contactar", "horario", "horarios", "ubicacion", "direccion", "telefono",
     "whatsapp", "web", "pagina", "tienda", "farmacia", "negocio", "producto",
     "productos", "stock", "inventario", "disponibilidad", "existencias",
+    # Conceptos de negocio/contrato/chat que NO son medicamentos. Un mensaje
+    # como "mañana conversamos para dar inicio formal del contrato de la
+    # página y el chat y el comparador" NO es una receta.
+    "chat", "contrato", "contratos", "conversamos", "conversar", "inicio",
+    "formal", "pagina", "paginas", "mañana", "manana", "dar", "damos",
     # Verbos/estados de consulta general que no son fármaco.
     "interesada", "interesado", "interes", "indicar", "indica", "indicame",
     "saber", "sabes", "conocer", "conozco", "averiguar", "consultar", "preguntar",

@@ -2172,6 +2172,13 @@ def _parsear_medicamentos_receta(texto: str) -> list[str]:
         ):
             continue
         term = _extraer_termino_medicamento(linea)
+        # Descartar términos que NO parecen medicamentos (frases de contexto,
+        # conceptos como 'contrato', 'página', 'chat', 'comparador'). Sin este
+        # filtro, un mensaje como "mañana conversamos para dar inicio formal
+        # del contrato de la página y el chat y el comparador" se trataba como
+        # receta y el agente respondía con una lista de medicamentos.
+        if term and not _termino_es_medicamento_plausible(term):
+            continue
         if term and term not in vistos:
             vistos.add(term)
             out.append(term)
