@@ -644,6 +644,19 @@ async def run_turn(
             )
             final_text += "\n\n" + MENSAJE_SUGERIDO_CARRITO
 
+    # Backstop determinista del RESUMEN del carrito: si este turno se llamó
+    # ver_carrito (el cliente pidió el resumen o dijo LISTO) y el carrito tiene
+    # productos, se reemplaza SIEMPRE el texto del LLM por el resumen canónico
+    # (generado en _ver_carrito). Garantiza que por cada medicamento aparezcan
+    # cantidad y subtotal en USD Y Bs, y el total en ambos — aunque el modelo
+    # omita el monto en Bs. Se ejecuta después de los backstops de lista porque
+    # last_products no aplica aquí (ver_carrito consulta cart_items).
+    if farmacia and runtime.cart_summary_text:
+        logger.info(
+            "backstop resumen determinista: reemplazando texto del LLM por el resumen canónico del carrito"
+        )
+        final_text = runtime.cart_summary_text
+
     sent = False
     if final_text and final_text.strip():
         # Sanitiza el markup interno de handoff (si el modelo lo escribió como

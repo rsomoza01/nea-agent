@@ -795,6 +795,12 @@ class ToolRuntime:
         # Lo usa el turno para escalar a humano de forma determinista (no depender
         # de que el LLM llame handoff).
         self.med_not_found = False
+        # Si se llamó ver_carrito este turno, aquí queda el texto determinista del
+        # resumen (cada producto con cantidad y subtotal en USD y Bs, y el total).
+        # turn.py lo usa para reemplazar lo que haya generado el LLM, garantizando
+        # que el monto SIEMPRE aparezca en Bs y por medicamento aunque el modelo
+        # omita ese formato.
+        self.cart_summary_text: str | None = None
 
     async def execute(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -1497,6 +1503,7 @@ class ToolRuntime:
             self._conv.id, session_hours=self._ctx.settings.cart_session_hours
         )
         if not items:
+            self.cart_summary_text = None
             return {
                 "ok": True,
                 "empty": True,
@@ -1504,8 +1511,27 @@ class ToolRuntime:
             }
         total_usd = sum((i.precio_usd or 0) * i.cantidad for i in items)
         total_bs = sum((i.precio_bs or 0) * i.cantidad for i in items)
+        # Resumen determinista: cada producto con cantidad y subtotal en USD y
+        # Bs, y el total en ambos. El LLM lo cita literal; turn.py lo usa como
+        # backstop para que el monto en Bs y el subtotal por medicamento SIEMPRE
+        # aparezcan, aunque el modelo omita el formato.
+        bloque = []
+        bloque.append("🛒 *Productos:*")
+        for i in items:
+            sub_usd = (i.precio_usd or 0) * i.cantidad
+            sub_bs = (i.precio_bs or 0) * i.cantidad
+            bloque.append(f"•⁠  ⁠{i.producto}")
+            bloque.append(f"  Cantidad: {i.cantidad}")
+            bloque.append(f"  Subtotal: ${_fmt_ve(sub_usd)} | Bs {_fmt_ve(sub_bs)}")
+        bloque.append("")
+        bloque.append("*Total:*")
+        bloque.append(f"${_fmt_ve(total_usd)} | Bs {_fmt_ve(total_bs)}")
+        bloque.append("")
+        bloque.append("¿Está todo correcto o deseas agregar algo más?")
+        self.cart_summary_text = "\n".join(bloque)
         return {
             "ok": True,
+            "resumen_para_el_cliente": self.cart_summary_text,
             "items": [
                 {
                     "producto": i.producto,
@@ -1520,9 +1546,10 @@ class ToolRuntime:
             "totalUsd": total_usd,
             "totalBs": total_bs,
             "instrucciones": (
-                "presenta el RESUMEN del pedido: cada producto con cantidad y "
-                "subtotal, y el TOTAL en USD ('$') y en Bs. Pregunta si está "
-                "completo o si quiere agregar algo más."
+                "presenta el RESUMEN del pedido EXACTAMENTE como viene en "
+                "`resumen_para_el_cliente` (cada producto con cantidad y "
+                "subtotal en USD y Bs, y el total en ambos). NO cambies el "
+                "formato ni omitas el monto en Bs."
             ),
         }
 
