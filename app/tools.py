@@ -212,30 +212,38 @@ def _quitar_saludos(term: str) -> str:
     ...). Quita las palabras iniciales que sean saludos/cortesía O verbos de
     consulta, devolviendo el resto. 'epa panadol' → 'panadol'.
     'buenos dias, quiero daflon' → 'daflon'. Devuelve '' si todo era ruido.
+
+    NOTA: opera sobre los TOKENS ORIGINALES (con tildes) y compara cada uno
+    contra el ruido en su forma sin tilde. Un `t.find(w)` previo buscaba el
+    token sin tilde dentro del `t` original acentuado → devolvía -1 para
+    palabras con tilde ('óvulos' → find('ovulos') = -1) y `t[-1:]` escupía la
+    última letra ('u'), así que cualquier consulta con tilde terminaba
+    buscando una letra suelta y el agente decía "no encontré información".
     """
     t = (term or "").strip().lower()
     if not t:
         return ""
-    # Quitar tildes para comparar contra _SALUDOS (sin tildes).
-    t_sin = t.replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u")
-    tokens = re.findall(r"[a-z0-9]+", t_sin)
-    # Ruido inicial que quitar: saludos/cortesía + verbos de consulta comunes.
+    # Tokens originales (preservan tildes); se comparan sin tilde contra el ruido.
+    tokens = re.findall(r"[\wáéíóúñü]+", t, re.UNICODE)
     ruido = _SALUDOS | {
-        # Palabras sueltas de saludos compuestos ('buenos dias', 'buenas tardes').
         "dia", "dias", "tardes", "noches", "mañana", "tarde", "buenos", "buenas",
-        "tienes", "tiene", "tengan", "tienen", "hay", "hay", "venden", "vendes",
-        "quiero", "quiere", "quieres", "quería", "quisiera", "necesito", "busco",
+        "tienes", "tiene", "tengan", "tienen", "hay", "venden", "vendes",
+        "quiero", "quiere", "quieres", "quisiera", "necesito", "busco",
         "buscando", "buscar", "busca", "buscan", "consiguen", "consigues",
         "conseguir", "me", "dan", "dame", "da", "saber", "cuanto", "cuesta",
         "cuestan", "precio", "disponible", "disponibles", "traen", "mande",
     }
+    sin_tilde = lambda w: (
+        w.replace("á", "a").replace("é", "e").replace("í", "i")
+         .replace("ó", "o").replace("ú", "u")
+    )
+    # Saltar ruido inicial y reconstruir el resto con los tokens ORIGINALES.
+    out: list[str] = []
     for w in tokens:
-        if w in ruido:
+        if not out and sin_tilde(w) in ruido:
             continue
-        # Primera palabra que NO es ruido: cortar el término a partir de ella.
-        idx = t.find(w)
-        return t[idx:].strip()
-    return ""
+        out.append(w)
+    return " ".join(out).strip()
 from app.profile import BusinessProfile
 from app.state import AppContext, Conversation, OfferedSlot
 
