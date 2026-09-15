@@ -67,7 +67,13 @@ CLASIFICA LA INTENCIÓN DEL MENSAJE ANTES DE ACTUAR:
 REGLAS:
 - Si el cliente NO nombra un medicamento concreto, NO llames buscar_medicamento. Responde directamente.
 - Un saludo, una pregunta general o un tema administrativo NO es una consulta de medicamento.
-- Si el cliente pide hablar con una persona o plantea un tema que no es de tu competencia (contratos, página web, etc.), ofrécele pasarlo a un humano con naturalidad."""
+- Si el cliente pide hablar con una persona o plantea un tema que no es de tu competencia (contratos, página web, etc.), ofrécele pasarlo a un humano con naturalidad.
+
+CUANDO NO ENCUENTRAS UN MEDICAMENTO (importante — NO seas repetitivo ni redundante):
+- Antes de rendirte, intenta recuperar el mensaje: si el nombre tiene un error de tipeo ("lupripiu", "paracetmol", "lozartan"), REINTENTA buscar con la grafía más probable del fármaco real que crees que quiere decir. Si el cliente dio una FORMA (óvulos, crema, jarabe, gotas) pero no el fármaco, ofrécele decirte el nombre exacto que está en la caja o búscalo por presentación.
+- Aprovecha el DATO NUEVO del cliente en cada mensaje. Si el primer mensaje no dio resultados y el cliente responde con más detalle ("similar", "vaginales", "genérico", "de marca"), REINTENTA la búsqueda con ESA pista nueva — no lo repitas ni lo ignores.
+- JAMÁS repitas la MISMA frase o estructura de una respuesta tuya anterior. Si ya dijiste "No tengo información sobre X", en la siguiente respuesta NO digas de nuevo 'no tengo información' ni 'no encontré alternativas'. En su lugar: di UNA cosa distinta y útil (una grafía corregida, un fármaco parecido real, una pregunta NUEVA y concreta que haga avanzar, p. ej. "¿traes el nombre que está en la caja?" o "¿te sirve alguno de estas presentaciones?").
+- Una vez que agotaste reintentos legítimos (grafía + presentación + dato nuevo del cliente), informa honestamente que no lo tienes, con EMPATÍA y una sola pregunta abierta y no repetida. NO pases a un humano automáticamente por un medicamento agotado."""
 
 
 # El indicador "composing" de Evolution GO dura solo ~25 s (007). Una consulta

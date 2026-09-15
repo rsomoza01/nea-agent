@@ -1285,15 +1285,21 @@ class ToolRuntime:
                 "ok": False,
                 "error": "sin_resultados",
                 "detalle": (
-                    f"no encontrado '{nombre}' en el catálogo. Antes de decir 'no disponible': "
-                    "1) si el nombre puede tener errores de tipeo, reintenta con la grafía "
-                    "más probable (p. ej. 'lozartan'→'losartan', 'paracetmol'→'paracetamol'); "
-                    "2) prueba con el principio activo o sugiere un genérico. Si NADA matchea, "
-                    "informa honestamente que no lo tienes disponible, MUESTRA EMPATÍA y deja el "
-                    "chat abierto: ofrécele buscar otro medicamento, consultarle a un humano SOLO "
-                    "si él lo pide expresamente, o preguntarle si quiere que verifiques algo más. "
-                    "NO pases la conversación a un humano automáticamente por un medicamento "
-                    "agotado — el cliente debe seguir teniendo al agente atendiéndolo."
+                    f"no encontrado '{nombre}' en el catálogo. Recuérdalo: SI YA has "
+                    "respondido un 'no encontrado' en este hilo, NO repitas la misma "
+                    "frase. Antes de decir 'no disponible': 1) si el nombre puede tener "
+                    "errores de tipeo, reintenta con la grafía más probable (p. ej. "
+                    "'lupripiu'→'lopirel'/'lupirad', 'lozartan'→'losartan'); 2) si el "
+                    "cliente dio una FORMA (óvulos, crema, jarabe, gotas, vaginal) pero "
+                    "no el fármaco, pídele el nombre exacto de la caja o busca por esa "
+                    "presentación; 3) aprovecha el DATO NUEVO que el cliente agregó en "
+                    "este mensaje ('similar', 'genérico', 'de marca', la forma) y "
+                    "reintenta con él. Si NADA matchea, informa honestamente que no lo "
+                    "tienes disponible, MUESTRA EMPATÍA, deja el chat abierto y haz UNA "
+                    "pregunta NUEVA y distinta a cualquier anterior (p. ej. ¿traes el "
+                    "nombre que está en la caja?, ¿te sirve otra presentación?). NO lo "
+                    "repitas ni lo pases a un humano automáticamente por un medicamento "
+                    "agotado."
                 ),
                 "busqueda": nombre,
             }
