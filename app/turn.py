@@ -476,13 +476,14 @@ async def run_turn(
     finally:
         typing_stop.set()
         typing_task.cancel()
-        # Reenviar una vez más justo antes de enviar la respuesta: el composing
-        # previo pudo expirar mientras el LLM armaba el texto final. Se manda en
-        # single-fire (delay=0) para NO dejar un timer que re-avive los puntitos
-        # después de que la respuesta ya llegó.
+        # ESPERAR a que el heartbeat muera de verdad (no solo pedir cancel):
+        # `cancel()` solo programa la cancelación; si un post_typing ya estaba
+        # en vuelo, su request llega a Evolution DESPUÉS del `paused` final y
+        # REVIVE los 3 puntitos (bug: los puntitos quedan encendidos tras
+        # responder). Con el await, ningún composing queda en vuelo.
         try:
-            await ctx.crm.post_typing_final(str(crm_conv_id))
-        except Exception:
+            await asyncio.wait_for(typing_task, timeout=2.0)
+        except BaseException:
             pass
 
     # Backstop determinista: al tercer strike el handoff SUCEDE, lo haya
@@ -668,6 +669,14 @@ async def run_turn(
     # ya llegó.
     if sent:
         try:
+            await ctx.crm.post_paused(str(crm_conv_id))
+        except Exception:
+            pass
+        # Segundo `paused` diferido: Evolution (delay=0) puede tardar en procesar
+        # el primero, y si algún composing quedó encolado en su lado, este
+        # re-apagado lo corta. Best-effort, no bloquea el turno.
+        try:
+            await asyncio.sleep(1.0)
             await ctx.crm.post_paused(str(crm_conv_id))
         except Exception:
             pass
