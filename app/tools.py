@@ -1180,21 +1180,23 @@ class ToolRuntime:
                 "error": "sin_provider",
                 "detalle": "no hay catálogo configurado; di que consultarás o haz handoff",
             }
-        # El cliente inició una CONSULTA nueva de medicamento. Si el turno
-        # ANTERIOR ya mostró el Resumen del Pedido (cart_summary_shown), ese
-        # carrito quedó "cerrado": no acumular los nuevos productos sobre él,
-        # aunque siga dentro de la ventana de sesión. Limpiamos el carrito y el
-        # flag para que ESTA consulta arranque un pedido nuevo y solo muestre
-        # sus productos. Si NO se mostró un resumen previo, el carrito sigue vivo
-        # (el cliente puede seguir sumando medicamentos a un mismo pedido).
-        if self._conv.cart_summary_shown:
+        # El cliente inició una CONSULTA nueva de medicamento. El carrito SOLO se
+        # reinicia si el pedido anterior ya se CERRÓ formalmente (LISTO /
+        # finalizar_pedido). El flag `cart_summary_shown` NO sirve para esto:
+        # se activa cada vez que se muestra el Resumen del Pedido, incluido el
+        # flujo normal ("¿Deseas buscar otro medicamento?" → "no" → resumen →
+        # "quiero atamel"), y ahí el cliente está AMPLIANDO el pedido, no
+        # cerrándolo. Usarlo borraba el pedido recién armado (bug 29/09:
+        # resumen de 10 productos → "si atamel" → resumen final con 1 solo).
+        # `cart_closed` se activa únicamente en finalizar_pedido.
+        if self._conv.cart_closed:
             logger.info(
-                "buscar_medicamento: se mostró resumen previo — carrito nuevo para '%s'",
+                "buscar_medicamento: pedido previo cerrado — carrito nuevo para '%s'",
                 nombre,
             )
             await self._ctx.store.cart_clear(self._conv.id)
             await self._ctx.store.update_conversation(
-                self._conv.id, cart_summary_shown=False
+                self._conv.id, cart_closed=False
             )
         self.consulted_catalog = True
         # Normalizar tildes: el catálogo guarda 'potasico' sin tilde; si el
@@ -1680,7 +1682,9 @@ class ToolRuntime:
             bloque.append("💳 *Formas de pago:*")
             bloque.append(pago)
             bloque.append("")
-        bloque.append("¿Está todo correcto o deseas agregar algo más?")
+        bloque.append(
+            "¿Confirmas el pedido con un *SI*, o quieres agregar otro medicamento?"
+        )
         self.cart_summary_text = "\n".join(bloque)
         return {
             "ok": True,
@@ -1731,6 +1735,11 @@ class ToolRuntime:
         except Exception as exc:  # no derribe el turno: best-effort
             logger.warning("tools: no pude registrar pedido en el CRM: %s", exc)
         await self._ctx.store.cart_clear(self._conv.id)
+        # El pedido queda CERRADO: la próxima consulta de medicamento arranca un
+        # carrito nuevo en vez de acumular sobre el ya procesado. Esto es lo que
+        # distingue "finalicé el pedido" de "solo vi el resumen y quiero seguir
+        # agregando" (que mantiene el carrito vivo).
+        await self._ctx.store.update_conversation(self._conv.id, cart_closed=True)
         # Si el Resumen del Pedido ya mostró las formas de pago (ver_carrito,
         # flag persistente cart_summary_shown), NO repetirlas aquí: el mensaje
         # final solo confirma que un humano lo procesará. Leer el flag fresco

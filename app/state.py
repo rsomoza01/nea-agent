@@ -44,10 +44,16 @@ class Conversation:
     # Lista de opciones (productos ordenados por precio) del último
     # buscar_medicamento — para resolver "quiero X cajas de la opción Z".
     last_options: list[dict[str, Any]] | None = None
-    # True tras mostrar el Resumen del Pedido (ver_carrito). Ese pedido queda
-    # "cerrado": la siguiente consulta de medicamento arranca un carrito nuevo,
-    # no acumula sobre el del resumen anterior (aunque esté dentro de la ventana).
+    # True tras mostrar el Resumen del Pedido (ver_carrito). Indica que el
+    # resumen (con formas de pago) ya se mostró en este pedido, para que el
+    # mensaje final no lo repita. NO reinicia el carrito: el cliente puede
+    # seguir agregando productos tras ver el resumen.
     cart_summary_shown: bool = False
+    # True SOLO tras finalizar el pedido (finalizar_pedido / LISTO). A
+    # diferencia de cart_summary_shown, este sí marca el pedido como cerrado:
+    # la siguiente consulta de medicamento arranca un carrito nuevo en vez de
+    # acumular sobre el pedido ya procesado.
+    cart_closed: bool = False
     # Puesta cuando el agente cierra por conversación sin rumbo: mientras
     # viva, el turno guarda silencio (ver app/stall.py).
     stalled_at: datetime | None = None

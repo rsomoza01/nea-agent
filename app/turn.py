@@ -942,8 +942,21 @@ async def _tool_loop(
                 _append_forced_tool(messages, "ver_carrito", {}, result)
                 continue
             # Backstop de finalizar: si el cliente confirma el pedido y el LLM
-            # no llamó finalizar_pedido, lo forzamos.
-            if farmacia and _quiere_finalizar(user_text) and not runtime.finalize_forced:
+            # no llamó finalizar_pedido, lo forzamos. Incluye el "si" suelto
+            # cuando el asistente acaba de preguntar "¿Está todo correcto o
+            # deseas agregar algo más?": ese "si" CONFIRMA el pedido y el LLM lo
+            # leía al revés ("¡Perfecto! ¿Qué deseas agregar?").
+            if (
+                farmacia
+                and not runtime.finalize_forced
+                and (
+                    _quiere_finalizar(user_text)
+                    or (
+                        _pregunta_cierre_resumen(messages)
+                        and _es_confirmacion_resumen(user_text)
+                    )
+                )
+            ):
                 runtime.finalize_forced = True
                 logger.info("backstop finalizar: forzando finalizar_pedido")
                 result = await runtime.execute("finalizar_pedido", {})
@@ -1533,6 +1546,69 @@ def _quiere_finalizar(texto: str) -> bool:
         return False
     t = texto.strip().lower()
     return bool(_INTENTO_FINALIZAR.search(t))
+
+
+# La pregunta de cierre del resumen: "¿Está todo correcto o deseas agregar algo
+# más?" mezcla DOS intenciones en una sola pregunta. Un "si" como respuesta es
+# ambiguo para el LLM, que lo lee como "sí, quiero agregar algo más" (bug 29/09:
+# tras confirmar con "si" respondió "¡Perfecto! ¿Qué deseas agregar al pedido?").
+_PREGUNTA_CIERRE_RESUMEN = (
+    "está todo correcto",
+    "esta todo correcto",
+    "deseas agregar algo",
+    "confirmas el pedido",
+    "quieres agregar otro medicamento",
+)
+
+
+def _ultimo_mensaje_asistente(messages: list[dict[str, Any]]) -> str | None:
+    """Texto del último mensaje del ASISTENTE en `messages`, saltando los
+    mensajes del turno actual del cliente (que van al final) y las
+    tool-calls/tool-results que los backstops insertan (role 'tool' o assistant
+    con content None). Devuelve None si el turno anterior no fue del asistente."""
+    for msg in reversed(messages):
+        role = msg.get("role")
+        if role == "system":
+            return None
+        if role == "tool":
+            continue
+        if role == "assistant":
+            if msg.get("content"):
+                return str(msg["content"])
+            continue
+        if role == "user":
+            continue
+    return None
+
+
+def _pregunta_cierre_resumen(messages: list[dict[str, Any]]) -> bool:
+    """True si el último mensaje del asistente es la pregunta de cierre del
+    Resumen del Pedido ('¿Está todo correcto o deseas agregar algo más?')."""
+    texto = _ultimo_mensaje_asistente(messages)
+    if not texto:
+        return False
+    return any(p in texto.lower() for p in _PREGUNTA_CIERRE_RESUMEN)
+
+
+def _es_confirmacion_resumen(texto: str) -> bool:
+    """True si el texto, en respuesta a la pregunta de cierre del resumen, es una
+    CONFIRMACIÓN de que el pedido está correcto ('si', 'correcto', 'perfecto').
+    Un 'si' seguido de un medicamento ('si, atamel') NO cuenta: ahí el cliente
+    quiere agregar algo al pedido."""
+    if not texto:
+        return False
+    t = texto.strip().lower()
+    # "si, quiero atamel" / "si agrega X" → quiere agregar, no confirmar.
+    if re.search(r"\b(agreg|a[ñn]ad|suma|busca|quiero\s+\w{4,})", t):
+        return False
+    return bool(
+        re.fullmatch(
+            r"\s*(si|sí|ok|okey|dale|correcto|perfecto|exacto|todo correcto|"
+            r"si todo correcto|sí todo correcto|esta bien|está bien|"
+            r"asi es|así es|de acuerdo|claro)[.!,\s]*",
+            t,
+        )
+    )
 
 
 def _append_forced_tool(
