@@ -63,6 +63,7 @@ CLASIFICA LA INTENCIÓN DEL MENSAJE ANTES DE ACTUAR:
 - CONSULTA DE MEDICAMENTO (usa buscar_medicamento): el cliente nombra un medicamento concreto o describe un síntoma/condición que requiere un fármaco. Ej: "tienes losartán", "busco daflon 500", "necesito paracetamol", "me duele la cabeza, ¿qué me recomiendas?".
 - RECETA (usa el flujo de receta): el cliente manda una foto o lista de 2+ medicamentos.
 - OTRO TEMA DEL NEGOCIO (NO uses buscar_medicamento): contratos, la página web, el chat, el comparador, horarios, ubicación, facturación, proveedores, empleo, alianzas, o cualquier asunto administrativo o comercial que NO sea pedir un medicamento. Responde de forma natural y útil, o deriva al humano si no es tu área. NUNCA busques en el catálogo con palabras como "contrato", "página", "chat", "comparador", "web", "horario".
+- NOTIFICACIÓN INTERNA DEL SISTEMA (NO uses buscar_medicamento ni el flujo de receta): mensajes con campos etiquetados como "*Fecha:*", "*Nombre:*", "*Farmacia:*", "*Teléfono:*", o avisos de "se ha realizado una reserva / nueva cita / reserva de demo / pedido confirmado". NO son del cliente: son avisos automáticos. NO busques FECHA, NOMBRE, FARMACIA ni TELÉFONO en el catálogo, ni respondas con una lista de productos. Responde con UNA línea breve de acuse (p. ej. "✅ Recibido: reserva de demo para FARMAUNO el 2/10/2026 a las 10:00 AM.") y nada más.
 
 REGLAS:
 - Si el cliente NO nombra un medicamento concreto, NO llames buscar_medicamento. Responde directamente.
@@ -2243,6 +2244,57 @@ def _lineas_lista_medicamentos(texto: str) -> list[str]:
     return [l.strip() for l in t.splitlines() if l.strip()]
 
 
+def _es_linea_notificacion_admin(linea: str) -> bool:
+    """True si la línea es METADATO de una notificación del sistema (reserva,
+    confirmación, recordatorio) y NO un medicamento.
+
+    Caso real: la notificación de reserva de demo llegaba al WhatsApp del agente
+    y se procesaba como RECETA —
+
+        Se ha realizado una reserva para una demo:
+        *Fecha:* 2/10/2026 a las 10:00 AM
+        *Nombre:* Madelaine Altamiranda
+        *Farmacia:* FARMAUNO
+
+    → el agente respondía "⚠️ No disponibles en el catálogo: FECHA, NOMBRE
+    MADELAINE ALTAMIRANDA, FARMACIA FARMAUNO".
+
+    Detecta: (a) etiquetas con dos puntos ("Fecha:", "*Nombre:*", "Teléfono ="…),
+    y (b) los propios nombres de campo de una reserva, sin necesidad de dos
+    puntos (una línea suelta "Farmacia FARMAUNO" tampoco es un fármaco).
+    """
+    if not linea:
+        return True
+    t = linea.strip().lower()
+    if not t:
+        return True
+    # (a) Etiqueta: "algo:" / "*algo:*" / "algo = valor" al inicio de la línea.
+    # Cualquier campo con dos puntos es un metadato, no un nombre de fármaco
+    # (los medicamentos no se escriben "ESOZ:" en una receta).
+    if re.match(r"^[\s*_>-]*[a-záéíóúüñ][a-záéíóúüñ\s]{1,24}[\s*_]*\s*[:=]", t):
+        return True
+    # (b) Campos típicos de una reserva/notificación, con o sin dos puntos.
+    if re.match(
+        r"^[\s*_>-]*(?:fecha|nombre|nombres|apellido|apellidos|farmacia|"
+        r"tel[eé]fono|telefonos?|celular|whatsapp|contacto|correo|email|e-?mail|"
+        r"direcci[oó]n|hora|horario|d[ií]a|sede|sucursal|ciudad|pa[ií]s|"
+        r"c[eé]dula|rif|responsable|paciente|cliente|asunto|motivo|referencia|"
+        r"c[oó]digo|reserva|pedido|cita|demo|precio|total|monto|estatus|estado|"
+        r"observaci[oó]n(?:es)?|nota|comentario)\b",
+        t,
+    ):
+        return True
+    # (c) Encabezados de la propia notificación.
+    if re.search(
+        r"(se ha realizado una reserva|reserva para una demo|"
+        r"ha reservado una demo|nueva reserva|reserva confirmada|"
+        r"reserva de demo)",
+        t,
+    ):
+        return True
+    return False
+
+
 def _es_solo_presentacion(linea: str) -> bool:
     """True si la línea es SOLO dosis/presentación sin nombre de fármaco.
 
@@ -2299,6 +2351,10 @@ def _parsear_medicamentos_receta(texto: str) -> list[str]:
         # Línea que es SOLO dosis/presentación (sin fármaco): fragmento del
         # MISMO medicamento (OCR de caja), no un medicamento nuevo.
         if _es_solo_presentacion(linea):
+            continue
+        # Metadato de una notificación del sistema (reserva/cita/confirmación):
+        # "*Fecha:* ...", "*Nombre:* ...", "*Farmacia:* ..." NO son medicamentos.
+        if _es_linea_notificacion_admin(linea):
             continue
         # Líneas que parecen instrucciones de la receta, no medicamentos.
         if re.fullmatch(
