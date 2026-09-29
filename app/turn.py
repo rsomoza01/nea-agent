@@ -1451,17 +1451,21 @@ def _extraer_eleccion_opcion(texto: str) -> tuple[int, int] | None:
 def _pregunta_es_cantidad(messages: list[dict[str, Any]]) -> bool:
     """True si el último mensaje del asistente en el historial pregunta por
     CANTIDAD ('¿cuántas cajas/unidades?') — el número que responda el cliente
-    es una cantidad, no la elección de una opción."""
-    for msg in reversed(messages):
-        if msg.get("role") == "assistant" and msg.get("content"):
-            texto = str(msg["content"]).lower()
-            return bool(
-                re.search(r"cu[aá]ntas?\s+(?:cajas?|unidades?|blister|ampollas?)", texto)
-                or re.search(r"qu[eé] cantidad", texto)
-            )
-        if msg.get("role") == "user":
-            break
-    return False
+    es una cantidad, no la elección de una opción.
+
+    OJO: se usa `_ultimo_mensaje_asistente` y NO un bucle que corte en el primer
+    `user` desde el final. `messages` incluye el mensaje del cliente del turno
+    ACTUAL al final, así que ese bucle devolvía siempre False y este guard nunca
+    se activaba (dead code): un "2" tras "¿cuántas cajas?" se interpretaba como
+    OPCIÓN 2 en vez de CANTIDAD 2."""
+    texto = _ultimo_mensaje_asistente(messages)
+    if not texto:
+        return False
+    texto = texto.lower()
+    return bool(
+        re.search(r"cu[aá]ntas?\s+(?:cajas?|unidades?|blister|ampollas?)", texto)
+        or re.search(r"qu[eé] cantidad", texto)
+    )
 
 
 def _es_respuesta_cantidad(texto: str, has_last_product: bool = False) -> bool:
