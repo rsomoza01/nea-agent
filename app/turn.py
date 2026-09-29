@@ -669,6 +669,12 @@ async def run_turn(
     # Se ejecutan AL FINAL: un veto reemplaza el texto por plantilla constante
     # y/o fuerza handoff. Cada activación queda logueada para el conteo de
     # vetos del reporte QA.
+    # Negativa con carrito activo: el cliente dijo "no" a más medicamentos.
+    # En este turno G1-ext/G5/G6 no deben pisar el resumen del pedido.
+    es_negativa_con_carrito = (
+        farmacia and cart_activo
+        and _quiere_ver_resumen(user_text, tiene_carrito=True)
+    )
     if farmacia and final_text:
         # G2 — política fuera del KB: escalado hardcodeado, jamás generación.
         if guards.intencion_fuera_kb(user_text):
@@ -698,7 +704,8 @@ async def run_turn(
         # G1-ext — superlativo de precio ('el más económico', 'el genérico de')
         # afirmado por el agente sin datos del catálogo en este turno.
         elif (
-            not runtime.last_products
+            not es_negativa_con_carrito
+            and not runtime.last_products
             and not runtime.cart_summary_text
             and guards.cita_superlativo_precio(final_text)
         ):
@@ -708,7 +715,8 @@ async def run_turn(
         # catálogo. El agente inventa la composición de un medicamento cuando
         # no hay resultados de tool en este turno (Daflon → 'ramiprilo').
         elif (
-            guards.afirma_composicion(final_text)
+            not es_negativa_con_carrito
+            and guards.afirma_composicion(final_text)
             and not runtime.last_products
         ):
             logger.warning("guarda G5 VETO: afirmación de composición/genérico sin respaldo — plantilla sin-composición")
@@ -719,7 +727,8 @@ async def run_turn(
         # el LLM que inventa datos aunque el cliente NO haya pedido precio
         # explícitamente (p. ej. "el Daflon cuesta $5", "hay 10 unidades").
         elif (
-            not runtime.last_products
+            not es_negativa_con_carrito
+            and not runtime.last_products
             and not runtime.cart_summary_text
             and guards.afirma_dato_catalogo(final_text)
         ):
@@ -784,6 +793,12 @@ async def run_turn(
             logger.warning("guarda G11 VETO: agente prometió escalado sin handoff — plantilla G11")
             final_text = guards.TPL_G11_ESCALADO
             runtime.handoff_reason = "lead_request"
+
+    # Negativa con carrito: si algún guard pisó el texto, restaurar el resumen
+    # canónico del carrito (ver_carrito ya se forzó en el tool_loop).
+    if es_negativa_con_carrito and runtime.cart_summary_text and final_text != runtime.cart_summary_text:
+        logger.info("negativa con carrito: restaurando resumen canónico tras posible veto")
+        final_text = runtime.cart_summary_text
 
     sent = False
     if final_text and final_text.strip():
