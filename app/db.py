@@ -37,6 +37,7 @@ _CONV_COLUMNS = frozenset(
         "last_term",
         "last_options",
         "cart_summary_shown",
+        "cart_closed",
     }
 )
 
@@ -57,6 +58,7 @@ def _conv_from_row(row: asyncpg.Record) -> Conversation:
         last_term=row.get("last_term"),
         last_options=row.get("last_options"),
         cart_summary_shown=row.get("cart_summary_shown", False),
+        cart_closed=row.get("cart_closed", False),
     )
 
 
@@ -200,6 +202,7 @@ class PgStore:
                     SET phase = 'descubrimiento', greeted = FALSE,
                         media_notice_sent = FALSE, followup_due_at = NULL,
                         followup_sent = FALSE, stalled_at = NULL,
+                        cart_summary_shown = FALSE, cart_closed = FALSE,
                         updated_at = now()
                     WHERE id = $1
                     """,

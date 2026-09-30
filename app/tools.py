@@ -212,30 +212,38 @@ def _quitar_saludos(term: str) -> str:
     ...). Quita las palabras iniciales que sean saludos/cortesía O verbos de
     consulta, devolviendo el resto. 'epa panadol' → 'panadol'.
     'buenos dias, quiero daflon' → 'daflon'. Devuelve '' si todo era ruido.
+
+    NOTA: opera sobre los TOKENS ORIGINALES (con tildes) y compara cada uno
+    contra el ruido en su forma sin tilde. Un `t.find(w)` previo buscaba el
+    token sin tilde dentro del `t` original acentuado → devolvía -1 para
+    palabras con tilde ('óvulos' → find('ovulos') = -1) y `t[-1:]` escupía la
+    última letra ('u'), así que cualquier consulta con tilde terminaba
+    buscando una letra suelta y el agente decía "no encontré información".
     """
     t = (term or "").strip().lower()
     if not t:
         return ""
-    # Quitar tildes para comparar contra _SALUDOS (sin tildes).
-    t_sin = t.replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u")
-    tokens = re.findall(r"[a-z0-9]+", t_sin)
-    # Ruido inicial que quitar: saludos/cortesía + verbos de consulta comunes.
+    # Tokens originales (preservan tildes); se comparan sin tilde contra el ruido.
+    tokens = re.findall(r"[\wáéíóúñü]+", t, re.UNICODE)
     ruido = _SALUDOS | {
-        # Palabras sueltas de saludos compuestos ('buenos dias', 'buenas tardes').
         "dia", "dias", "tardes", "noches", "mañana", "tarde", "buenos", "buenas",
-        "tienes", "tiene", "tengan", "tienen", "hay", "hay", "venden", "vendes",
-        "quiero", "quiere", "quieres", "quería", "quisiera", "necesito", "busco",
+        "tienes", "tiene", "tengan", "tienen", "hay", "venden", "vendes",
+        "quiero", "quiere", "quieres", "quisiera", "necesito", "busco",
         "buscando", "buscar", "busca", "buscan", "consiguen", "consigues",
         "conseguir", "me", "dan", "dame", "da", "saber", "cuanto", "cuesta",
         "cuestan", "precio", "disponible", "disponibles", "traen", "mande",
     }
+    sin_tilde = lambda w: (
+        w.replace("á", "a").replace("é", "e").replace("í", "i")
+         .replace("ó", "o").replace("ú", "u")
+    )
+    # Saltar ruido inicial y reconstruir el resto con los tokens ORIGINALES.
+    out: list[str] = []
     for w in tokens:
-        if w in ruido:
+        if not out and sin_tilde(w) in ruido:
             continue
-        # Primera palabra que NO es ruido: cortar el término a partir de ella.
-        idx = t.find(w)
-        return t[idx:].strip()
-    return ""
+        out.append(w)
+    return " ".join(out).strip()
 from app.profile import BusinessProfile
 from app.state import AppContext, Conversation, OfferedSlot
 
@@ -1172,21 +1180,23 @@ class ToolRuntime:
                 "error": "sin_provider",
                 "detalle": "no hay catálogo configurado; di que consultarás o haz handoff",
             }
-        # El cliente inició una CONSULTA nueva de medicamento. Si el turno
-        # ANTERIOR ya mostró el Resumen del Pedido (cart_summary_shown), ese
-        # carrito quedó "cerrado": no acumular los nuevos productos sobre él,
-        # aunque siga dentro de la ventana de sesión. Limpiamos el carrito y el
-        # flag para que ESTA consulta arranque un pedido nuevo y solo muestre
-        # sus productos. Si NO se mostró un resumen previo, el carrito sigue vivo
-        # (el cliente puede seguir sumando medicamentos a un mismo pedido).
-        if self._conv.cart_summary_shown:
+        # El cliente inició una CONSULTA nueva de medicamento. El carrito SOLO se
+        # reinicia si el pedido anterior ya se CERRÓ formalmente (LISTO /
+        # finalizar_pedido). El flag `cart_summary_shown` NO sirve para esto:
+        # se activa cada vez que se muestra el Resumen del Pedido, incluido el
+        # flujo normal ("¿Deseas buscar otro medicamento?" → "no" → resumen →
+        # "quiero atamel"), y ahí el cliente está AMPLIANDO el pedido, no
+        # cerrándolo. Usarlo borraba el pedido recién armado (bug 29/09:
+        # resumen de 10 productos → "si atamel" → resumen final con 1 solo).
+        # `cart_closed` se activa únicamente en finalizar_pedido.
+        if self._conv.cart_closed:
             logger.info(
-                "buscar_medicamento: se mostró resumen previo — carrito nuevo para '%s'",
+                "buscar_medicamento: pedido previo cerrado — carrito nuevo para '%s'",
                 nombre,
             )
             await self._ctx.store.cart_clear(self._conv.id)
             await self._ctx.store.update_conversation(
-                self._conv.id, cart_summary_shown=False
+                self._conv.id, cart_closed=False
             )
         self.consulted_catalog = True
         # Normalizar tildes: el catálogo guarda 'potasico' sin tilde; si el
@@ -1285,15 +1295,21 @@ class ToolRuntime:
                 "ok": False,
                 "error": "sin_resultados",
                 "detalle": (
-                    f"no encontrado '{nombre}' en el catálogo. Antes de decir 'no disponible': "
-                    "1) si el nombre puede tener errores de tipeo, reintenta con la grafía "
-                    "más probable (p. ej. 'lozartan'→'losartan', 'paracetmol'→'paracetamol'); "
-                    "2) prueba con el principio activo o sugiere un genérico. Si NADA matchea, "
-                    "informa honestamente que no lo tienes disponible, MUESTRA EMPATÍA y deja el "
-                    "chat abierto: ofrécele buscar otro medicamento, consultarle a un humano SOLO "
-                    "si él lo pide expresamente, o preguntarle si quiere que verifiques algo más. "
-                    "NO pases la conversación a un humano automáticamente por un medicamento "
-                    "agotado — el cliente debe seguir teniendo al agente atendiéndolo."
+                    f"no encontrado '{nombre}' en el catálogo. Recuérdalo: SI YA has "
+                    "respondido un 'no encontrado' en este hilo, NO repitas la misma "
+                    "frase. Antes de decir 'no disponible': 1) si el nombre puede tener "
+                    "errores de tipeo, reintenta con la grafía más probable (p. ej. "
+                    "'lupripiu'→'lopirel'/'lupirad', 'lozartan'→'losartan'); 2) si el "
+                    "cliente dio una FORMA (óvulos, crema, jarabe, gotas, vaginal) pero "
+                    "no el fármaco, pídele el nombre exacto de la caja o busca por esa "
+                    "presentación; 3) aprovecha el DATO NUEVO que el cliente agregó en "
+                    "este mensaje ('similar', 'genérico', 'de marca', la forma) y "
+                    "reintenta con él. Si NADA matchea, informa honestamente que no lo "
+                    "tienes disponible, MUESTRA EMPATÍA, deja el chat abierto y haz UNA "
+                    "pregunta NUEVA y distinta a cualquier anterior (p. ej. ¿traes el "
+                    "nombre que está en la caja?, ¿te sirve otra presentación?). NO lo "
+                    "repitas ni lo pases a un humano automáticamente por un medicamento "
+                    "agotado."
                 ),
                 "busqueda": nombre,
             }
@@ -1666,7 +1682,9 @@ class ToolRuntime:
             bloque.append("💳 *Formas de pago:*")
             bloque.append(pago)
             bloque.append("")
-        bloque.append("¿Está todo correcto o deseas agregar algo más?")
+        bloque.append(
+            "¿Confirmas el pedido con un *SI*, o quieres agregar otro medicamento?"
+        )
         self.cart_summary_text = "\n".join(bloque)
         return {
             "ok": True,
@@ -1717,6 +1735,11 @@ class ToolRuntime:
         except Exception as exc:  # no derribe el turno: best-effort
             logger.warning("tools: no pude registrar pedido en el CRM: %s", exc)
         await self._ctx.store.cart_clear(self._conv.id)
+        # El pedido queda CERRADO: la próxima consulta de medicamento arranca un
+        # carrito nuevo en vez de acumular sobre el ya procesado. Esto es lo que
+        # distingue "finalicé el pedido" de "solo vi el resumen y quiero seguir
+        # agregando" (que mantiene el carrito vivo).
+        await self._ctx.store.update_conversation(self._conv.id, cart_closed=True)
         # Si el Resumen del Pedido ya mostró las formas de pago (ver_carrito,
         # flag persistente cart_summary_shown), NO repetirlas aquí: el mensaje
         # final solo confirma que un humano lo procesará. Leer el flag fresco

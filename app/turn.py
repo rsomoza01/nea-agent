@@ -64,11 +64,18 @@ CLASIFICA LA INTENCIÓN DEL MENSAJE ANTES DE ACTUAR:
 - CONSULTA DE MEDICAMENTO (usa buscar_medicamento): el cliente nombra un medicamento concreto o describe un síntoma/condición que requiere un fármaco. Ej: "tienes losartán", "busco daflon 500", "necesito paracetamol", "me duele la cabeza, ¿qué me recomiendas?".
 - RECETA (usa el flujo de receta): el cliente manda una foto o lista de 2+ medicamentos.
 - OTRO TEMA DEL NEGOCIO (NO uses buscar_medicamento): contratos, la página web, el chat, el comparador, horarios, ubicación, facturación, proveedores, empleo, alianzas, o cualquier asunto administrativo o comercial que NO sea pedir un medicamento. Responde de forma natural y útil, o deriva al humano si no es tu área. NUNCA busques en el catálogo con palabras como "contrato", "página", "chat", "comparador", "web", "horario".
+- NOTIFICACIÓN INTERNA DEL SISTEMA (NO uses buscar_medicamento ni el flujo de receta): mensajes con campos etiquetados como "*Fecha:*", "*Nombre:*", "*Farmacia:*", "*Teléfono:*", o avisos de "se ha realizado una reserva / nueva cita / reserva de demo / pedido confirmado". NO son del cliente: son avisos automáticos. NO busques FECHA, NOMBRE, FARMACIA ni TELÉFONO en el catálogo, ni respondas con una lista de productos. Responde con UNA línea breve de acuse (p. ej. "✅ Recibido: reserva de demo para FARMAUNO el 2/10/2026 a las 10:00 AM.") y nada más.
 
 REGLAS:
 - Si el cliente NO nombra un medicamento concreto, NO llames buscar_medicamento. Responde directamente.
 - Un saludo, una pregunta general o un tema administrativo NO es una consulta de medicamento.
-- Si el cliente pide hablar con una persona o plantea un tema que no es de tu competencia (contratos, página web, etc.), ofrécele pasarlo a un humano con naturalidad."""
+- Si el cliente pide hablar con una persona o plantea un tema que no es de tu competencia (contratos, página web, etc.), ofrécele pasarlo a un humano con naturalidad.
+
+CUANDO NO ENCUENTRAS UN MEDICAMENTO (importante — NO seas repetitivo ni redundante):
+- Antes de rendirte, intenta recuperar el mensaje: si el nombre tiene un error de tipeo ("lupripiu", "paracetmol", "lozartan"), REINTENTA buscar con la grafía más probable del fármaco real que crees que quiere decir. Si el cliente dio una FORMA (óvulos, crema, jarabe, gotas) pero no el fármaco, ofrécele decirte el nombre exacto que está en la caja o búscalo por presentación.
+- Aprovecha el DATO NUEVO del cliente en cada mensaje. Si el primer mensaje no dio resultados y el cliente responde con más detalle ("similar", "vaginales", "genérico", "de marca"), REINTENTA la búsqueda con ESA pista nueva — no lo repitas ni lo ignores.
+- JAMÁS repitas la MISMA frase o estructura de una respuesta tuya anterior. Si ya dijiste "No tengo información sobre X", en la siguiente respuesta NO digas de nuevo 'no tengo información' ni 'no encontré alternativas'. En su lugar: di UNA cosa distinta y útil (una grafía corregida, un fármaco parecido real, una pregunta NUEVA y concreta que haga avanzar, p. ej. "¿traes el nombre que está en la caja?" o "¿te sirve alguno de estas presentaciones?").
+- Una vez que agotaste reintentos legítimos (grafía + presentación + dato nuevo del cliente), informa honestamente que no lo tienes, con EMPATÍA y una sola pregunta abierta y no repetida. NO pases a un humano automáticamente por un medicamento agotado."""
 
 
 # El indicador "composing" de Evolution GO dura solo ~25 s (007). Una consulta
@@ -483,13 +490,14 @@ async def run_turn(
     finally:
         typing_stop.set()
         typing_task.cancel()
-        # Reenviar una vez más justo antes de enviar la respuesta: el composing
-        # previo pudo expirar mientras el LLM armaba el texto final. Se manda en
-        # single-fire (delay=0) para NO dejar un timer que re-avive los puntitos
-        # después de que la respuesta ya llegó.
+        # ESPERAR a que el heartbeat muera de verdad (no solo pedir cancel):
+        # `cancel()` solo programa la cancelación; si un post_typing ya estaba
+        # en vuelo, su request llega a Evolution DESPUÉS del `paused` final y
+        # REVIVE los 3 puntitos (bug: los puntitos quedan encendidos tras
+        # responder). Con el await, ningún composing queda en vuelo.
         try:
-            await ctx.crm.post_typing_final(str(crm_conv_id))
-        except Exception:
+            await asyncio.wait_for(typing_task, timeout=2.0)
+        except BaseException:
             pass
 
     # Backstop determinista: al tercer strike el handoff SUCEDE, lo haya
@@ -821,6 +829,14 @@ async def run_turn(
             await ctx.crm.post_paused(str(crm_conv_id))
         except Exception:
             pass
+        # Segundo `paused` diferido: Evolution (delay=0) puede tardar en procesar
+        # el primero, y si algún composing quedó encolado en su lado, este
+        # re-apagado lo corta. Best-effort, no bloquea el turno.
+        try:
+            await asyncio.sleep(1.0)
+            await ctx.crm.post_paused(str(crm_conv_id))
+        except Exception:
+            pass
 
     # El handoff se ejecuta DESPUÉS de la despedida (si no, el CRM la rechaza
     # con 409 ai_paused). EXCEPCIÓN: si hay carrito activo, el cliente está en
@@ -1083,8 +1099,21 @@ async def _tool_loop(
                 _append_forced_tool(messages, "ver_carrito", {}, result)
                 continue
             # Backstop de finalizar: si el cliente confirma el pedido y el LLM
-            # no llamó finalizar_pedido, lo forzamos.
-            if farmacia and _quiere_finalizar(user_text) and not runtime.finalize_forced:
+            # no llamó finalizar_pedido, lo forzamos. Incluye el "si" suelto
+            # cuando el asistente acaba de preguntar "¿Está todo correcto o
+            # deseas agregar algo más?": ese "si" CONFIRMA el pedido y el LLM lo
+            # leía al revés ("¡Perfecto! ¿Qué deseas agregar?").
+            if (
+                farmacia
+                and not runtime.finalize_forced
+                and (
+                    _quiere_finalizar(user_text)
+                    or (
+                        _pregunta_cierre_resumen(messages)
+                        and _es_confirmacion_resumen(user_text)
+                    )
+                )
+            ):
                 runtime.finalize_forced = True
                 logger.info("backstop finalizar: forzando finalizar_pedido")
                 result = await runtime.execute("finalizar_pedido", {})
@@ -1579,17 +1608,21 @@ def _extraer_eleccion_opcion(texto: str) -> tuple[int, int] | None:
 def _pregunta_es_cantidad(messages: list[dict[str, Any]]) -> bool:
     """True si el último mensaje del asistente en el historial pregunta por
     CANTIDAD ('¿cuántas cajas/unidades?') — el número que responda el cliente
-    es una cantidad, no la elección de una opción."""
-    for msg in reversed(messages):
-        if msg.get("role") == "assistant" and msg.get("content"):
-            texto = str(msg["content"]).lower()
-            return bool(
-                re.search(r"cu[aá]ntas?\s+(?:cajas?|unidades?|blister|ampollas?)", texto)
-                or re.search(r"qu[eé] cantidad", texto)
-            )
-        if msg.get("role") == "user":
-            break
-    return False
+    es una cantidad, no la elección de una opción.
+
+    OJO: se usa `_ultimo_mensaje_asistente` y NO un bucle que corte en el primer
+    `user` desde el final. `messages` incluye el mensaje del cliente del turno
+    ACTUAL al final, así que ese bucle devolvía siempre False y este guard nunca
+    se activaba (dead code): un "2" tras "¿cuántas cajas?" se interpretaba como
+    OPCIÓN 2 en vez de CANTIDAD 2."""
+    texto = _ultimo_mensaje_asistente(messages)
+    if not texto:
+        return False
+    texto = texto.lower()
+    return bool(
+        re.search(r"cu[aá]ntas?\s+(?:cajas?|unidades?|blister|ampollas?)", texto)
+        or re.search(r"qu[eé] cantidad", texto)
+    )
 
 
 def _es_respuesta_cantidad(texto: str, has_last_product: bool = False) -> bool:
@@ -1674,6 +1707,69 @@ def _quiere_finalizar(texto: str) -> bool:
         return False
     t = texto.strip().lower()
     return bool(_INTENTO_FINALIZAR.search(t))
+
+
+# La pregunta de cierre del resumen: "¿Está todo correcto o deseas agregar algo
+# más?" mezcla DOS intenciones en una sola pregunta. Un "si" como respuesta es
+# ambiguo para el LLM, que lo lee como "sí, quiero agregar algo más" (bug 29/09:
+# tras confirmar con "si" respondió "¡Perfecto! ¿Qué deseas agregar al pedido?").
+_PREGUNTA_CIERRE_RESUMEN = (
+    "está todo correcto",
+    "esta todo correcto",
+    "deseas agregar algo",
+    "confirmas el pedido",
+    "quieres agregar otro medicamento",
+)
+
+
+def _ultimo_mensaje_asistente(messages: list[dict[str, Any]]) -> str | None:
+    """Texto del último mensaje del ASISTENTE en `messages`, saltando los
+    mensajes del turno actual del cliente (que van al final) y las
+    tool-calls/tool-results que los backstops insertan (role 'tool' o assistant
+    con content None). Devuelve None si el turno anterior no fue del asistente."""
+    for msg in reversed(messages):
+        role = msg.get("role")
+        if role == "system":
+            return None
+        if role == "tool":
+            continue
+        if role == "assistant":
+            if msg.get("content"):
+                return str(msg["content"])
+            continue
+        if role == "user":
+            continue
+    return None
+
+
+def _pregunta_cierre_resumen(messages: list[dict[str, Any]]) -> bool:
+    """True si el último mensaje del asistente es la pregunta de cierre del
+    Resumen del Pedido ('¿Está todo correcto o deseas agregar algo más?')."""
+    texto = _ultimo_mensaje_asistente(messages)
+    if not texto:
+        return False
+    return any(p in texto.lower() for p in _PREGUNTA_CIERRE_RESUMEN)
+
+
+def _es_confirmacion_resumen(texto: str) -> bool:
+    """True si el texto, en respuesta a la pregunta de cierre del resumen, es una
+    CONFIRMACIÓN de que el pedido está correcto ('si', 'correcto', 'perfecto').
+    Un 'si' seguido de un medicamento ('si, atamel') NO cuenta: ahí el cliente
+    quiere agregar algo al pedido."""
+    if not texto:
+        return False
+    t = texto.strip().lower()
+    # "si, quiero atamel" / "si agrega X" → quiere agregar, no confirmar.
+    if re.search(r"\b(agreg|a[ñn]ad|suma|busca|quiero\s+\w{4,})", t):
+        return False
+    return bool(
+        re.fullmatch(
+            r"\s*(si|sí|ok|okey|dale|correcto|perfecto|exacto|todo correcto|"
+            r"si todo correcto|sí todo correcto|esta bien|está bien|"
+            r"asi es|así es|de acuerdo|claro)[.!,\s]*",
+            t,
+        )
+    )
 
 
 def _append_forced_tool(
@@ -2304,6 +2400,57 @@ def _lineas_lista_medicamentos(texto: str) -> list[str]:
     return [l.strip() for l in t.splitlines() if l.strip()]
 
 
+def _es_linea_notificacion_admin(linea: str) -> bool:
+    """True si la línea es METADATO de una notificación del sistema (reserva,
+    confirmación, recordatorio) y NO un medicamento.
+
+    Caso real: la notificación de reserva de demo llegaba al WhatsApp del agente
+    y se procesaba como RECETA —
+
+        Se ha realizado una reserva para una demo:
+        *Fecha:* 2/10/2026 a las 10:00 AM
+        *Nombre:* Madelaine Altamiranda
+        *Farmacia:* FARMAUNO
+
+    → el agente respondía "⚠️ No disponibles en el catálogo: FECHA, NOMBRE
+    MADELAINE ALTAMIRANDA, FARMACIA FARMAUNO".
+
+    Detecta: (a) etiquetas con dos puntos ("Fecha:", "*Nombre:*", "Teléfono ="…),
+    y (b) los propios nombres de campo de una reserva, sin necesidad de dos
+    puntos (una línea suelta "Farmacia FARMAUNO" tampoco es un fármaco).
+    """
+    if not linea:
+        return True
+    t = linea.strip().lower()
+    if not t:
+        return True
+    # (a) Etiqueta: "algo:" / "*algo:*" / "algo = valor" al inicio de la línea.
+    # Cualquier campo con dos puntos es un metadato, no un nombre de fármaco
+    # (los medicamentos no se escriben "ESOZ:" en una receta).
+    if re.match(r"^[\s*_>-]*[a-záéíóúüñ][a-záéíóúüñ\s]{1,24}[\s*_]*\s*[:=]", t):
+        return True
+    # (b) Campos típicos de una reserva/notificación, con o sin dos puntos.
+    if re.match(
+        r"^[\s*_>-]*(?:fecha|nombre|nombres|apellido|apellidos|farmacia|"
+        r"tel[eé]fono|telefonos?|celular|whatsapp|contacto|correo|email|e-?mail|"
+        r"direcci[oó]n|hora|horario|d[ií]a|sede|sucursal|ciudad|pa[ií]s|"
+        r"c[eé]dula|rif|responsable|paciente|cliente|asunto|motivo|referencia|"
+        r"c[oó]digo|reserva|pedido|cita|demo|precio|total|monto|estatus|estado|"
+        r"observaci[oó]n(?:es)?|nota|comentario)\b",
+        t,
+    ):
+        return True
+    # (c) Encabezados de la propia notificación.
+    if re.search(
+        r"(se ha realizado una reserva|reserva para una demo|"
+        r"ha reservado una demo|nueva reserva|reserva confirmada|"
+        r"reserva de demo)",
+        t,
+    ):
+        return True
+    return False
+
+
 def _es_solo_presentacion(linea: str) -> bool:
     """True si la línea es SOLO dosis/presentación sin nombre de fármaco.
 
@@ -2360,6 +2507,10 @@ def _parsear_medicamentos_receta(texto: str) -> list[str]:
         # Línea que es SOLO dosis/presentación (sin fármaco): fragmento del
         # MISMO medicamento (OCR de caja), no un medicamento nuevo.
         if _es_solo_presentacion(linea):
+            continue
+        # Metadato de una notificación del sistema (reserva/cita/confirmación):
+        # "*Fecha:* ...", "*Nombre:* ...", "*Farmacia:* ..." NO son medicamentos.
+        if _es_linea_notificacion_admin(linea):
             continue
         # Líneas que parecen instrucciones de la receta, no medicamentos.
         if re.fullmatch(
