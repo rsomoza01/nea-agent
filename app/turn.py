@@ -2166,6 +2166,81 @@ def _texto_ocr_completo(user_text: str) -> str:
     return m.group(1).strip()
 
 
+# Muletillas del HABLA (no del texto): una nota de voz viene con saludo,
+# cortesía y verbos de conversación ("buenas tardes mi linda, mire en cuanto a
+# que salen las lancetas y las tiras reactivas de 50 por favor dame el precio
+# ahí te agradezco"). El limpiador de texto no las conoce porque casi nunca se
+# escriben, pero al dictar aparecen SIEMPRE. Medido contra el catálogo real: el
+# término crudo devolvía 11 productos con basura (SALES DE REHIDRATACION,
+# MASCARILLA, ÑAME SALVAJE) donde solo 3 eran pertinentes.
+_MULETILLAS_HABLA = {
+    # saludos y cortesía
+    "buenas", "tardes", "buenos", "dias", "noches", "saludos", "bendiciones",
+    "gracias", "agradezco", "agradecida", "agradecido", "favor", "porfa",
+    "disculpe", "disculpa", "permiso", "regalame", "regálame", "deme",
+    "regalas", "regala", "regalar", "regale", "regalen", "obsequia",
+    # apelativos
+    "linda", "lindo", "amor", "corazon", "corazón", "mi", "mijo", "mija",
+    "senora", "señora", "senor", "señor", "doctor", "doctora", "jefe",
+    # verbos de habla / relleno conversacional
+    "mire", "mira", "vea", "oiga", "escuchame", "escúchame", "diga", "digame",
+    "dígame", "saben", "sabes", "sabia", "sabía", "fijate", "fíjate",
+    "salen", "sale", "resulta", "quisiera", "queria", "quería", "necesito",
+    "ocupo", "dame", "dime", "decir", "saber", "preguntar", "consultar",
+    "ayuda", "ayudame", "ayúdame", "podria", "podría", "puede", "puedes",
+    # muletillas y adverbios de habla
+    "en", "cuanto", "cuánto", "ahi", "ahí", "aqui", "aquí", "pues", "bueno",
+    "este", "esto", "esa", "eso", "verdad", "entonces", "ahora", "luego",
+    "te", "le", "les", "nos", "se", "ya", "si", "no", "mas", "más",
+}
+
+
+def _limpiar_transcripcion(texto: str) -> str:
+    """Quita el ruido conversacional de una transcripción de voz.
+
+    El habla trae muletillas que el cliente nunca escribe ("buenas tardes mi
+    linda, mire en cuanto a que salen las lancetas... dame el precio ahí te
+    agradezco"). Pasar eso como consulta ensucia la búsqueda: el matcher del
+    catálogo hace SUBSTRING, así que palabras de relleno arrastran productos
+    falsos ("dame" → MEBENDAZOL/DAMENZOL, "linda" → CLINDAMICINA, "las" → ACE EN
+    POLVO LAS LLAVE). Medido: el término crudo daba 11 productos con basura
+    donde solo 3 eran pertinentes.
+
+    Se conservan las palabras "de producto" (fármaco, marca, presentación,
+    dosis), que son las únicas que deben llegar al catálogo.
+    """
+    palabras = re.findall(r"[a-záéíóúüñ0-9]+", texto.lower())
+    # Unidades de dosis/presentación: son CORTAS pero esenciales (mismo bug que
+    # el limpiador del término — filtrar por largo descarta "mg" y con él la
+    # concentración: "omeprazol 20 mg" → "omeprazol", y el cliente recibe todas
+    # las dosis). Nunca se descartan.
+    unidades = {
+        "mg", "ml", "mcg", "gr", "g", "kg", "ui", "cc",
+        "tab", "tabs", "tableta", "tabletas", "cap", "caps", "capsula",
+        "capsulas", "jab", "jarabe", "crema", "gel", "spray", "gotas",
+        "supositorio", "ovulo", "ovulos", "ampolla", "ampollas", "inyectable",
+        "sobre", "sobres", "solucion", "suspension", "pomada", "unguento",
+    }
+    utiles: list[str] = []
+    for w in palabras:
+        # Un número es DOSIS (nunca relleno): se conserva siempre.
+        if w.isdigit():
+            utiles.append(w)
+            continue
+        # Unidad de dosis/presentación: corta pero imprescindible.
+        if w in unidades:
+            utiles.append(w)
+            continue
+        if w in _FILLER or w in _MULETILLAS_HABLA:
+            continue
+        # Las palabras muy cortas (1-2 letras) son siempre conectores del habla
+        # ("a", "y", "de", "el", "mi", "te"), nunca un producto.
+        if len(w) < 3:
+            continue
+        utiles.append(w)
+    return " ".join(utiles)
+
+
 def _texto_transcripcion_completo(user_text: str) -> str:
     """Extrae el texto de la transcripción del marcador de nota de voz/audio.
 
@@ -2199,15 +2274,27 @@ def _extraer_termino_transcripcion(user_text: str) -> str | None:
     texto = _texto_transcripcion_completo(user_text)
     if not texto:
         return None
+    # PRIMERO quitar el ruido del habla ("buenas tardes mi linda mire en cuanto a
+    # que salen... dame el precio ahí te agradezco"), que el limpiador de texto
+    # no conoce porque casi nunca se escribe. Si no se quita, esas palabras
+    # llegan al catálogo y arrastran productos falsos ("dame"→MEBENDAZOL).
+    limpio = _limpiar_transcripcion(texto)
+    if not limpio:
+        return None
     # _extraer_termino_medicamento limpia verbos de consulta y relleno
     # ("quería saber atamel forte" → "atamel forte").
-    term = _extraer_termino_medicamento(texto)
+    term = _extraer_termino_medicamento(limpio)
     if not term:
         return None
     # Si lo que queda son SOLO palabras de relleno ("nada", "gracias"),
     # no es una consulta de medicamento.
     palabras = set(re.findall(r"[a-záéíóúüñ0-9]+", term.lower()))
     if palabras and palabras <= _FILLER:
+        return None
+    # Tras quitar el ruido puede quedar solo un número ("...de 50"): eso es la
+    # DOSIS que el cliente mencionó, pero sin fármaco no hay nada que buscar.
+    # Devolverlo consultaría el catálogo por "50" y traería basura.
+    if all(p.isdigit() for p in term.split()):
         return None
     return term
 
