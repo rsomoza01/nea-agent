@@ -188,8 +188,16 @@ def _limpiar_termino_medicamento(term: str) -> str:
 
     Quita TODAS las palabras funcionales/relleno en cualquier posición (no solo
     al inicio como _quitar_saludos): 'genérico del daflon económico' →
-    'daflon'; 'cajas opción económica 50 mg' → '50' (sin sustantivo). Devuelve
-    '' si no queda ninguna palabra sustantiva de ≥3 letras.
+    'daflon'; 'cajas opción económica 50 mg' → '' (sin sustantivo). Devuelve
+    '' si no queda ninguna palabra sustantiva.
+
+    OJO — umbral de longitud: las palabras de relleno se descartan por ser
+    cortas (≤2 letras: 'de', 'la', 'x'), pero un NÚMERO de 1-2 cifras es una
+    DOSIS y hay que conservarlo. Con un `len(w) >= 3` parejo, 'ATORVASTATINA 80
+    MG' se reducía a 'atorvastatina' y el agente perdía la concentración: el
+    catálogo devolvía TODAS las presentaciones (20, 40, 80 mg) cuando el cliente
+    pidió 80. Se detectó justo así en producción (los '100' y '850' sí
+    sobrevivían por tener 3 cifras, y los '40'/'50'/'80' no).
     """
     t = (term or "").strip().lower()
     if not t:
@@ -197,9 +205,15 @@ def _limpiar_termino_medicamento(term: str) -> str:
     t_sin = t.replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u")
     palabras = re.findall(r"[a-z0-9]+", t_sin)
     sustantivas = [
-        w for w in palabras if w not in _PALABRAS_FUNCIONALES and len(w) >= 3
+        w for w in palabras
+        if w not in _PALABRAS_FUNCIONALES and (len(w) >= 3 or w.isdigit())
     ]
     if not sustantivas:
+        return ""
+    # Un número SOLO no es un medicamento: 'cajas opción económica 50 mg' no debe
+    # reducirse a '50' y pasar el guard de "no es medicamento" (consultaría el
+    # catálogo con basura). Se exige al menos una palabra con letras.
+    if not any(not w.isdigit() for w in sustantivas):
         return ""
     return " ".join(sustantivas)
 
