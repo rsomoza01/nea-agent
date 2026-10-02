@@ -746,6 +746,76 @@ def _filtrar_accesorios(products: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [p for p in products if not _es_accesorio_medico(p)]
 
 
+def _variantes_typo(term: str, max_variantes: int | None = None) -> list[str]:
+    """Genera variantes plausibles de un término mal escrito, para reintentar.
+
+    El catálogo ya matchea Levenshtein ≤1 ("dreene"→"drene",
+    "paracetmol"→"paracetamol"), así que borrar/duplicar UNA letra ya está
+    cubierto: esas categorías van al final y por eso no hace falta gastar cupo
+    en ellas. Lo que el catálogo NO alcanza es la DISTANCIA 2, donde domina la
+    transposición de dos letras contiguas ("diclofencao"→"diclofenaco").
+
+    Devuelve variantes en orden de probabilidad, sin repetir el original. El
+    llamador las prueba contra el catálogo y se para en la primera que dé
+    resultados: NUNCA se inventa un producto, solo se reformula la consulta.
+    """
+    t = (term or "").strip().lower()
+    if not t or len(t) > 40:
+        return []
+    palabras = t.split()
+    out: list[str] = []
+
+    def _agrega(cand: str) -> None:
+        cand = cand.strip()
+        if cand and cand != t and cand not in out:
+            out.append(cand)
+
+    # Solo se corrige la ÚLTIMA palabra (la marca/fármaco); corregir la dosis
+    # ("80" → "40") sería inventar la concentración que pidió el cliente.
+    nucleo = palabras[-1] if palabras else ""
+    if len(nucleo) < 4:
+        return []
+    prefijo = " ".join(palabras[:-1])
+
+    def _variante_de(nueva: str) -> str:
+        return f"{prefijo} {nueva}".strip() if prefijo else nueva
+
+    # Presupuesto de intentos proporcional al largo de la palabra: una palabra
+    # corta (≤6) casi nunca trae un typo de distancia 2 y el catálogo la cubre;
+    # una larga sí, y tiene más posiciones donde fallar. Bounded para no gastar
+    # una tormenta de consultas cuando el producto simplemente no existe.
+    if max_variantes is None:
+        max_variantes = min(12, max(5, len(nucleo)))
+
+    # Orden: colapsado → TODAS las transposiciones → confusiones de grafía →
+    # (relleno) una letra quitada/duplicada, que el catálogo ya resuelve.
+    # La transposición necesita su cupo completo: en "diclofencao" la correcta
+    # está en la posición 8 de 9, así que no se puede intercalar con otras
+    # categorías ni quedarse con un cupo corto.
+    colapsado = re.sub(r"(.)\1+", r"\1", nucleo)
+    variantes: list[str] = []
+    if colapsado != nucleo and len(colapsado) >= 4:
+        variantes.append(colapsado)
+    variantes += [
+        nucleo[:i] + nucleo[i + 1] + nucleo[i] + nucleo[i + 2:]
+        for i in range(len(nucleo) - 1)
+    ]
+    conf = [("z", "s"), ("s", "z"), ("c", "s"), ("s", "c"), ("b", "v"),
+            ("v", "b"), ("ll", "y"), ("y", "ll"), ("qu", "c"), ("c", "qu")]
+    variantes += [nucleo.replace(a, b, 1) for a, b in conf if a in nucleo]
+    if nucleo.startswith("h"):
+        variantes.append(nucleo[1:])
+    if len(nucleo) >= 6:
+        variantes += [nucleo[:i] + nucleo[i + 1:] for i in range(1, len(nucleo) - 1)]
+    variantes += [nucleo[:i] + nucleo[i] + nucleo[i:] for i in range(len(nucleo))]
+
+    for cand in variantes:
+        _agrega(_variante_de(cand))
+        if len(out) >= max_variantes:
+            break
+    return out[:max_variantes]
+
+
 def _formatear_lista_productos(
     products: list[dict[str, Any]], titulo: str
 ) -> str:
@@ -805,6 +875,12 @@ class ToolRuntime:
         # Último término consultado con buscar_medicamento (para re-consultar
         # cuando el cliente refina con miligramo/marca sin repetir el nombre).
         self.last_term = ""
+        # Corrección por typo: si el catálogo no encontró el término original y
+        # SÍ lo encontró una variante ("diclofencao" → "diclofenaco"), se anotan
+        # ambos para que la respuesta pueda confirmar la grafía al cliente en vez
+        # de dejar la duda. None cuando no hubo corrección.
+        self.corregido_desde: str | None = None
+        self.corregido_a: str | None = None
         # Último producto consultado con buscar_medicamento. Lo usan los backstops
         # de carrito: si el cliente responde con una cantidad y el LLM no llama
         # agregar_al_carrito, forzamos el add con este producto.
@@ -1263,6 +1339,31 @@ class ToolRuntime:
                 if products:
                     self.last_term = fallback
         if not products:
+            # SEGUNDA PASADA por variantes de escritura ANTES de rendirse.
+            # El catálogo matchea Levenshtein ≤1; esto cubre distancia 2 y las
+            # grafías alternativas ("diclofencao"→"diclofenaco",
+            # "omeprasol"→"omeprazol"). Se prueban en orden y se para en la
+            # primera que dé resultados; nunca se inventa un producto, solo se
+            # reformula la consulta. El término encontrado se guarda como
+            # `last_term` para que el refinamiento posterior ("de 500 mg") siga
+            # funcionando sobre la grafía correcta.
+            for variante in _variantes_typo(nombre):
+                data_v = await self._ctx.crm.get_products(
+                    self._provider_id, q=variante, limit=20
+                )
+                products = _dedupe_por_nombre(data_v.get("products") or [])
+                if products:
+                    logger.info(
+                        "buscar_medicamento: '%s' sin resultados — encontrado con la "
+                        "variante '%s' (%d productos)",
+                        nombre, variante, len(products),
+                    )
+                    self.corregido_desde = nombre
+                    self.corregido_a = variante
+                    self.last_term = variante
+                    data = data_v
+                    break
+        if not products:
             # Fallback por principio activo: 'depomedrol' → 'metilprednisolona'.
             # El cliente pregunta por una MARCA que no está, pero su principio
             # activo puede estar en el catálogo (p. ej. ampollas genéricas).
@@ -1417,6 +1518,18 @@ class ToolRuntime:
             "muestra SOLO ese producto y su precio; no inventes presentaciones ni "
             "composiciones adicionales."
         )
+        # Corrección de escritura: el cliente escribió mal el nombre y el
+        # catálogo lo encontró con otra grafía. Se lo decimos al LLM para que lo
+        # mencione ("asumí que buscabas X") — es lo que evita que el cliente vea
+        # una lista de algo que no pidió y desconfíe.
+        if self.corregido_desde and self.corregido_a:
+            base += (
+                f" OJO: el cliente escribió '{self.corregido_desde}' y en el catálogo "
+                f"aparece como '{self.corregido_a}'. Empieza la respuesta confirmando "
+                "la corrección en UNA línea amable (p. ej. "
+                f"\"Asumí que buscas {self.corregido_a.upper()} 👍\") y luego muestra los "
+                "productos. NUNCA digas que no lo tienes."
+            )
         # Lista ya formateada (ordenada por precio, con 💊) para que el LLM la
         # cite literalmente en vez de inventar formato o datos.
         lista = _formatear_lista_productos(products, termino or "Resultados")

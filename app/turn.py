@@ -1843,6 +1843,74 @@ def _quitar_pie_carrito_duplicado(texto: str) -> str:
     return sin_pie
 
 
+# Un nombre de PRODUCTO escrito pelado ("Shampo Dreene", "Dreene", "Atamel") es
+# una consulta aunque no traiga verbo. Los clientes escriben así todo el tiempo:
+# en el caso real, "Shampo Dreene" (sin verbo) no disparaba el backstop → el LLM
+# contestaba de memoria "No tengo información sobre el shampoo Dreene", mientras
+# que "Drene" (una palabra) o "tienes dreene" sí buscaban. Es la MISMA consulta.
+_SALUDOS_CONSULTA = {
+    "hola", "buenas", "buenos", "buena", "dia", "dias", "tardes", "noches",
+    "gracias", "saludos", "epa", "hey", "que", "tal", "como", "estas", "esta",
+    "quien", "donde", "cuando", "hora", "horario", "ubicacion", "direccion",
+    "si", "no", "ok", "okay", "listo", "claro", "dale", "por", "favor",
+    "algo", "mas", "otro", "otra", "nada", "eso", "este", "buen",
+}
+
+
+def _parece_nombre_producto(texto: str) -> bool:
+    """True si el texto parece el NOMBRE de un producto escrito pelado.
+
+    Criterio deliberadamente estrecho para no forzar búsquedas con basura:
+    pocas palabras, todas "de nombre" (letras, sin signos de pregunta ni
+    conjunciones largas) y al menos una suficientemente larga para ser marca o
+    fármaco. 'Shampo Dreene' → True. '2 cajas' → False (número). 'que tal' →
+    False (saludo). 'no tengo información' → False (frase verbal).
+    """
+    if not texto:
+        return False
+    t = texto.strip()
+    if not t or len(t) > 60:
+        return False
+    # Una pregunta explícita no entra aquí: la maneja el verbo.
+    if "?" in t or "¿" in t:
+        return False
+    palabras = re.findall(r"[a-záéíóúüñ]+", t.lower())
+    # 1 o 2 palabras: el caso típico de "Dreene" / "Shampo Dreene". 3-4 se
+    # aceptan solo si TODAS parecen de nombre (ver abajo).
+    if not palabras or len(palabras) > 4:
+        return False
+    # CANTIDAD de un pedido, no un nombre: "2 cajas", "1 frasco". El agente
+    # pregunta "¿cuántas cajas?" y esa respuesta NO debe consultar el catálogo.
+    # Se exige número + palabra de envase (un nombre de producto no lleva
+    # "cajas"/"unidades"), así "ATORVASTATINA 80 MG" sigue siendo válido.
+    if re.search(r"\d", t) and any(
+        w in {"cajas", "caja", "unidades", "unidad", "frascos", "frasco",
+              "blisters", "blister", "paquetes", "paquete", "docenas"}
+        for w in palabras
+    ):
+        return False
+    # Referencia a una opción de la lista ya mostrada ("la opcion 3", "opción
+    # 2"): el agente ya consultó el catálogo, no hay que volver a buscar. Sin
+    # este guard, el nombre "opcion" (6 letras) pasaría el filtro de cuerpo.
+    if any(w in {"opcion", "opciones", "numero", "alternativa"} for w in palabras):
+        return False
+    # Un número suelto tampoco es un medicamento.
+    if t.replace(",", "").replace(".", "").isdigit():
+        return False
+    # Ninguna palabra de relleno/saludo puede estar: si aparece una, es frase.
+    for w in palabras:
+        if w in _SALUDOS_CONSULTA:
+            return False
+    # Debe haber al menos una palabra con cuerpo (>=5 letras): marca o fármaco.
+    # Evita disparar con "la de", "dos mg" o interjecciones cortas.
+    if not any(len(w) >= 5 for w in palabras):
+        return False
+    # Y ninguna palabra puede ser un verbo de consulta/acción conocido: si lo
+    # fuera, `_parece_consulta_medicamento` ya devolvió True antes (o es otra
+    # intención, p. ej. "quiero dos").
+    return True
+
+
 def _parece_consulta_medicamento(texto: str) -> bool:
     if not texto:
         return False
@@ -1855,9 +1923,12 @@ def _parece_consulta_medicamento(texto: str) -> bool:
     # una cantidad pedida.
     if _VERBOS_MEDICAMENTO.search(t) or "medicamento" in t:
         return True
-    # Sin verbo de consulta: no es una búsqueda (p. ej. "2 cajas" respondiendo
-    # la pregunta del agente, o un saludo suelto).
-    return False
+    # Sin verbo: un NOMBRE de producto pelado también es una consulta. Antes se
+    # exigía verbo, así que "Shampo Dreene" no la disparaba y el LLM negaba de
+    # memoria ("No tengo información sobre el shampoo Dreene") pese a que el
+    # catálogo SÍ lo tiene. "2 cajas" (cantidad) o "que tal" (saludo) siguen
+    # fuera, que es lo que este guard debe proteger.
+    return _parece_nombre_producto(texto)
 
 
 def _build_state_block(conv: Conversation, cart: list[CartItem]) -> str:
