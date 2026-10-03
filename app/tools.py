@@ -746,6 +746,27 @@ def _filtrar_accesorios(products: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [p for p in products if not _es_accesorio_medico(p)]
 
 
+def _extraer_dosis(texto: str) -> str:
+    """Extrae la dosis ("40 mg", "500 mg", "120 ml") de un término de medicamento.
+
+    Devuelve "" si no hay. Se usa para NO perder la concentración al cambiar de
+    marca a principio activo: el cliente pidió "esoz 40 mg", el LLM devuelve
+    "omeprazol" sin dosis, y buscar así mezclaba 20 y 40 mg en la misma lista.
+
+    Solo número + unidad de DOSIS (mg/mcg/g/ml/ui); nunca la cantidad de envase
+    ("x 10 cap", "20 tabletas"), que no es concentración.
+    """
+    if not texto:
+        return ""
+    m = re.search(
+        r"\b(\d+(?:[.,]\d+)?)\s*(mg|mcg|g|gr|ml|cc|ui|u\.i\.)\b",
+        texto.lower(),
+    )
+    if not m:
+        return ""
+    return f"{m.group(1).replace(',', '.')} {m.group(2).replace('.', '')}"
+
+
 def _variantes_typo(term: str, max_variantes: int | None = None) -> list[str]:
     """Genera variantes plausibles de un término mal escrito, para reintentar.
 
@@ -1489,15 +1510,33 @@ class ToolRuntime:
             principio = re.sub(r"[^a-záéíóúñü ]+", "", principio).strip()
             if len(principio) < 3 or principio == nombre.lower():
                 return []
+            # CONSERVAR LA DOSIS. El nombre de origen puede traer el mg ("esoz 40
+            # mg", "atorvastatina 80 mg") y el LLM devuelve solo el principio
+            # activo SIN ella ("omeprazol"). Buscar sin la dosis devolvía TODAS
+            # las concentraciones mezcladas (20 y 40 mg en la misma lista — el
+            # caso reportado de la receta "ESOZ 40 MG"). Se reinyecta la dosis
+            # que el cliente ya pidió; si no traía, se busca igual que antes.
+            dosis = _extraer_dosis(nombre)
+            consulta = f"{principio} {dosis}".strip() if dosis else principio
             data = await self._ctx.crm.get_products(
-                self._provider_id, q=principio, limit=20
+                self._provider_id, q=consulta, limit=20
             )
             products = data.get("products") or []
             # Filtrar accesorios/insumos (jeringas, agujas, tiras): el principio
             # activo 'insulina' matchea la jeringa, que NO es el fármaco que el
             # cliente pidió. Si solo quedan accesorios, devolver [] para que el
             # agente diga honestamente que el medicamento no está disponible.
-            return _filtrar_accesorios(products)
+            filtrados = _filtrar_accesorios(products)
+            # Si al añadir la dosis no queda NADA pero sin ella sí había
+            # resultados, se devuelven los del principio activo: mejor ofrecer
+            # las concentraciones disponibles (el cliente elige) que negar el
+            # medicamento por una dosis que este catálogo no maneja.
+            if not filtrados and dosis:
+                data = await self._ctx.crm.get_products(
+                    self._provider_id, q=principio, limit=20
+                )
+                filtrados = _filtrar_accesorios(data.get("products") or [])
+            return filtrados
         except Exception as exc:
             logger.warning("principio activo: fallo al mapear '%s': %s", nombre, exc)
             return []
