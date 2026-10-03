@@ -868,6 +868,8 @@ class ToolRuntime:
         self.booked = False
         self.routed_out = False
         self.proposed = False
+        # Backstop de horario: evita forzar info_provider más de una vez por turno.
+        self.info_provider_forced = False
         # true si el turno consultó el catálogo (buscar_medicamento o
         # sugerir_generico). Sirve como backstop anti-alucinación: si el usuario
         # preguntó por un medicamento y NO se consultó, forzamos la consulta.
@@ -1599,7 +1601,15 @@ class ToolRuntime:
             "ok": True,
             "provider": provider,
             "formaDePago": self.paymen_type,
-            "instrucciones": "responde con dirección, horario y ciudad de la farmacia. Si el cliente pregunta las formas de pago, cítalas y compártele la formaDePago.",
+            "horario": self.provider_hours,
+            "instrucciones": (
+                "responde con dirección, horario y ciudad de la farmacia. Si el "
+                "cliente preguntó el HORARIO, cita el valor del campo 'hours' tal "
+                "cual (es el horario real de ESTA farmacia) y NO ofrezcas pasar la "
+                "consulta a un humano ni digas que no tienes la información. Si el "
+                "cliente pregunta las formas de pago, cítalas y compártele la "
+                "formaDePago."
+            ),
         }
 
     # ------------------------------------------------------- carrito (FR-8) ---

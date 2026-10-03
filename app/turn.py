@@ -929,6 +929,17 @@ async def _tool_loop(
                     # El LLM ya vio los resultados; evitar que el backstop de
                     # catálogo re-interprete la elección como medicamento.
                     continue
+            # Backstop de horario: el cliente pregunta cuándo abre/cierra la
+            # farmacia. El dato vive en Firestore (`hours` del provider) y solo se
+            # obtiene con info_provider; sin forzarlo el LLM respondía "no pude
+            # obtener la información del horario... ¿paso tu consulta a un
+            # humano?" porque el prompt le prohíbe usar "horario" en el catálogo.
+            if farmacia and not runtime.info_provider_forced and _quiere_info_horario(user_text):
+                runtime.info_provider_forced = True
+                logger.info("backstop horario: forzando info_provider")
+                result = await runtime.execute("info_provider", {})
+                _append_forced_tool(messages, "info_provider", {}, result)
+                continue
             # Backstop de resumen: si el cliente quiere ver el resumen y el LLM
             # no llamó ver_carrito, lo forzamos (el modelo a veces no lo llama).
             # El "no" suelto (a "¿Deseas buscar otro medicamento?") con carrito
@@ -1520,6 +1531,47 @@ _INTENTO_VER_RESUMEN = re.compile(
     r"terminar|cerrar (?:el )?pedido|finalizar)\b",
     re.IGNORECASE,
 )
+
+
+def _quiere_info_horario(texto: str) -> bool:
+    """True si el cliente pregunta el HORARIO de la farmacia.
+
+    "Hasta que hora esta abierta la farmacia" / "a qué hora abren" / "están
+    abiertos?" → hay que llamar info_provider para responder con el horario real
+    (campo `hours` del provider en Firestore).
+
+    Sin este backstop el LLM respondía de memoria genérica o directamente
+    "no pude obtener la información del horario de la farmacia... ¿paso tu
+    consulta a un humano?" — porque el prompt le prohíbe buscar en el catálogo
+    con la palabra "horario" y no le quedaba camino para consultar el dato.
+    """
+    if not texto:
+        return False
+    t = texto.strip().lower()
+    # Una CITA ("a qué hora es mi cita", "mover mi cita") NO es el horario del
+    # local: eso lo resuelve el flujo de agendamiento con su propia agenda.
+    if re.search(r"\bcita|citas|agenda|turno\b", t):
+        return False
+    # Si hay un verbo de EFECTO ("abre la nariz", "sirve para", "alivia") la
+    # frase habla del fármaco, no del local: "¿el atamel abre la nariz?" usa
+    # "abre" en otro sentido y no pregunta cuándo abre la farmacia.
+    if re.search(r"\b(alivia|sirve|funciona|desinflama|calma|efecto|"
+                 r"abre\s+(?:la|el|las|los)|despeja|quita)\b", t):
+        return False
+    # Verbos de abrir/cerrar/atender del LOCAL: cubren las frases que no dicen
+    # "horario" ("¿están abiertos?", "¿abren los domingos?", "¿cierran hoy?").
+    abrir_cerrar = bool(re.search(
+        r"\b(abren|abre|abriran|abrir[aá]n|cierran|cierra|cerraran|cerrar[aá]n|"
+        r"abiert[oa]s?|cerrad[oa]s?|atienden|atendiendo|atiende)\b", t))
+    if re.search(r"\b(horario|horarios|hora|horas|atencion|atención)\b", t):
+        # "¿horario?" a secas, o frase corta que ya es inequívoca.
+        if len(t.split()) <= 3:
+            return True
+        return abrir_cerrar or bool(re.search(
+            r"(farmacia|local|negocio|atencion|atención|atienden|hasta|"
+            r"a\s+qu[eé]\s+hora|me\s+pueden|decir|informaci[oó]n|cu[aá]l)", t))
+    # Sin la palabra "horario"/"hora": solo cuenta si habla de abrir/cerrar.
+    return abrir_cerrar
 
 
 def _quiere_ver_resumen(texto: str, tiene_carrito: bool = False) -> bool:
