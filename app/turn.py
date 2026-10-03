@@ -1849,50 +1849,53 @@ def _quitar_invito_carrito(texto: str) -> str:
 
 
 def _quitar_pie_carrito_duplicado(texto: str) -> str:
-    """Elimina TODAS las apariciones del bloque estándar del pie (MENSAJE_SUGERIDO_CARRITO)
-    del texto del LLM, dejando solo la que el backstop adjunta al final.
+    """Elimina las copias del pie de carrito que generó el LLM, dejando el texto
+    listo para que el backstop adjunte UNA sola vez el bloque canónico.
 
-    El LLM a veces imita el pie del historial y lo genera por su cuenta (a veces
-    incluso 2-3 veces: antes de la lista, después, y el backstop lo adjunta de
-    nuevo). Este limpiador quita cualquier copia del bloque que no esté al final,
-    para que el cliente vea el pie UNA sola vez.
+    El LLM imita el pie del historial y lo escribe por su cuenta, a veces 2-3
+    veces y con VARIANTES: cambia el número de la opción, y sobre todo la tercera
+    línea ("¿Necesitas buscar otro medicamento?" en vez de "¿Otro medicamento?
+    Escríbeme el nombre y lo busco."). Un patrón que exija las CUATRO líneas
+    literales y contiguas falla con esas variantes; peor aún, puede borrar el pie
+    CANÓNICO y dejar la variante, y entonces el backstop adjunta el canónico otra
+    vez → el cliente ve DOS pies (bug reportado con "Budecort").
 
-    Tolerante a variaciones del LLM: el número de la opción y el del ejemplo
-    cambian ("opción Z"→"opción 1", "opción 3"→"opción 2"), y puede haber
-    espacios al final de línea / markdown. Por eso la letra/dígito de la opción
-    y el ejemplo se tratan como comodines, no literalmente.
+    Por eso se ancla en el INICIO del pie (la línea "👉 Para agregar al carrito…",
+    que el LLM reproduce casi literal) y se corta desde ahí hasta el final: lo que
+    venga después del último producto es el pie (o pies) que el propio modelo
+    escribió, y el backstop repone el canónico.
     """
     if not texto:
         return texto
-    import re as _re
-    # Partes del pie con los números/letras de la opción como comodines. El LLM
-    # varía "opción Z"→"opción 1" y "opción 3"→"opción 2", así que cada opción
-    # admite dígitos o letras seguidas de fin de línea.
-    l1 = (
-        _re.escape("👉 Para agregar al carrito: quiero X cajas de la opción")
-        + r"[ \t]*[A-Za-z0-9]*"
-    )
-    l2 = (
-        _re.escape("Ejemplo: quiero")
-        + r"[ \t]*[0-9]+[ \t]*"
-        + _re.escape("cajas de la opción")
-        + r"[ \t]*[0-9]+"
-    )
-    l3 = _re.escape("🛒 ¿Otro medicamento? Escríbeme el nombre y lo busco.")
-    l4 = _re.escape("✅ Cuando termines, escribe LISTO y te muestro el resumen de tu pedido.")
-    # Unir línea por línea permitiendo espacios/tabs al final y saltos flexibles.
-    pat = _re.compile(
-        r"(?:\n[ \t]*)*(?:[ \t]*)?"
-        + l1 + r"[ \t]*\n[ \t]*"
-        + l2 + r"[ \t]*\n[ \t]*"
-        + l3 + r"[ \t]*\n[ \t]*"
-        + l4 + r"[ \t]*(?:\n[ \t]*)*",
-        _re.MULTILINE,
-    )
-    sin_pie = pat.sub("\n", texto)
-    # Colapsar saltos de línea múltiples.
-    sin_pie = _re.sub(r"\n{3,}", "\n\n", sin_pie).strip()
-    return sin_pie
+    # Se eliminan los BLOQUES de pie (no "todo lo que sigue"), para que un pie
+    # escrito por el LLM ANTES de la lista no se lleve la lista por delante.
+    # Un bloque del pie son líneas consecutivas que empiezan con 👉 / Ejemplo: /
+    # 🛒 / ✅ (y las líneas en blanco entre ellas). Se corta al aparecer una línea
+    # que no pertenece al pie (p. ej. "💊 1. BUDECORT...").
+    es_pie = re.compile(r"^\s*(?:👉|Ejemplo:|🛒|✅)", re.IGNORECASE)
+    lineas = texto.split("\n")
+    out: list[str] = []
+    i = 0
+    while i < len(lineas):
+        linea = lineas[i]
+        if es_pie.match(linea):
+            # Saltar el bloque entero (incluidas líneas vacías y pies pegados).
+            while i < len(lineas) and (es_pie.match(lineas[i]) or not lineas[i].strip()):
+                # Una línea vacía solo se salta si aún queda pie por delante.
+                if not lineas[i].strip():
+                    j = i
+                    while j < len(lineas) and not lineas[j].strip():
+                        j += 1
+                    if j < len(lineas) and es_pie.match(lineas[j]):
+                        i = j
+                        continue
+                    break
+                i += 1
+            continue
+        out.append(linea)
+        i += 1
+    # Colapsar saltos de línea múltiples que quedan al quitar el pie.
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
 
 
 # Un nombre de PRODUCTO escrito pelado ("Shampo Dreene", "Dreene", "Atamel") es
