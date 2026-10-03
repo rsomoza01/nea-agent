@@ -204,9 +204,19 @@ def _limpiar_termino_medicamento(term: str) -> str:
         return ""
     t_sin = t.replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u")
     palabras = re.findall(r"[a-z0-9]+", t_sin)
+    # UNIDADES de dosis/presentación: son cortas (2-3 letras) pero NO son relleno.
+    # Descartarlas por longitud rompe la búsqueda por concentración: 'esoz 40 mg'
+    # se reducía a 'esoz 40' — sin unidad, el catálogo no puede filtrar la dosis y
+    # devuelve todas las presentaciones mezcladas (20 y 40 mg), que es justo el
+    # bug reportado. Se conservan siempre.
+    unidades = {
+        "mg", "ml", "mcg", "gr", "g", "cc", "ui", "kg",
+        "tab", "tabs", "cap", "caps", "jab", "sob",
+    }
     sustantivas = [
         w for w in palabras
-        if w not in _PALABRAS_FUNCIONALES and (len(w) >= 3 or w.isdigit())
+        if (w in unidades)
+        or (w not in _PALABRAS_FUNCIONALES and (len(w) >= 3 or w.isdigit()))
     ]
     if not sustantivas:
         return ""
