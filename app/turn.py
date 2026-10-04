@@ -2415,12 +2415,23 @@ def _extraer_termino_ocr(user_text: str) -> str | None:
 # Etiquetas del envase que el OCR copia y que NO son parte del nombre del fármaco.
 # Se conserva el VALOR de cada etiqueta ('Concentración: 2%' → '2%'), que es donde
 # suelen venir la dosis y la presentación.
+#
+# OJO: el modelo varía la PRIMERA etiqueta entre ejecuciones ('Nombre del
+# medicamento:', 'Medicamento:', 'Producto:', 'Nombre:'). Medido: con 'Nombre del
+# medicamento:' el término quedaba verboso y el catálogo devolvía 15 productos
+# irrelevantes (gel fijador, toallas sanitarias) en vez del correcto. Por eso la
+# lista cubre todas las variantes vistas, no solo las de la etiqueta física.
 _ETIQUETAS_OCR = (
     "principio activo", "principioactivo", "concentración", "concentracion",
     "concentracin", "presentación", "presentacion", "presentacin",
     "contenido neto", "vía de administración", "via de administracion",
     "fórmula magistral", "formula magistral", "registro sanitario",
     "laboratorio", "fabricante",
+    # Variantes de la etiqueta de nombre que el modelo inventa al extraer.
+    "nombre del medicamento", "nombre del producto", "nombre comercial",
+    "nombre", "medicamento", "medicamentos", "producto", "productos",
+    "texto", "descripción", "descripcion", "dosis", "forma farmacéutica",
+    "forma farmaceutica",
 )
 
 # Unidades de dosis/presentación: NUNCA se deduplican ni se descartan, aunque se
