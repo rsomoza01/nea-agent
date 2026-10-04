@@ -14,6 +14,7 @@ from decimal import Decimal
 from typing import Any
 
 from app.crm import CrmConflict, CrmError, SlotTaken
+from app.relevancia import filtrar_relevantes, hay_senal_de_farmaco
 
 # Palabras que revelan que el LLM alucinó una frase como término de búsqueda
 # (backstops del prompt, mensajes de "unsupported", instrucciones, etc.).
@@ -1313,6 +1314,31 @@ class ToolRuntime:
                     "NUNCA muestres lista de productos."
                 ),
             }
+        # GUARD DE ENTRADA: un término SIN NINGÚN token con cuerpo de fármaco no
+        # puede ser una consulta de medicamento, por larga que sea la frase. El
+        # catálogo es difuso y devuelve productos con los que comparte una letra
+        # ('hasta' → PASTA PRIMOR, 'todo' → DESODORANTE DOVE), así que buscar con
+        # relleno no es inocuo: el agente le muestra al cliente esos productos.
+        # Casos reales: "No gracias no las voy a comprar y disculpe" (despedida
+        # respondida con chocolates), "gracias por todo", "hasta luego".
+        # Se comprueba ANTES de consultar: `filtrar_relevantes` protege la
+        # salida, pero no vale la pena ni hacer la llamada.
+        if not hay_senal_de_farmaco(nombre):
+            logger.info(
+                "buscar_medicamento: término '%s' sin señal de fármaco — no busco en catálogo",
+                nombre,
+            )
+            return {
+                "ok": False,
+                "error": "no_medicamento",
+                "detalle": (
+                    "El cliente NO está pidiendo un medicamento: es cortesía, un "
+                    "cierre o una despedida. Responde con naturalidad y brevedad "
+                    "(agradece y despídete si corresponde), deja la puerta abierta "
+                    "a que vuelva cuando necesite algo y NO muestres listas de "
+                    "productos ni digas que 'no encontraste' nada."
+                ),
+            }
         # Limpio quedó un solo fármaco: usarlo como término (evita basura).
         if nombre_sustantivo and nombre_sustantivo != nombre.lower():
             logger.info(
@@ -1358,6 +1384,22 @@ class ToolRuntime:
         if data.get("hours"):
             self.provider_hours = str(data.get("hours"))
         products = data.get("products") or []
+        # FILTRO DE RELEVANCIA: el motor del CRM es difuso por diseño (Levenshtein
+        # ≤1 y prefijos) porque los typos del cliente DEBEN funcionar
+        # ('diclofencao' → DICLOFENAC). El precio de eso es que un término
+        # conversacional devuelve productos con los que comparte una letra:
+        # medido contra el catálogo real, 'hasta' → PASTA PRIMOR, 'tarda delivery'
+        # → VENDA ELASTICA, 'muchas todo muy' → DESODORANTE DOVE. El agente le
+        # mostraba esos productos al cliente como respuesta a una despedida.
+        # Se descarta lo que no comparte señal real con el término, SIN tocar el
+        # resultado cuando el filtro lo vaciaría (ver filtrar_relevantes).
+        antes = len(products)
+        products = filtrar_relevantes(nombre, products)
+        if len(products) != antes:
+            logger.info(
+                "buscar_medicamento: '%s' — %d/%d productos descartados por relevancia",
+                nombre, antes - len(products), antes,
+            )
         # Dedupe por nombre de producto: el catálogo de Firebase repite el MISMO
         # ítem (mismo nombre) con distintos productId/precio (una entrada por
         # farmacia/precio). Quedarse con el de MENOR precio evita listas de 20
