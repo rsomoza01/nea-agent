@@ -137,6 +137,14 @@ _PALABRAS_FUNCIONALES = {
     "pantallazo", "envie", "envio", "enviaste", "mande", "mandaste", "muestro",
     "muestra", "aparece", "figura", "ve", "ven", "ahi", "arriba", "anexo",
     "anexa", "mandado", "mandada", "enviado", "enviada",
+    # Cortesía/negación/despedida: NUNCA son fármacos, y buscarlas devuelve basura
+    # (el splitter de listas partía "no las voy a comprar y disculpe" y buscaba
+    # 'voy comprar' y 'disculpe' como medicamentos). El guard
+    # `_es_negativa_o_despedida` corta ese camino; esta lista protege además el
+    # camino en que el LLM decide buscar por su cuenta.
+    "voy", "vas", "vamos", "disculpe", "disculpa", "disculpen", "perdone",
+    "perdon", "molestia", "siento", "lamento", "interesa", "interesada",
+    "interesado", "comprar", "compro", "comprare", "olvidalo", "dejalo",
     # Conceptos de negocio/contrato/chat que NO son medicamentos. Un mensaje
     # como "mañana conversamos para dar inicio formal del contrato de la
     # página y el chat y el comparador" NO es una receta.

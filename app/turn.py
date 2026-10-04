@@ -1025,7 +1025,18 @@ async def _tool_loop(
                 # Lista de medicamentos en TEXTO (sin imagen): si el mensaje del
                 # cliente contiene 2+ medicamentos (p. ej. "esoz, leprit y
                 # evigax"), se responde con el mismo formato de receta.
-                if not medicamentos and _parece_lista_medicamentos(user_text):
+                #
+                # GUARD: una NEGATIVA o despedida NO es una receta. Sin esto,
+                # "No gracias no las voy a comprar y disculpe" se partía por la
+                # 'y' y se trataba como dos medicamentos ('voy comprar',
+                # 'disculpe') -> el agente respondía "No disponibles en el
+                # catálogo: DISCULPE VOY COMPRAR" más una lista de chocolates al
+                # cliente que se estaba despidiendo.
+                if (
+                    not medicamentos
+                    and not _es_negativa_o_despedida(user_text)
+                    and _parece_lista_medicamentos(user_text)
+                ):
                     medicamentos = _parsear_medicamentos_receta(
                         "\n".join(_lineas_lista_medicamentos(user_text))
                     )
@@ -1384,6 +1395,17 @@ _FILLER = {
     "otra", "mas", "más", "cual", "cuales", "donde", "cuando", "quien",
     "esto", "este", "esta", "eso", "esa", "aquello", "estoy", "soy",
     "nada", "nadie", "solo", "solamente", "también", "ahi", "aqui",
+    # Cortesía, negación y despedida. NUNCA son parte del nombre del fármaco, y
+    # dejarlas en el término contamina la búsqueda: medido contra el catálogo real
+    # del provider 19, 'disculpe atamel forte' devolvía 10 productos con ruido
+    # (MULTIVITAMINICO VITAMIX FORTE, BREXIN FORTE) mientras 'atamel forte'
+    # devolvía 1, el correcto (ATAMEL FORTE 650 MG). El matcher es AND sobre los
+    # tokens, así que un token de cortesía arrastra productos irrelevantes.
+    "disculpe", "disculpa", "disculpen", "perdone", "perdon", "lamento",
+    "molestia", "siento", "regalo", "regala", "regalas", "obsequio",
+    "voy", "vas", "vamos", "compro", "comprar", "comprare", "deseo",
+    "interesa", "interesada", "interesado", "olvidalo", "dejalo", "adios",
+    "chao", "luego", "vemos", "bendiciones", "amable", "atentamente",
 }
 
 # Unidades de medida / presentación: cuando el usuario responde con una
@@ -2536,6 +2558,70 @@ def _parece_referencia_sin_farmaco(user_text: str) -> bool:
             continue
         return False  # hay una palabra sustantiva: el cliente nombró algo
     return True
+
+
+def _es_negativa_o_despedida(texto: str) -> bool:
+    """True si el mensaje es una NEGATIVA, disculpa o despedida del cliente.
+
+    Caso real (provider 19, 2026-10):
+        cliente: "No gracias no las voy a comprar y disculpe"
+        agente : "⚠️ No disponibles en el catálogo: DISCULPE
+                  VOY COMPRAR
+                  💊 1. CHOCOLATE SAVOY 75 ANOS X 25 GR ..."
+
+    El splitter de listas partía el mensaje por la 'y' y por comas, así que los
+    fragmentos 'voy comprar' y 'disculpe' se trataban como DOS medicamentos: se
+    consultaba el catálogo con esas frases, no había resultados, y el agente
+    respondía con la lista de "no disponibles" — encima con chocolates, que
+    matcheaban por casualidad. El cliente se estaba despidiendo y recibió un
+    catálogo de chocolates.
+
+    Criterio: cortesía/negativa (disculpa, gracias, negación de compra) Y sin
+    ningún verbo de consulta de medicamento. Un mensaje que nombra un fármaco
+    ("no, mejor dame el de 40 mg") NO es esto: `_VERBOS_MEDICAMENTO` lo salva.
+
+    OJO con la negación del verbo: "ya no QUIERO nada" lleva 'quiero' (que está en
+    `_VERBOS_MEDICAMENTO`) pero es una NEGATIVA, no una consulta. Por eso las
+    formas negadas ('no quiero', 'ya no quiero', 'no necesito') se comprueban
+    ANTES del corte por verbo.
+    """
+    if not texto:
+        return False
+    t = texto.strip().lower()
+    t = (t.replace("á", "a").replace("é", "e").replace("í", "i")
+         .replace("ó", "o").replace("ú", "u"))
+
+    # (a) Negación DIRECTA del verbo: 'no/ya no' + verbo de consulta. Se evalúa
+    # antes del corte por verbo, porque el verbo está pero negado. El pronombre
+    # intermedio es opcional ('no LO voy a comprar', 'no LAS voy a comprar').
+    #
+    # Se EXCLUYE la expresión de DUDA ('no sé si quiero…', 'no estoy seguro si…'):
+    # ahí el 'no' no niega la compra, el cliente está comparando opciones y SÍ
+    # quiere información. Sin esta exclusión una duda legítima se trataba como
+    # despedida y el cliente se quedaba sin respuesta.
+    if re.search(r"\bno\s+(?:se|sé|estoy\s+segur\w*|sabria|sabría)\b", t):
+        return False
+    if re.search(
+        r"\b(?:ya\s+)?no\s+(?:\w+\s+){0,2}?"
+        r"(?:quiero|necesito|busco|me\s+interesa|voy\s+a?\s*comprar|"
+        r"compro|puedo|deseo|pienso\s+comprar)\b",
+        t,
+    ):
+        return True
+
+    # (b) Cualquier otro verbo de consulta: NO es una simple despedida.
+    if _VERBOS_MEDICAMENTO.search(t):
+        return False
+    return bool(
+        re.search(
+            r"\b(?:disculpe|disculpa|disculpen|perdone|perdon|lo\s+siento|"
+            r"no\s+gracias|gracias|dejelo|dejalo|olvidalo|olvídelo|"
+            r"no\s+compro|no\s+quiero\s+nada|"
+            r"no\s+me\s+interesa|adios|hasta\s+luego|"
+            r"nos\s+vemos|que\s+estes?\s+bien|chao)\b",
+            t,
+        )
+    )
 
 
 def _parece_lista_medicamentos(texto: str) -> bool:
