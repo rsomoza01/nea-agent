@@ -2398,11 +2398,85 @@ def _extraer_termino_ocr(user_text: str) -> str | None:
 
     'OCR de la imagen: "ACIDO FOLICO 5 MG X 10 TABLETAS DROTOFARMA"'
     → 'acido folico 5 mg 10 tabletas drotofarma'.
+
+    ANTES de limpiar, se quitan las ETIQUETAS del envase que el OCR añade
+    ('Principio activo:', 'Concentración:', 'Presentación:', 'Contenido Neto:').
+    Sin esto el término queda verboso y el matcher (que es AND sobre los tokens)
+    no encuentra nada: medido contra el catálogo real del provider 19, el texto de
+    la caja de ácido hialurónico producía 20 productos irrelevantes (ÁCIDO
+    TRANEXAMICO, ÁCIDO FOLICO...) y NO el correcto; limpio devuelve 1, el correcto.
     """
     m = re.search(r'OCR de la imagen:\s*"([^"]+)"', user_text, re.IGNORECASE)
     if not m:
         return None
-    return _extraer_termino_medicamento(m.group(1))
+    return _extraer_termino_medicamento(_limpiar_etiquetas_ocr(m.group(1)))
+
+
+# Etiquetas del envase que el OCR copia y que NO son parte del nombre del fármaco.
+# Se conserva el VALOR de cada etiqueta ('Concentración: 2%' → '2%'), que es donde
+# suelen venir la dosis y la presentación.
+_ETIQUETAS_OCR = (
+    "principio activo", "principioactivo", "concentración", "concentracion",
+    "concentracin", "presentación", "presentacion", "presentacin",
+    "contenido neto", "vía de administración", "via de administracion",
+    "fórmula magistral", "formula magistral", "registro sanitario",
+    "laboratorio", "fabricante",
+)
+
+# Unidades de dosis/presentación: NUNCA se deduplican ni se descartan, aunque se
+# repitan entre líneas. Es el mismo patrón que ya mordió tres veces en este stack:
+# los números y sus unidades son la excepción a cualquier regla de limpieza.
+_UNIDADES_OCR = {"mg", "ml", "mcg", "g", "ui", "gr", "cc", "%"}
+
+
+def _es_etiqueta_ocr(t: str) -> bool:
+    """True si el texto es (solo) una etiqueta del envase."""
+    t = (t or "").strip().lower().rstrip(":")
+    return any(
+        t == e or t.startswith(e + ":") or (t.startswith(e) and len(t) <= len(e) + 2)
+        for e in _ETIQUETAS_OCR
+    )
+
+
+def _limpiar_etiquetas_ocr(texto: str) -> str:
+    """Quita etiquetas del envase y une el contenido útil, sin perder dosis.
+
+    - 'Etiqueta: valor' → conserva el VALOR ('Concentración: 2%' → '2%').
+    - Línea que es solo la etiqueta → se descarta.
+    - Deduplicación POR LÍNEA (quita el nombre repetido dentro de una misma línea),
+      NUNCA entre líneas: 'ESOZ 40 MG\\nLEPRIT 25 MG' no debe perder la unidad de
+      la segunda dosis.
+    """
+    lineas: list[str] = []
+    for linea in (texto or "").splitlines():
+        t = linea.strip()
+        if not t:
+            continue
+        if ":" in t:
+            izq, der = t.split(":", 1)
+            if _es_etiqueta_ocr(izq):
+                der = der.strip()
+                if der:
+                    lineas.append(der)
+                continue
+        if _es_etiqueta_ocr(t):
+            continue
+        lineas.append(t)
+
+    salida: list[str] = []
+    for linea in lineas:
+        vistos: set[str] = set()
+        tokens: list[str] = []
+        for tok in linea.split():
+            clave = tok.lower()
+            # Unidades y números nunca se deduplican (son dosis).
+            if clave in vistos and clave not in _UNIDADES_OCR and not tok[:1].isdigit():
+                continue
+            vistos.add(clave)
+            tokens.append(tok)
+        if tokens:
+            salida.append(" ".join(tokens))
+    return " ".join(salida)
 
 
 def _parece_referencia_sin_farmaco(user_text: str) -> bool:
