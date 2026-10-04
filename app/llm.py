@@ -106,6 +106,62 @@ class OpenAiLlm:
                 await asyncio.sleep(1.0)
         raise LlmExhausted(str(last_error))
 
+    # Marcas del VOCABULARIO DEL PROMPT de OCR: no describen un envase real, sino
+    # la tarea pedida. Si el texto las repite, es una paráfrasis de la instrucción.
+    _MARCAS_PROMPT_OCR = (
+        "nombre del medicamento",
+        "principio activo",
+        "visible",
+        "texto legible",
+        "extrae solo",
+        "devuelve:",
+        "responde en texto plano",
+        "si es una receta",
+        "no inventes",
+        "concentración especificada",
+        "presentación visible",
+    )
+
+    # Señales de que el texto SÍ viene de un envase/receta real: una dosis con
+    # unidad, un código de barras/registro, o un porcentaje. Si aparecen, NO es
+    # una paráfrasis del prompt aunque repita alguna marca (una caja puede decir
+    # "principio activo: X" y "presentación: 10 tabletas").
+    _SENALES_MEDICAMENTO_OCR = (
+        r"\d+(?:[.,]\d+)?\s*(?:mg|ml|mcg|g|ui|%)",  # dosis con unidad
+        r"\bx\s*\d+\b",                             # presentación "X 30"
+        r"\b\d{6,}\b",                              # código de barras / registro
+        r"\b\d+\s*(?:tab|cap|caps|comp|ovul|óvul|amp|sobre|gotas)\b",
+    )
+
+    @classmethod
+    def _parece_prompt_ocr(cls, text: str) -> bool:
+        """True si el texto es una PARÁFRASIS del prompt de OCR, no de la imagen.
+
+        Comparar frases literales no basta: el modelo reformula y se cuela. Caso
+        real (provider 19, caja de ácido hialurónico):
+
+            prompt   : "Devuelve: nombre del medicamento, principio activo y
+                        concentración (mg/ml), y presentación si se ve."
+            respuesta: "nombre del medicamento deraciv principio activo visible
+                        concentración visible presentación visible"
+
+        Se detecta por forma: >=2 marcas del vocabulario del prompt y NINGUNA
+        señal de medicamento real (dosis con unidad, "X 30", código de barras).
+        """
+        if not text:
+            return False
+        import re as _re
+
+        t = text.lower()
+        marcas = sum(1 for m in cls._MARCAS_PROMPT_OCR if m in t)
+        if marcas < 2:
+            return False
+        # Si trae señales reales de envase, se respeta (una caja puede mencionar
+        # "principio activo" y aun así traer dosis/presentación).
+        if any(_re.search(p, t) for p in cls._SENALES_MEDICAMENTO_OCR):
+            return False
+        return True
+
     async def ocr_image(self, data: bytes, mime: str = "image/jpeg") -> str:
         """Extrae el texto de una imagen (medicamento/receta) con visión.
 
@@ -151,16 +207,27 @@ class OpenAiLlm:
                 if isinstance(content, list):
                     content = " ".join(p.get("text", "") for p in content if isinstance(p, dict))
                 text = str(content).strip()
-                # Blindaje anti-prompt: a veces el modelo responde repitiendo la
-                # instrucción del OCR en vez del texto de la imagen (imagen
-                # ilegible/fallo). Descartamos y reintentamos con instrucción
-                # más corta; si vuelve a fallar, OCR vacío → media degrada.
-                if text and (
-                    "Extrae SOLO" in text
-                    or "texto legible" in text
-                    or "Devuelve: nombre" in text
-                    or "Responde en texto plano" in text
-                ):
+                # Blindaje anti-prompt: a veces el modelo responde describiendo la
+                # TAREA en vez de leer la imagen (imagen ilegible, o el modelo se
+                # confunde y parafrasea la instrucción). Descartamos y reintentamos;
+                # si vuelve a fallar, OCR vacío → media degrada con honestidad.
+                #
+                # PITFALL (bug real, provider 19): comparar frases LITERALES del
+                # prompt no basta, porque el modelo PARAFRASEA. Caso observado:
+                #   prompt   : "Devuelve: nombre del medicamento, principio activo
+                #               y concentración (mg/ml), y presentación si se ve."
+                #   respuesta: "nombre del medicamento deraciv principio activo
+                #               visible concentración visible presentación visible"
+                # Ninguna frase literal coincide, así que la paráfrasis se colaba
+                # como si fuera texto de la imagen: el agente consultaba el catálogo
+                # con "nombre del medicamento deraciv principio activo visible..."
+                # y devolvía productos que nada tenían que ver con la foto.
+                #
+                # Se detecta por FORMA: el texto repite >=2 marcas del vocabulario
+                # del prompt (no de un envase) y NO contiene señales reales de
+                # medicamento (dosis con unidad, número de registro, un nombre de
+                # fármaco con mayúsculas/números).
+                if text and self._parece_prompt_ocr(text):
                     last_error = ValueError("OCR devolvió el prompt (imagen no procesada)")
                     logger.warning("ocr_image: respuesta es el prompt (intento %d)", attempt + 1)
                     text = ""

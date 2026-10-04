@@ -127,6 +127,16 @@ _PALABRAS_FUNCIONALES = {
     "contactar", "horario", "horarios", "ubicacion", "direccion", "telefono",
     "whatsapp", "web", "pagina", "tienda", "farmacia", "negocio", "producto",
     "productos", "stock", "inventario", "disponibilidad", "existencias",
+    # Referencias a la IMAGEN que mandó el cliente. NO son fármacos, y buscarlas
+    # en el catálogo devuelve basura por SUBSTRING: 'foto' matchea 'FOTORRETIN'
+    # (un oftálmico), y el agente respondía "sí, tengo el producto de la foto"
+    # mostrando ese oftálmico ante la foto de unos óvulos vaginales. Caso real
+    # provider 19 (2026-10). El producto de la imagen se busca con el OCR, nunca
+    # con estas palabras.
+    "foto", "fotos", "imagen", "imagenes", "adjunto", "adjuntos", "captura",
+    "pantallazo", "envie", "envio", "enviaste", "mande", "mandaste", "muestro",
+    "muestra", "aparece", "figura", "ve", "ven", "ahi", "arriba", "anexo",
+    "anexa", "mandado", "mandada", "enviado", "enviada",
     # Conceptos de negocio/contrato/chat que NO son medicamentos. Un mensaje
     # como "mañana conversamos para dar inicio formal del contrato de la
     # página y el chat y el comparador" NO es una receta.
@@ -908,6 +918,11 @@ class ToolRuntime:
         # Último término consultado con buscar_medicamento (para re-consultar
         # cuando el cliente refina con miligramo/marca sin repetir el nombre).
         self.last_term = ""
+        # Término de medicamento leído por OCR de la última imagen del cliente.
+        # Cuando el turno actual solo REFERENCIA una imagen ("el producto de la
+        # foto lo tienes?") sin aportar fármaco, se busca con ESTE término y no
+        # con las palabras de la pregunta (buscar "foto" trae FOTORRETIN).
+        self.last_ocr_term = ""
         # Corrección por typo: si el catálogo no encontró el término original y
         # SÍ lo encontró una variante ("diclofencao" → "diclofenaco"), se anotan
         # ambos para que la respuesta pueda confirmar la grafía al cliente en vez

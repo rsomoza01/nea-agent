@@ -36,6 +36,7 @@ from app.tools import (
     _formatear_lista_productos,
     _fmt_ve,
     _termino_es_medicamento_plausible,
+    _PALABRAS_FUNCIONALES,
 )
 
 logger = logging.getLogger("nea.turn")
@@ -443,6 +444,13 @@ async def run_turn(
         except Exception:
             runtime.last_product = None
     runtime.last_term = (conv.last_term or "") if isinstance(conv.last_term, str) else ""
+    # Término del OCR de la última imagen del cliente, del turno anterior. Es el
+    # dato correcto cuando el cliente solo pregunta "por la foto" sin nombrar el
+    # medicamento (buscar 'foto' traería FOTORRETIN por substring).
+    runtime.last_ocr_term = (
+        conv.last_ocr_term if isinstance(conv.last_ocr_term, str) else ""
+    )
+    prev_last_ocr_term = runtime.last_ocr_term
     # Lista de opciones persistida del turno anterior (para resolver
     # "quiero X cajas de la opción Z").
     if isinstance(conv.last_options, list):
@@ -702,6 +710,10 @@ async def run_turn(
         updates["last_product"] = runtime.last_product
     if runtime.last_term:
         updates["last_term"] = runtime.last_term
+    # Persistir el término del OCR de la imagen para el turno siguiente (cuando el
+    # cliente pregunte "por la foto" sin nombrar el medicamento).
+    if runtime.last_ocr_term:
+        updates["last_ocr_term"] = runtime.last_ocr_term
     if runtime.last_options:
         updates["last_options"] = runtime.last_options
     if cerrar_sin_rumbo:
@@ -1069,6 +1081,11 @@ async def _tool_loop(
                         )
                         return None  # turno atendido: no dejar que el LLM reescriba
                 ocr_term = _extraer_termino_ocr(user_text)
+                # Guardar el término del OCR para el turno SIGUIENTE: el cliente
+                # suele preguntar después "¿el producto de la foto lo tienes?"
+                # sin repetir el nombre, y buscar "foto" devuelve FOTORRETIN.
+                if ocr_term:
+                    runtime.last_ocr_term = ocr_term
                 if (
                     ocr_term
                     and not runtime.catalog_retried
@@ -1163,6 +1180,28 @@ async def _tool_loop(
                     term = trans_term_2
                 elif _parece_consulta_medicamento(user_text):
                     term = _extraer_termino_medicamento(user_text)
+                # El cliente REFERENCIA una imagen anterior ("el producto de la
+                # foto lo tienes?") sin aportar un fármaco. Buscar con las
+                # palabras de la pregunta devuelve basura por SUBSTRING: 'foto'
+                # matchea 'FOTORRETIN' (oftálmico) y el agente responde "sí,
+                # tengo el producto de la foto" mostrando ese oftálmico. Se usa
+                # el término del OCR de la imagen que el cliente SÍ mandó.
+                if _parece_referencia_sin_farmaco(user_text):
+                    anterior = runtime.last_ocr_term or prev_last_ocr_term
+                    if anterior:
+                        logger.info(
+                            "referencia a imagen: buscando con el OCR previo '%s' "
+                            "(en vez de con las palabras de la pregunta)",
+                            anterior,
+                        )
+                        term = anterior
+                    else:
+                        # Referencia a una imagen que no tenemos: no se busca
+                        # con basura. El LLM responde honesto.
+                        logger.info(
+                            "referencia a imagen sin OCR previo: no se fuerza búsqueda",
+                        )
+                        term = None
                 # Forzar búsqueda si:
                 # 1. El LLM no consultó el catálogo (not consulted_catalog)
                 # 2. O consultó pero no encontró nada (med_not_found) — quizás
@@ -2364,6 +2403,54 @@ def _extraer_termino_ocr(user_text: str) -> str | None:
     if not m:
         return None
     return _extraer_termino_medicamento(m.group(1))
+
+
+def _parece_referencia_sin_farmaco(user_text: str) -> bool:
+    """True si el cliente solo REFERENCIA una imagen, sin nombrar un fármaco.
+
+    Caso real (provider 19, 2026-10): el cliente manda la foto de una caja de
+    ÁCIDO HIALURÓNICO 2% ÓVULOS y luego pregunta "El producto de la foto lo
+    tienes?". El texto no nombra ningún medicamento: solo habla de "la foto".
+
+    Buscar en el catálogo con esas palabras devuelve basura por SUBSTRING:
+    'foto' ⊂ 'FOTORRETIN', así que el catálogo devolvía GOTAS OFTALMICA
+    (FOTORRETIN) X 5 ML y el agente afirmaba "Sí, tengo el producto que aparece
+    en la foto" mostrando un oftálmico ante unos óvulos vaginales.
+
+    En este caso la búsqueda debe usar el término del OCR de la imagen anterior,
+    no las palabras de la pregunta.
+
+    Se exige: (a) una referencia explícita a la imagen y (b) que NO quede ningún
+    token sustantivo (fármaco) tras quitar las palabras funcionales — si el
+    cliente dice "el ácido hialurónico de la foto", SÍ hay fármaco y se busca con
+    él.
+    """
+    if not user_text:
+        return False
+    t = user_text.lower()
+    t_sin = (
+        t.replace("á", "a").replace("é", "e").replace("í", "i")
+        .replace("ó", "o").replace("ú", "u")
+    )
+    # (a) ¿menciona la imagen/el envío?
+    if not re.search(
+        r"\b(?:foto|imagen|captura|pantallazo|adjunto|anexo|envie|enviaste|"
+        r"mande|mandaste|mandado|enviado|muestra|aparece|figura)\b",
+        t_sin,
+    ):
+        return False
+    # (b) ¿queda algún sustantivo que pueda ser fármaco?
+    palabras = re.findall(r"[a-z0-9]+", t_sin)
+    for w in palabras:
+        if len(w) < 3:
+            continue
+        if w in _PALABRAS_FUNCIONALES:
+            continue
+        # Un número suelto o una dosis no es un fármaco por sí solo.
+        if w.isdigit():
+            continue
+        return False  # hay una palabra sustantiva: el cliente nombró algo
+    return True
 
 
 def _parece_lista_medicamentos(texto: str) -> bool:
