@@ -390,16 +390,27 @@ async def run_turn(
     # Inyecta el estado real de la conversación (de la DB, no del LLM) para que
     # el modelo sepa exactamente en qué fase está y no invente contexto entre
     # turnos. Esto es lo que contiene el no-determinismo del flujo encadenado.
-    cart = await ctx.store.cart_items(
-        conv.id, session_hours=ctx.settings.cart_session_hours
-    )
-    state_block = _build_state_block(conv, cart)
-    if state_block:
-        system = system + "\n\n" + state_block
+    #
+    # El historial se trae ANTES de armar el bloque: para saber si el turno
+    # anterior del agente pidió precisar la búsqueda hay que mirar el último
+    # mensaje del asistente. Sin ese dato, la respuesta corta del cliente
+    # ("Tabletas 650") se lee como un mensaje suelto y el agente vuelve a listar
+    # las 20 presentaciones mezcladas.
     # Se traen más mensajes de los que ve el LLM: el candado de cierre cuenta
     # el hilo COMPLETO del lead, no solo la ventana de contexto.
     recientes = await ctx.store.recent_messages(conv.id, STALL_LOOKBACK)
     history = recientes[-settings.history_window :]
+    pidio_precisar = _agente_pidio_precisar(
+        [{"role": m.role, "content": m.content} for m in history]
+    )
+    cart = await ctx.store.cart_items(
+        conv.id, session_hours=ctx.settings.cart_session_hours
+    )
+    state_block = _build_state_block(
+        conv, cart, respuesta_cliente=user_text, pidio_precisar=pidio_precisar
+    )
+    if state_block:
+        system = system + "\n\n" + state_block
     messages: list[dict[str, Any]] = [{"role": "system", "content": system}] + [
         {"role": m.role, "content": m.content} for m in history
     ]
@@ -990,6 +1001,15 @@ async def _tool_loop(
             # presentación (p.ej. "30 mg") y ya consultamos un medicamento antes,
             # forzamos re-consultar el catálogo con ese refinamiento para que el
             # LLM cite los productos reales (no los invente de memoria).
+            #
+            # DOS CAMINOS, según lo que el cliente haya precisado:
+            #  - DOSIS/FORMA ("Tabletas 650", "cap 500"): el catálogo SÍ puede
+            #    filtrar por número+unidad, así que se re-consulta con el término
+            #    compuesto ('acetaminofen 650 mg').
+            #  - MARCA / TAMAÑO / PRECIO ("el de calox", "el de 30"): el catálogo
+            #    NO puede filtrar (medido: 'acetaminofen 650 calox' devuelve los 20
+            #    con TODOS los laboratorios). Se filtra la lista que el cliente YA
+            #    VIO (`last_options`), que es determinista y no depende del matcher.
             if (
                 farmacia
                 and runtime.last_term
@@ -1009,6 +1029,41 @@ async def _tool_loop(
                 result = await runtime.execute("buscar_medicamento", {"nombre": term})
                 _append_forced_tool(messages, "buscar_medicamento", {"nombre": term}, result)
                 continue
+            # Backstop de refinamiento por ATRIBUTO (marca / tamaño / precio): el
+            # cliente respondió a "¿qué miligramo necesitas?" con algo que el
+            # catálogo no sabe filtrar. Se filtra la lista ya mostrada y se le pasa
+            # al LLM como si fuera el resultado de una búsqueda, para que presente
+            # SOLO las opciones que encajan en vez de repetir las 20.
+            if (
+                farmacia
+                and runtime.last_term
+                and runtime.last_options
+                and not runtime.consulted_catalog
+                and _agente_pidio_precisar(messages)
+            ):
+                opciones, motivo = filtrar_opciones_mostradas(
+                    user_text, runtime.last_options
+                )
+                if motivo:
+                    logger.info(
+                        "backstop refinamiento por atributo: '%s' → %d/%d opciones (%s)",
+                        user_text, len(opciones), len(runtime.last_options), motivo,
+                    )
+                    result = {
+                        "ok": True,
+                        "products": opciones,
+                        "instrucciones": (
+                            f"El cliente precisó su búsqueda anterior ({motivo}). "
+                            "Presenta SOLO estas opciones con su nombre exacto y "
+                            "precio (USD y Bs), en el mismo formato de lista. NO "
+                            "vuelvas a mostrar las demás ni repitas la lista "
+                            "completa."
+                        ),
+                    }
+                    _append_forced_tool(
+                        messages, "buscar_medicamento", {"nombre": runtime.last_term}, result
+                    )
+                    continue
             # Backstop anti-alucinación (farmacia): si el cliente preguntó por un
             # medicamento y el modelo NO consultó el catálogo en este turno, es
             # candidato a inventar disponibilidad/precio. Forzamos UNA consulta
@@ -1678,6 +1733,54 @@ _PREGUNTA_CIERRE_RESUMEN = (
     "quieres agregar otro medicamento",
 )
 
+# Frases con las que el agente PIDE PRECISAR una búsqueda antes de poder ofrecer
+# un producto concreto. No son cierres: son preguntas que dejan la conversación
+# a la espera de una respuesta corta ("650", "el de calox", "la de 30").
+#
+# POR QUÉ IMPORTA (bug de clase, 2026-10): el agente pregunta "¿Qué miligramo
+# necesitas?" y el cliente responde "Tabletas 650". Sin saber que ESA pregunta
+# estaba en el aire, el turno siguiente trata la respuesta como un mensaje
+# suelto: no reconoce que refina la búsqueda anterior y vuelve a listar todo.
+# Tres bugs distintos de la misma sesión (la foto, la despedida, el refinamiento)
+# comparten esta raíz: el agente no sabía qué pregunta había hecho él mismo.
+_PREGUNTAS_PRECISAR = (
+    "qué miligramo",
+    "que miligramo",
+    "cuál miligramo",
+    "cual miligramo",
+    "qué concentración",
+    "que concentracion",
+    "qué presentación",
+    "que presentacion",
+    "qué dosis",
+    "que dosis",
+    "cuál de estas",
+    "cual de estas",
+    "cuál necesitas",
+    "cual necesitas",
+    "cuál prefieres",
+    "cual prefieres",
+    "de qué marca",
+    "de que marca",
+    "qué marca",
+    "que marca",
+    "de qué laboratorio",
+    "que laboratorio",
+    "cuál te sirve",
+    "cual te sirve",
+    "qué cantidad de unidades",
+    "cuantas unidades",
+    "cuántas unidades",
+    "de cuántas tabletas",
+    "de cuantas tabletas",
+    "qué tamaño de caja",
+    "que tamano de caja",
+    "qué sabor",
+    "que sabor",
+    "para qué lo necesitas",
+    "para que lo necesitas",
+)
+
 
 def _ultimo_mensaje_asistente(messages: list[dict[str, Any]]) -> str | None:
     """Texto del último mensaje del ASISTENTE en `messages`, saltando los
@@ -1706,6 +1809,100 @@ def _pregunta_cierre_resumen(messages: list[dict[str, Any]]) -> bool:
     if not texto:
         return False
     return any(p in texto.lower() for p in _PREGUNTA_CIERRE_RESUMEN)
+
+
+def _agente_pidio_precisar(messages: list[dict[str, Any]]) -> bool:
+    """True si el turno anterior del agente pidió PRECISAR la búsqueda.
+
+    Es el contexto que da sentido a respuestas cortas como "650", "Tabletas 650",
+    "el de calox" o "la de 30": no son mensajes sueltos, son la respuesta a una
+    pregunta concreta del agente. Saberlo permite tratar ese turno como un
+    REFINAMIENTO de la búsqueda anterior en vez de una consulta nueva.
+    """
+    texto = _ultimo_mensaje_asistente(messages)
+    if not texto:
+        return False
+    t = texto.lower()
+    return any(p in t for p in _PREGUNTAS_PRECISAR)
+
+
+def filtrar_opciones_mostradas(
+    respuesta: str, opciones: list[dict[str, Any]] | None
+) -> tuple[list[dict[str, Any]], str]:
+    """Filtra la lista de opciones que el cliente YA VIO según su respuesta.
+
+    POR QUÉ NO BASTA RE-CONSULTAR EL CATÁLOGO: el motor del CRM, cuando la
+    consulta trae varios tokens, cae al grupo difuso y matchea por el fármaco
+    ignorando el resto. Medido contra el catálogo real, 'acetaminofen 650 calox'
+    devuelve los MISMOS 20 productos con TODOS los laboratorios (DROTAFARMA,
+    ELTER, CALOX, GV, ALESS) — no filtra la marca. Re-consultar tampoco servía
+    para el tamaño ('el de 30').
+
+    Pero el agente guarda `last_options`: la lista EXACTA que el cliente vio, en
+    el mismo orden. Filtrarla localmente es determinista y no depende del matcher
+    del catálogo. Medido: 'el de calox' → 2 opciones (las de CALOX), 'el de 30' →
+    1, 'la caja de 20' → 1.
+
+    Devuelve (opciones_filtradas, motivo). Si no reconoce la respuesta, devuelve
+    la lista completa con motivo '' — nunca vacía, para no esconder productos.
+    """
+    if not respuesta or not opciones:
+        return opciones or [], ""
+
+    def norm(s: object) -> str:
+        t = str(s or "").lower()
+        for a, b in (("á", "a"), ("é", "e"), ("í", "i"), ("ó", "o"), ("ú", "u"),
+                     ("ñ", "n"), ("ü", "u")):
+            t = t.replace(a, b)
+        return t
+
+    t = norm(respuesta)
+    # Un pedido ("2 cajas") o la elección de una opción por número ("la 3") NO son
+    # filtros: los resuelve el backstop de carrito. No tocar la lista.
+    if re.search(r"\b\d+\s*(?:cajas?|unidades?|frascos?|paquetes?|blisters?)\b", t):
+        return opciones, ""
+    if re.search(r"\b(?:la|el|opcion|opción|numero|número)\s*\d{1,2}\b", t) and not re.search(
+        r"\b\d{3,4}\b", t
+    ):
+        return opciones, ""
+
+    # 1) DOSIS: número de 3-4 cifras → la concentración en mg del título.
+    m = re.search(r"\b(\d{3,4})\b", t)
+    if m:
+        dosis = m.group(1)
+        sel = [p for p in opciones
+               if re.search(rf"\b{dosis}\s*mg\b", norm(p.get("nombre") or p.get("producto")))]
+        if sel:
+            return sel, f"dosis {dosis} mg"
+
+    # 2) TAMAÑO de la caja: número pequeño → el "X N" del título ('el de 30').
+    m = re.search(r"\b(\d{1,2})\b", t)
+    if m:
+        n = m.group(1)
+        sel = [p for p in opciones
+               if re.search(rf"x\s*{n}\b", norm(p.get("nombre") or p.get("producto")))]
+        if sel:
+            return sel, f"tamaño x{n}"
+
+    # 3) MARCA o laboratorio: palabra con cuerpo que aparezca en algunos títulos.
+    #    Se excluyen las palabras del propio fármaco y las genéricas del dominio
+    #    ('tabletas', 'caja', 'marca', 'generico'): no identifican una opción.
+    genericas = {
+        "acetaminofen", "paracetamol", "tabletas", "tableta", "tab", "capsulas",
+        "capsula", "comprimidos", "jarabe", "gotas", "suspension", "caja", "marca",
+        "generico", "generica", "laboratorio", "quiero", "dame", "aquel", "esta",
+        "este", "esas", "esos", "grande", "pequena", "pequeno", "barato", "caro",
+        "unidades", "pastillas", "blister", "sobre",
+    }
+    for w in re.findall(r"[a-z]{4,}", t):
+        if w in genericas:
+            continue
+        sel = [p for p in opciones
+               if w in norm(p.get("nombre") or p.get("producto"))]
+        if sel and len(sel) < len(opciones):
+            return sel, f'marca "{w}"'
+
+    return opciones, ""
 
 
 def _es_confirmacion_resumen(texto: str) -> bool:
@@ -2150,12 +2347,24 @@ def _parece_consulta_medicamento(texto: str) -> bool:
     return _parece_nombre_producto(texto)
 
 
-def _build_state_block(conv: Conversation, cart: list[CartItem]) -> str:
+def _build_state_block(
+    conv: Conversation,
+    cart: list[CartItem],
+    respuesta_cliente: str | None = None,
+    pidio_precisar: bool = False,
+) -> str:
     """Resumen de estado determinista inyectado en el system prompt.
 
     Le dice al LLM exactamente en qué fase está la conversación y qué datos
     reales hay (producto consultado, carrito), para que no invente contexto
-    entre turnos. Esto contiene el no-determinismo del flujo encadenado."""
+    entre turnos. Esto contiene el no-determinismo del flujo encadenado.
+
+    `pidio_precisar`: el turno anterior del agente pidió precisar la búsqueda
+    ("¿qué miligramo necesitas?"). Con eso, la respuesta corta del cliente
+    ("Tabletas 650", "el de calox") se trata como REFINAMIENTO de la lista ya
+    mostrada, no como una consulta nueva — que es lo que provocaba que el agente
+    volviera a listar las 20 presentaciones mezcladas.
+    """
     lines: list[str] = ["ESTADO ACTUAL DE ESTA CONVERSACIÓN (dato real, no inventar):"]
 
     # Fase
@@ -2182,6 +2391,27 @@ def _build_state_block(conv: Conversation, cart: list[CartItem]) -> str:
     # Último término buscado
     if conv.last_term:
         lines.append(f"- Última búsqueda de medicamento: '{conv.last_term}'.")
+
+    # REFINAMIENTO EN CURSO: el turno anterior TÚ preguntaste por la dosis, marca
+    # o presentación y el cliente acaba de responder. Sin esta nota, el modelo
+    # lee la respuesta como un mensaje suelto y vuelve a listar todo.
+    if pidio_precisar and conv.last_term:
+        lines.append(
+            "- ATENCIÓN — REFINAMIENTO EN CURSO: en tu mensaje anterior pediste "
+            "precisar la búsqueda y el cliente acaba de responder. Su respuesta "
+            f"NO es una consulta nueva: está acotando la búsqueda '{conv.last_term}' "
+            "que ya hiciste."
+        )
+        if respuesta_cliente:
+            lines.append(f"  Su respuesta: \"{respuesta_cliente}\".")
+        lines.append(
+            "  Vuelve a llamar buscar_medicamento con un término que JUNTE el "
+            f"medicamento y el dato nuevo (p. ej. '{conv.last_term} 650 mg'), NO "
+            "vuelvas a buscar solo el medicamento ni muestres la lista completa "
+            "otra vez. Si el dato nuevo es una marca, un tamaño de caja o el "
+            "precio, filtra la lista que ya mostraste y presenta solo las "
+            "opciones que encajan."
+        )
 
     # Carrito
     if cart:
