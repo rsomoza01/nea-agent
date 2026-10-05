@@ -1796,14 +1796,67 @@ def _extraer_refinamiento(texto: str) -> str:
     'quiero gotas' → 'gotas'
 
     Devuelve '' si no hay un refinamiento claro. NUNCA incluye verbos de
-    consulta ni el nombre del medicamento (evita duplicar el término)."""
+    consulta ni el nombre del medicamento (evita duplicar el término).
+
+    ORDEN LIBRE (bug reportado 2026-10): el cliente responde a "¿qué miligramo
+    necesitas?" escribiendo la FORMA antes del NÚMERO — "Tabletas 650", no "650
+    tabletas". La primera versión solo reconocía NÚMERO→FORMA, así que en
+    "Tabletas 650" la dosis se perdía y el término quedaba 'acetaminofen
+    tabletas': el catálogo devolvía las 20 presentaciones con 325/500/650 mg
+    mezcladas, que es exactamente lo que el refinamiento debía evitar.
+
+    Y la forma se TRADUCE a su unidad de dosis: medido contra el catálogo real,
+    'acetaminofen 650 tabletas' devuelve 20 productos con 325/500/650 mezclados
+    (la palabra 'tabletas' no filtra nada), mientras 'acetaminofen 650 mg'
+    devuelve 9, TODOS de 650. 'tabletas/comprimidos/capsulas' → mg; 'jarabe/
+    jbe/gotas/suspension/ampolla' → ml.
+    """
     if not texto:
         return ""
     t = texto.strip().lower()
-    # Número + unidad de dosis/presentación.
-    m = re.search(r"\b(\d+(?:[,.]\d+)?)\s*(mg|ml|g|mcg|gotas|tabletas|tab|comprimidos|cápsulas|capsulas)\b", t)
+    # Número + unidad explícita (la forma más fiable, en cualquier orden).
+    # Las FORMAS líquidas (jarabe, gotas, ampolla...) entran aquí para que se
+    # traduzcan a ml: si se dejan fuera, 'jarabe 120' cae al número suelto y se
+    # lee como '120 mg' (una dosis que no existe en un jarabe).
+    m = re.search(
+        r"\b(\d+(?:[,.]\d+)?)\s*(mg|ml|g|mcg|gotas|tabletas|tab|comprimidos|"
+        r"cápsulas|capsulas|cap|jarabe|jbe|suspensión|suspension|ampolla|"
+        r"inyectable|solución|solucion)\b",
+        t,
+    )
+    if not m:
+        m = re.search(
+            r"\b(mg|ml|mcg|gotas|tabletas|tab|comprimidos|cápsulas|capsulas|cap|"
+            r"jarabe|jbe|suspensión|suspension|ampolla|inyectable)\s*"
+            r"(\d+(?:[,.]\d+)?)\b",
+            t,
+        )
+        if m:
+            # Se invierte: la unidad va primero en el texto.
+            m = _MatchInvertido(m.group(2), m.group(1))
     if m:
-        return f"{m.group(1)} {m.group(2)}".strip()
+        num, uni = m.group(1), m.group(2)
+        # Traducir la FORMA a la UNIDAD de dosis que el catálogo usa en el título.
+        # Es lo que hace funcionar el filtro de dosis del CRM: su regex solo
+        # reconoce número+unidad ('650 mg'), no número+forma ('650 tabletas').
+        uni = _UNIDAD_DE_FORMA.get(uni, uni)
+        return f"{num} {uni}".strip()
+    # Número de dosis "suelto" ('de 650', 'las de 650'): el cliente responde a la
+    # pregunta por el miligramo sin repetir la unidad. Se acepta solo si el número
+    # tiene 3-4 cifras (una dosis plausible, no una cantidad de cajas).
+    #
+    # Si el mensaje menciona una forma LÍQUIDA ('jarabe', 'gotas', 'suspension'),
+    # el número es un VOLUMEN: se devuelve en ml. Sin esto 'jarabe 120' → '120 mg',
+    # una dosis que no existe. El umbral de cifras cubre los dos casos: un volumen
+    # de jarabe es 60/120/240 y una dosis sólida 400/500/650.
+    m = re.search(r"\b(\d{3,4})\b", t)
+    if m and not re.search(r"\b(cajas?|unidades?|frascos?|paquetes?|blisters?)\b", t):
+        liquida = re.search(
+            r"\b(jarabe|jbe|gotas|suspensión|suspension|ampolla|inyectable|"
+            r"solución|solucion|solución|locion|loción)\b",
+            t,
+        )
+        return f"{m.group(1)} {'ml' if liquida else 'mg'}"
     # Presentación sin número (solo si está al final o es el foco del mensaje).
     m = re.search(r"\b(gotas|jarabe|jbe|tabletas|comprimidos|inyectable|ampolla|crema|ungüento)\b", t)
     if m:
@@ -1811,17 +1864,67 @@ def _extraer_refinamiento(texto: str) -> str:
     return ""
 
 
+class _MatchInvertido:
+    """Adaptador para reutilizar el código cuando la UNIDAD va antes del número.
+
+    `re.Match` es inmutable, así que se emula con la misma interfaz (group(n)).
+    """
+
+    def __init__(self, num: str, uni: str) -> None:
+        self._num = num
+        self._uni = uni
+
+    def group(self, n: int) -> str:
+        return self._num if n == 1 else self._uni
+
+
+# Forma farmacéutica → unidad de DOSIS con la que el catálogo titula el producto.
+# Es lo que hace que el filtro de dosis del CRM funcione: su regex solo reconoce
+# número+unidad ('40 mg'), no número+forma ('40 tabletas').
+_UNIDAD_DE_FORMA = {
+    "tabletas": "mg", "tableta": "mg", "tab": "mg", "comprimidos": "mg",
+    "comprimido": "mg", "capsulas": "mg", "cápsulas": "mg", "cap": "mg",
+    "grageas": "mg", "pastillas": "mg",
+    "jarabe": "ml", "jbe": "ml", "gotas": "ml", "suspension": "ml",
+    "suspensión": "ml", "ampolla": "ml", "inyectable": "ml", "solucion": "ml",
+    "solución": "ml", "locion": "ml", "loción": "ml",
+}
+
+
 def _es_refinamiento_presentacion(texto: str) -> bool:
     """True si el texto es un refinamiento de presentación ('30 mg', '50 mg',
-    'gotas', 'jarabe') más que una nueva búsqueda de medicamento."""
+    'gotas', 'jarabe', 'Tabletas 650') más que una nueva búsqueda de medicamento.
+
+    Se delega en `_extraer_refinamiento` para que AMBAS funciones reconozcan los
+    mismos casos: antes tenían regex separados y divergían — 'capsulas 500' daba
+    '' en extracción pero tampoco era refinamiento, así que la dosis se perdía por
+    los dos lados.
+    """
     if not texto:
         return False
     t = texto.strip().lower()
-    # Número + unidad de dosis/presentación.
-    if re.search(r"\b\d+\s*(mg|ml|g|gotas|tabletas|comprimidos|cápsulas|capsulas)\b", t):
+    # Número + unidad de dosis/presentación (en cualquier orden).
+    if re.search(
+        r"\b\d+\s*(mg|ml|g|mcg|gotas|tabletas|tab|comprimidos|cápsulas|capsulas|cap)\b",
+        t,
+    ):
+        return True
+    if re.search(
+        r"\b(mg|ml|mcg|gotas|tabletas|tab|comprimidos|cápsulas|capsulas|cap)\s*\d+\b",
+        t,
+    ):
+        return True
+    # Número de dosis suelto ('de 650', 'las de 650'): respuesta a "¿qué miligramo
+    # necesitas?" sin repetir la unidad.
+    if re.search(r"\b\d{3,4}\b", t) and not re.search(
+        r"\b(cajas?|unidades?|frascos?|paquetes?)\b", t
+    ):
         return True
     # Presentación sin número.
-    if re.search(r"\b(gotas|jarabe|jbe|tabletas|comprimidos|inyectable|ampolla|crema|ungüento)\b", t):
+    if re.search(
+        r"\b(gotas|jarabe|jbe|tabletas|comprimidos|inyectable|ampolla|crema|ungüento)\b",
+        t,
+    ):
         return True
     return False
 
