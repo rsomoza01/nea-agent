@@ -198,6 +198,27 @@ def _levenshtein(a: str, b: str) -> int:
     return fila[-1]
 
 
+# Sufijo de SAL: inserción de una 'c' antes de la vocal final. En español es la
+# forma habitual del adjetivo salino (potasio→potásico, sodio→sódico,
+# calcio→cálcico, magnesio→magnésico). El ion y su sal son especies químicas
+# DISTINTAS y no identifican el mismo medicamento.
+def _difiere_por_sal(a: str, b: str) -> bool:
+    """¿a y b solo difieren por la forma de SAL del mismo elemento?
+
+    Sin esto, 'potasio'≈'potasico' (distancia 1) hace que una consulta de
+    'citrato potasio' devuelva DICLOFENAC POTASICO y LOSARTAN POTASICO —
+    fármacos distintos que solo comparten la sal. Es la misma trampa que
+    'hasta'≈'pasta', pero dentro de la propia terminología farmacéutica.
+    """
+    if a == b:
+        return False
+    corto, largo = (a, b) if len(a) <= len(b) else (b, a)
+    return (len(largo) == len(corto) + 1
+            and len(corto) >= 5
+            and largo[-1] == corto[-1]
+            and largo[:-1] == corto[:-1] + "c")
+
+
 def tokens_senal(termino: str, min_len: int | None = None) -> list[str]:
     """Tokens del término que pueden validar un producto, no relleno.
 
@@ -240,8 +261,10 @@ def es_relevante(termino: str, nombre_producto: str) -> bool:
         if w in hay_set:
             return True
         # Prefijo en cualquier dirección: el catálogo trunca o el cliente corta.
+        # Se exceptúa la sal: 'potasico' empieza por 'potasio' pero es otro compuesto.
         for t in hay_tokens:
-            if len(t) >= _MIN_LEN_SENAL - 1 and (t.startswith(w) or w.startswith(t)):
+            if (len(t) >= _MIN_LEN_SENAL - 1 and (t.startswith(w) or w.startswith(t))
+                    and not _difiere_por_sal(w, t)):
                 return True
         # Compuesto: el token vive dentro de una palabra más larga.
         if len(w) >= 6 and w in hay:
@@ -249,8 +272,11 @@ def es_relevante(termino: str, nombre_producto: str) -> bool:
         # Typo: distancia de edición sobre tokens suficientemente largos. El
         # umbral de 5 NO es negociable aquí: con 4, 'hasta'≈'pasta' (PASTA
         # PRIMOR) y 'todo'≈'dove' (DESODORANTE DOVE) vuelven a colarse.
+        # La sal también se exceptúa aquí: 'potasio'→'potasico' es distancia 1 y
+        # sin esta excepción entran DICLOFENAC POTASICO y LOSARTAN POTASICO.
         for t in hay_tokens:
-            if len(t) >= _MIN_LEN_TYPO and abs(len(t) - len(w)) <= _MAX_DIST:
+            if (len(t) >= _MIN_LEN_TYPO and abs(len(t) - len(w)) <= _MAX_DIST
+                    and not _difiere_por_sal(w, t)):
                 if _levenshtein(w, t) <= _MAX_DIST:
                     return True
     return False
