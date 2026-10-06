@@ -35,6 +35,7 @@ from app.tools import (
     active_tool_schemas,
     _formatear_lista_productos,
     _fmt_ve,
+    _normalizar_unidad,
     _termino_es_medicamento_plausible,
     _PALABRAS_FUNCIONALES,
 )
@@ -1087,20 +1088,33 @@ async def _tool_loop(
                 # 'disculpe') -> el agente respondía "No disponibles en el
                 # catálogo: DISCULPE VOY COMPRAR" más una lista de chocolates al
                 # cliente que se estaba despidiendo.
+                #
+                # GUARD (2): NUNCA partir el MARCADOR DEL SISTEMA. Los marcadores
+                # de media.py son instrucciones NUESTRAS ("[Audio del lead,
+                # transcrita]: ... Es una CONSULTA del lead: interpreta la
+                # transcripción, extrae el/los medicamento(s) que pide y
+                # consúltalos en el catálogo..."), con comas y "y" dentro. Al
+                # trocearlos, sus pedazos parecían una LISTA de fármacos y se
+                # consultaban como si fueran medicamentos. Real (tenant 27):
+                # un audio de "ya llegó la nifedipina de 30 mg" buscó
+                # 'audio del lead' y 'extrae medicamento pide'; el primero cayó por
+                # fuzzy en 'leda' ≈ 'seda' y el cliente recibió SUTURA SEDA.
+                # El contenido del cliente se detecta con _texto_cliente_sin_marcadores.
+                contenido_cliente = _texto_cliente_sin_marcadores(user_text)
                 if (
                     not medicamentos
-                    and not _es_negativa_o_despedida(user_text)
-                    and _parece_lista_medicamentos(user_text)
+                    and not _es_negativa_o_despedida(contenido_cliente)
+                    and _parece_lista_medicamentos(contenido_cliente)
                 ):
                     medicamentos = _parsear_medicamentos_receta(
-                        "\n".join(_lineas_lista_medicamentos(user_text))
+                        "\n".join(_lineas_lista_medicamentos(contenido_cliente))
                     )
                 # Consulta multi-medicamento en UNA línea sin separadores:
                 # "disponen de clopidogrel de 75 losartan de 50 atorvastatina
                 # de 30 nifedipina de 10 mg" — el patrón 'de <dosis>' repetido
                 # separa los medicamentos.
                 if not medicamentos:
-                    medicamentos = _partir_consulta_multi(user_text)
+                    medicamentos = _partir_consulta_multi(contenido_cliente)
                 if medicamentos and not runtime.receta_atendida:
                     runtime.receta_atendida = True
                     runtime.catalog_retried = True
@@ -2602,6 +2616,87 @@ def _menciona_producto(
     return False
 
 
+# Marcadores de media.py. Se quitan ENTEROS (encabezado + instrucciones): un
+# marcador de audio va de `[Audio del lead` hasta el cierre del bloque, y sus
+# instrucciones intermedias contienen comas y "y" que el backstop de receta
+# confundía con una LISTA de medicamentos.
+#
+# El corte es GREEDY hasta el siguiente `[` (no hasta el primer `]`): los
+# marcadores NO anidan, y cortar por el `]` del encabezado
+# (`[Audio del lead, transcrita]`) dejaba vivas las instrucciones que siguen.
+_RE_MARCADOR_AUDIO = re.compile(
+    r"\[(?:Nota de voz|Audio) del lead[^\[]*", re.IGNORECASE | re.DOTALL
+)
+_RE_MARCADOR_EL_LEAD = re.compile(
+    r"\[El lead [^\[]*", re.IGNORECASE | re.DOTALL
+)
+_RE_MARCADOR_DOCUMENTO = re.compile(
+    r"\[Documento '[^']*'[^\[]*", re.IGNORECASE | re.DOTALL
+)
+
+
+def _texto_cliente_sin_marcadores(user_text: str) -> str:
+    """Devuelve SOLO lo que dijo el cliente, sin los marcadores del sistema.
+
+    `media.py` describe la multimedia con marcadores que son INSTRUCCIONES
+    NUESTRAS, no texto del cliente::
+
+        [Audio del lead, transcrita]: "ya llegó la nifedipina de 30 mg". Es una
+        CONSULTA del lead: interpreta la transcripción, extrae el/los
+        medicamento(s) que pide y consúltalos en el catálogo
+        (buscar_medicamento). No inventes disponibilidad.]
+
+    Esos marcadores traen comas y "y" DENTRO de la frase. Al trocearlos, sus
+    pedazos parecen una LISTA de fármacos y el backstop de receta los consulta
+    como medicamentos. Caso real (tenant 27): un audio que solo decía "ya llegó
+    la nifedipina de 30 miligramos" buscó `'audio del lead'` y
+    `'extrae medicamento pide'`; el primero cayó por fuzzy en `'leda' ≈ 'seda'`
+    y el cliente recibió SUTURA SEDA.
+
+    Este helper extrae los DATOS del cliente que viven dentro de los marcadores
+    (la transcripción, el OCR, el caption, el contenido del documento) y
+    descarta las instrucciones. Sin marcadores devuelve el texto tal cual.
+    """
+    if not user_text:
+        return ""
+    if not re.search(r"\[(?:Nota de voz|Audio|El lead|Documento)\b", user_text,
+                     re.IGNORECASE):
+        return user_text
+    trozos: list[str] = []
+    # Transcripción de la nota de voz / audio.
+    for m in re.finditer(
+        r'(?:Nota de voz|Audio) del lead, transcrita\]:\s*"?([^"\]]+)"?',
+        user_text, re.IGNORECASE,
+    ):
+        trozos.append(m.group(1).strip())
+    # OCR de la imagen (puede ser una receta de varias líneas).
+    for m in re.finditer(r'OCR de la imagen:\s*"([^"]+)"', user_text,
+                         re.IGNORECASE | re.DOTALL):
+        trozos.append(m.group(1).strip())
+    # Caption que el cliente escribió junto al archivo.
+    for m in re.finditer(r'Nota del lead junto a [^:]+:\s*"([^"]+)"', user_text,
+                         re.IGNORECASE):
+        trozos.append(m.group(1).strip())
+    # Documento: el contenido extraído va tras el marcador.
+    m = re.search(r'contenido extraído\]:\s*(.+)', user_text,
+                  re.IGNORECASE | re.DOTALL)
+    if m:
+        trozos.append(m.group(1).strip())
+    # Texto que el cliente escribió FUERA de los marcadores (una ráfaga puede
+    # traer "hola" + un audio). Los marcadores se quitan ENTEROS, incluidas sus
+    # instrucciones: si se cortan por el `]` del encabezado
+    # (`[Audio del lead, transcrita]`), el resto de la instrucción ("... extrae
+    # el/los medicamento(s) que pide ...") queda suelto y el backstop de receta
+    # lo vuelve a leer como si fueran fármacos.
+    restante = _RE_MARCADOR_AUDIO.sub(" ", user_text)
+    restante = _RE_MARCADOR_EL_LEAD.sub(" ", restante)
+    restante = _RE_MARCADOR_DOCUMENTO.sub(" ", restante)
+    restante = restante.strip()
+    if restante:
+        trozos.append(restante)
+    return "\n".join(t for t in trozos if t)
+
+
 def _texto_ocr_completo(user_text: str) -> str:
     """Extrae el texto OCR COMPLETO del marcador de imagen (puede tener varias
     líneas: una receta con varios medicamentos).
@@ -2659,6 +2754,9 @@ def _limpiar_transcripcion(texto: str) -> str:
     dosis), que son las únicas que deben llegar al catálogo.
     """
     palabras = re.findall(r"[a-záéíóúüñ0-9]+", texto.lower())
+    # Unidad HABLADA → abreviatura ('miligramos' → 'mg'). Sin esto el número que
+    # la precede se descarta por corto y la dosis se pierde (ver UNIDADES_HABLADAS).
+    palabras = [_normalizar_unidad(w) for w in palabras]
     # Unidades de dosis/presentación: son CORTAS pero esenciales (mismo bug que
     # el limpiador del término — filtrar por largo descarta "mg" y con él la
     # concentración: "omeprazol 20 mg" → "omeprazol", y el cliente recibe todas
@@ -3261,6 +3359,10 @@ def _extraer_termino_medicamento(texto: str) -> str | None:
     if not texto:
         return None
     palabras = re.findall(r"[a-záéíóúüñ0-9]+", texto.lower())
+    # La unidad HABLADA se normaliza ANTES de decidir ("nifedipina 30 miligramos"
+    # → "nifedipina 30 mg"). Sin esto el 30 se descarta por ir seguido de una
+    # palabra que no está en la lista de unidades y la dosis se pierde.
+    palabras = [_normalizar_unidad(w) for w in palabras]
     # Verbos de consulta y relleno: nunca son parte del medicamento.
     verbos = set(re.findall(r"[a-záéíóúüñ]+", _VERBOS_MEDICAMENTO.pattern))
     excluidas = _FILLER | verbos

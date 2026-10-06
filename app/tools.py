@@ -202,6 +202,34 @@ def _termino_es_medicamento_plausible(term: str) -> bool:
     return True
 
 
+UNIDADES_HABLADAS: dict[str, str] = {
+    "miligramo": "mg", "miligramos": "mg",
+    "mililitro": "ml", "mililitros": "ml",
+    "microgramo": "mcg", "microgramos": "mcg",
+    "gramo": "g", "gramos": "g",
+}
+# Unidades de dosis DICHAS EN PALABRAS, con su abreviatura.
+#
+# Un cliente por nota de voz (o al escribir con naturalidad) dice "nifedipina de 30
+# MILIGRAMOS", no "nifedipina 30 mg". Si la unidad hablada no se reconoce:
+#   (1) el NÚMERO que la precede se descarta por corto -> 'nifedipina miligramos', y
+#       el 30 se pierde;
+#   (2) el catálogo no puede filtrar la dosis -> devuelve 10, 20 y 30 mg mezcladas.
+# Medido contra el catálogo real: 'nifedipina 30 miligramos' -> 9 productos con
+# 10/20/30 mezclados; 'nifedipina 30 mg' -> 2, ambos de 30.
+# Es el MISMO patrón que ya mordió cuatro veces en este proyecto: filtrar por
+# longitud, o no conocer una forma del dato, rompe la DOSIS. Los números y sus
+# unidades —escritas como sea— son la excepción a cualquier regla de limpieza.
+
+
+def _normalizar_unidad(palabra: str) -> str:
+    """Traduce la unidad HABLADA ('miligramos') a su abreviatura ('mg').
+
+    Devuelve la palabra intacta si no es una unidad hablada.
+    """
+    return UNIDADES_HABLADAS.get(palabra, palabra) or palabra
+
+
 def _limpiar_termino_medicamento(term: str) -> str:
     """Deja SOLO las palabras "sustantivas" (posible fármaco) del término.
 
@@ -223,6 +251,12 @@ def _limpiar_termino_medicamento(term: str) -> str:
         return ""
     t_sin = t.replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u")
     palabras = re.findall(r"[a-z0-9]+", t_sin)
+    # La forma HABLADA de la unidad ("miligramos") se traduce a su abreviatura
+    # ("mg") ANTES de decidir. Sin esto el número que la precede se descarta por
+    # corto (len < 3) y la dosis se pierde: 'nifedipina 30 miligramos' →
+    # 'nifedipina miligramos' → el catálogo devuelve 10/20/30 mg mezcladas.
+    # Medido: con `mg` → 2 productos, ambos de 30.
+    palabras = [_normalizar_unidad(w) for w in palabras]
     # UNIDADES de dosis/presentación: son cortas (2-3 letras) pero NO son relleno.
     # Descartarlas por longitud rompe la búsqueda por concentración: 'esoz 40 mg'
     # se reducía a 'esoz 40' — sin unidad, el catálogo no puede filtrar la dosis y
