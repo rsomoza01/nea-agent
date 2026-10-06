@@ -65,7 +65,20 @@ class Settings(BaseSettings):
     # comando quedaba muerto justo donde hace falta — para correr una ronda
     # de pruebas en vivo había que cerrarle la puerta a los leads reales.
     tester_wa_ids: str = ""  # CSV; vacía = responde a todos (Constitución V)
-    coalesce_seconds: float = 4.0
+    # Ventana de agrupación de ráfagas (debounce). Cada mensaje nuevo REINICIA el
+    # reloj; al vencer, la ráfaga entera se procesa en UN solo turno.
+    #
+    # POR QUÉ 8 s Y NO 4: medido contra las ráfagas reales de la BD del CRM, con
+    # 4 s el caso reportado salía en 2 turnos y otro caso real (mensajes a +6,4 s,
+    # +7,7 s y +5,5 s) en 4 turnos. Los 8 s son la ventana MÍNIMA que agrupa
+    # ambas ráfagas en un único turno.
+    #
+    # El coste (un mensaje SOLITARIO espera 8 s antes de que arranque su turno) se
+    # mitiga con la señal de vida inmediata ("escribiendo…"): la latencia medida
+    # hoy ya es mediana 5,1 s / p75 13,3 s, y el 87 % de los mensajes seguidos
+    # llegan a más de 4 s de distancia (mediana 29 s), así que la mayoría NO son
+    # ráfagas y no cambian de comportamiento.
+    coalesce_seconds: float = 8.0
     # Seguimiento automático ("empujón" a las N horas si el lead se calla).
     #
     # ENCENDIDO, pero con dos condiciones que antes no tenía (ver `followup.py`):

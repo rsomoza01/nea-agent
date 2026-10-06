@@ -242,13 +242,48 @@ async def chat(request: Request) -> Any:
             logger.info("dedup /chat: %s ya procesado — ignorado", wa_message_id)
             return JSONResponse({"replies": [], "dedup": True})
     outbox: list[str] = []
-    prev = ctx.lab_outbox
     if not send:
+        # --- Laboratorio del CRM (send=false): turno INMEDIATO -------------
+        # El runner espera las respuestas en el body, así que aquí no se puede
+        # debouncear: procesa ya y devuelve `replies`.
+        prev = ctx.lab_outbox
         ctx.lab_outbox = outbox
-    try:
-        await handle_flush(ctx, wa_identity, [msg])
-    finally:
-        ctx.lab_outbox = prev
+        try:
+            await handle_flush(ctx, wa_identity, [msg])
+        finally:
+            ctx.lab_outbox = prev
+    else:
+        # --- Producción (send=true, webhook de Evolution): DEBOUNCE ---------
+        # El CRM Evolution manda UN POST /chat POR MENSAJE, y este endpoint
+        # llamaba a `handle_flush` directo, sin pasar por el coalescer. Una
+        # ráfaga real de 3 mensajes abría 3 turnos completos y el cliente
+        # recibía 3 respuestas que decían lo mismo con otras palabras.
+        #
+        # Medido en producción (provider 27, FULGRAM): el cliente mandó foto +
+        # "Buenas tardes" + "Lo tiene disponible??" en 13 s y recibió 3
+        # respuestas en 11 s, cada una respondiendo a un mensaje DISTINTO sin
+        # saber de los otros.
+        #
+        # El coalescer YA sabe acumular y debouncear por identidad (lo usa el
+        # webhook de Meta). Aquí se enruta por él: cada POST acumula su mensaje
+        # y (re)inicia el timer; al vencer sale UN turno con la ráfaga entera.
+        #
+        # El CRM no espera esta respuesta (el agente envía por /api/bot/messages),
+        # así que se devuelve 200 YA: el trabajo real lo hace el flush del timer.
+        # Ojo: hay que ACUMULAR, no solo debouncear — si se descartara el
+        # mensaje, el 2.º y el 3.º se perderían para siempre (cada POST ya cerró
+        # con 200 y nadie los reenviaría).
+        if ctx.coalescer is None:
+            logger.error("coalescer no inicializado — turno inmediato por /chat")
+            await handle_flush(ctx, wa_identity, [msg])
+        else:
+            ctx.coalescer.add(wa_identity, msg)
+            # Señal de vida inmediata: el cliente no debe mirar un chat mudo
+            # mientras corre el debounce. El webhook de Meta ya lo hacía; el
+            # camino de Evolution no lo hacía en absoluto.
+            tarea = asyncio.create_task(_early_typing(ctx, wa_identity))
+            _bg_tasks.add(tarea)
+            tarea.add_done_callback(_bg_tasks.discard)
     return JSONResponse({"replies": outbox})
 
 
