@@ -501,21 +501,42 @@ def filtrar_relevantes(termino: str, productos: list[dict]) -> list[dict]:
     if estrictos:
         return estrictos
 
-    # RESCATE. El sufijo comercial NO rescata por sí solo: 'plus' vive en 51 nombres del
-    # catálogo y no identifica nada. Se intenta primero con los tokens ESPECÍFICOS; si el
-    # término SOLO tenía sufijos ('dol plus' → ['dol','plus'] deja ['dol']), se usa ese.
-    # Solo si no queda ninguno se cae al OR clásico, para no perder el caso del cliente
-    # que literalmente busca "plus".
+    # RESCATE ESCALONADO, DEL TOKEN MÁS SELECTIVO AL MÁS GENÉRICO.
+    #
+    # Antes se hacía un OR con TODOS los tokens a la vez: bastaba que UNO matcheara.
+    # Eso llenaba el rescate de ruido aunque estuviera presente el token que SÍ
+    # identifica. Caso real (provider 27, 2026-10): "asaprol as pina" (= ASAPROL
+    # ASPIRINA, escrito fonéticamente).
+    #
+    #   'asaprol'  matchea    2 productos  ← el que identifica
+    #   'pina'     matchea   18 productos  ← PINZA UMBILICAL, BOLSA RECOLECTORA DE
+    #                                        ORINA, PAÑAL, MIGURT SABORA PIÑA,
+    #                                        LUBRIX GEL PIÑA (¡sabor!), PINAVIX
+    #
+    # Con el OR a secas, el cliente pedía ASAPROL y recibía pañales y gel sabor piña.
+    # Probando de a UNO y parando en el primero con resultados, gana 'asaprol' (2
+    # productos, los correctos) y 'pina' ya no aporta nada.
+    #
+    # El criterio es la SELECTIVIDAD (cuántos productos matchea), no la longitud:
+    # 'omeprazol' y 'pastillas' miden igual y solo el primero identifica.
+    #
+    # Los sufijos comerciales se saltan aquí (ya se explicó arriba por qué).
     especificos = [w for w in utiles if not _es_sufijo_comercial(w)]
     for rescate in (especificos, utiles if not especificos else []):
         if not rescate:
             continue
-        relajados = [
-            p for p in productos
-            if any(es_relevante(w, str(p.get("nombre") or "")) for w in rescate)
-        ]
-        if relajados:
-            return relajados
+        for token in sorted(
+            rescate,
+            key=lambda w: sum(
+                1 for p in productos if es_relevante(w, str(p.get("nombre") or ""))
+            ),
+        ):
+            relajados = [
+                p for p in productos
+                if es_relevante(token, str(p.get("nombre") or ""))
+            ]
+            if relajados:
+                return relajados
 
     # No hay NINGÚN producto que comparta señal con los tokens útiles.
     if farmacos:
