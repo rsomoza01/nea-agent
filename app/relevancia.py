@@ -338,9 +338,40 @@ def tokens_farmaco(termino: str) -> list[str]:
     Excluye presentación y audiencia: 'dovilin jarabe adulto' → ['dovilin']. Si el
     término es SOLO presentación ('jarabe para la tos'), devuelve []: no hay fármaco
     que exigir y el comportamiento permisivo es el correcto.
+
+    Cubre también las VARIANTES con typo de la presentación ('ampola', 'ampollla',
+    'jaravbe'): una variante que no esté en la lista cuenta como token de fármaco y
+    valida productos ajenos. Caso real: el filtro descartaba las 20 ampollas de
+    'depofem ampolla' (correcto) pero la VARIANTE 'depofem ampola' las dejaba pasar
+    TODAS, porque 'ampola' no estaba en la lista → 20 medicamentos ajenos al cliente.
     """
-    return [w for w in tokens_senal(termino, _MIN_LEN_SENAL)
-            if w not in _PRESENTACION_AUDIENCIA]
+    out: list[str] = []
+    for w in tokens_senal(termino, _MIN_LEN_SENAL):
+        if w in _PRESENTACION_AUDIENCIA:
+            continue
+        # ¿es una presentación mal escrita? Se compara por prefijo/Levenshtein contra
+        # las formas conocidas, no por igualdad exacta.
+        if _parece_presentacion(w):
+            continue
+        out.append(w)
+    return out
+
+
+def _parece_presentacion(palabra: str) -> bool:
+    """¿La palabra es una forma farmacéutica, aunque esté mal escrita?
+
+    'ampola', 'ampollla', 'ampoylla' → sí (variantes de 'ampolla').
+    'depofem', 'losartan', 'acetaminofen' → no.
+    """
+    for forma in _PRESENTACION_AUDIENCIA:
+        if abs(len(palabra) - len(forma)) > 2:
+            continue
+        if palabra == forma:
+            return True
+        # Prefijo largo común: cubre las transposiciones ('ampola' vs 'ampolla').
+        if len(forma) >= 5 and palabra[:4] == forma[:4] and _levenshtein(palabra, forma) <= 2:
+            return True
+    return False
 
 
 def _tokens_senal_ordenados(termino: str) -> list[str]:

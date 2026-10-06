@@ -246,6 +246,15 @@ _PRESENTACION = {
     "tab", "tabs", "tableta", "tabletas", "comp", "comprimido", "comprimidos",
     "cap", "caps", "capsula", "capsulas", "gragea", "grageas",
     "jab", "sob", "sobre", "sobres", "meq", "lp", "retard",
+    # Formas que el cliente añade a la MARCA y que NO identifican el fármaco.
+    # Caso real: 'Depofem ampolla' → el catálogo devolvía su grupo difuso de ampollas
+    # (Dexametasona, Furosemida, Ranitidina...) y bastaba que el filtro aceptara UNA de
+    # esas para llenar la lista con 20 medicamentos ajenos. Con la marca sola
+    # ('depofem') el catálogo devuelve 0: el producto no está, y el agente debe decirlo.
+    "ampolla", "ampollas", "amp", "vial", "viales",
+    "inyectable", "inyectables", "inyeccion", "inyecciones",
+    "frasco", "frascos", "tubo", "tubos", "pote", "potes",
+    "pastilla", "pastillas", "pildora", "pildoras",
 }
 
 
