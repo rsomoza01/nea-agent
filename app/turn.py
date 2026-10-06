@@ -20,6 +20,7 @@ from app.config import canonical_identity
 from app.crm import CrmConflict, CrmError
 from app.hostility import ALERT as HOSTILITY_ALERT, hostile_streak
 from app.llm import LlmExhausted
+from app.relevancia import es_relevante
 from app.stall import ALERTA as STALL_ALERT, racha_vacia, sin_rumbo
 from app.profile import resolve_profile
 from app.prompt import build_system_prompt
@@ -1109,6 +1110,32 @@ async def _tool_loop(
                 # herramientas y cortaba sin texto).
                 ocr_texto = _texto_ocr_completo(user_text)
                 medicamentos = _parsear_medicamentos_receta(ocr_texto) if ocr_texto else []
+                # CAJA vs RECETA. El OCR de UNA caja de TRIMIC FORTE L producía 27
+                # productos en 3 bloques: los encabezados eran las 3 líneas del OCR
+                # (nombre / principios activos / presentación), troceadas como si fueran
+                # 3 medicamentos. `_medicamentos_de_ocr` decide: si el nombre de la caja
+                # está en el catálogo y un producto cubre TODOS los demás componentes del
+                # OCR, es UNA caja y se consulta una sola vez (el nombre es lo más
+                # discriminante). Si no, es una receta y se trocea.
+                if ocr_texto:
+                    async def _buscar_ocr(nombre_term: str) -> list[str]:
+                        data_ocr = await ctx.crm.get_products(
+                            runtime._provider_id, q=nombre_term, limit=20
+                        )
+                        return [
+                            str(p.get("nombre") or "")
+                            for p in (data_ocr.get("products") or [])
+                        ]
+
+                    meds_ocr, motivo_ocr = await _medicamentos_de_ocr(
+                        ocr_texto, _buscar_ocr
+                    )
+                    if meds_ocr:
+                        logger.info(
+                            "backstop OCR: %s → %d medicamento(s): %s",
+                            motivo_ocr, len(meds_ocr), meds_ocr[:4],
+                        )
+                        medicamentos = meds_ocr
                 # Lista de medicamentos en TEXTO (sin imagen): si el mensaje del
                 # cliente contiene 2+ medicamentos (p. ej. "esoz, leprit y
                 # evigax"), se responde con el mismo formato de receta.
@@ -3014,6 +3041,124 @@ def _extraer_termino_transcripcion(user_text: str) -> str | None:
     if all(p.isdigit() for p in term.split()):
         return None
     return term
+
+
+# --------------------------------------------------------------------------- #
+# ¿El OCR de una imagen es UNA CAJA o una RECETA de varios medicamentos?
+# --------------------------------------------------------------------------- #
+# Caso real (provider 27, 2026-10): la foto de UNA caja de TRIMIC FORTE L produjo 27
+# productos en 3 bloques. Los encabezados de la respuesta eran EXACTAMENTE las 3 líneas
+# del OCR ('TRIMIC FORTE L' / 'Metronidazol 750 mg, Miconazol 200 mg, Lidocaína 100 mg'
+# / '7 óvulos (supositorios vaginales)'): el backstop de receta había troceado la
+# descripción de UN medicamento y consultado el catálogo 3 veces.
+#
+# Una CAJA describe UN producto: su nombre, sus principios activos y su presentación.
+# Una RECETA (varias cajas o una lista) trae VARIOS nombres comerciales independientes.
+_LINEAS_DESCRIPTIVAS = (
+    # etiquetas de campo del envase
+    "principio activo", "principios activos", "principio activo y concentración",
+    "concentración", "concentracion", "concentracin", "presentación", "presentacion",
+    "presentacin", "contenido neto", "forma farmacéutica", "forma farmaceutica",
+    "vía de administración", "via de administracion", "registro sanitario",
+    "laboratorio", "fabricante", "indicaciones", "composición", "composicion",
+    "dosis", "descripción", "descripcion", "código", "codigo", "cpe",
+    # texto promocional/del envase
+    "antibiótico", "antibiotico", "antimicótico", "antimicotico", "antiprotozoario",
+)
+# Una línea que empieza por una FORMA farmacéutica es presentación del mismo producto.
+_RE_SOLO_FORMA = re.compile(
+    r"^\s*\d*\s*(?:óvulos?|ovulos?|supositorios?|cápsulas?|capsulas?|tabletas?|"
+    r"comprimidos?|sobres?|ampollas?|frascos?|tubos?|gotas?|crema|gel)\b",
+    re.IGNORECASE,
+)
+
+
+def _es_linea_descriptiva(linea: str) -> bool:
+    """¿La línea describe el MISMO producto (no es otro medicamento)?
+
+    'Principio activo: Metronidazol' → sí (descripción)
+    'Presentación: 7 óvulos'         → sí
+    '7 óvulos (supositorios vaginales)' → sí (solo forma)
+    'LEPRIT 25 MG'                   → NO (es un medicamento propio)
+    """
+    l = linea.strip().lower()
+    if not l:
+        return True
+    # Un bullet del envase ('• Antibiótico', '- Antimicótico') describe el producto.
+    l = re.sub(r"^[•·\-\*\u2022]+\s*", "", l)
+    if any(l.startswith(e) or f"{e}:" in l for e in _LINEAS_DESCRIPTIVAS):
+        return True
+    if _RE_SOLO_FORMA.match(l):
+        return True
+    # '7 óvulos (supositorios vaginales)' — cantidad + forma + paréntesis
+    if re.match(r"^\s*\d+\s+\w+\s*\(", l):
+        return True
+    return False
+
+
+def _lineas_candidatas_medicamento(ocr: str) -> list[str]:
+    """Líneas del OCR que podrían ser un MEDICAMENTO independiente."""
+    return [
+        l.strip() for l in (ocr or "").splitlines()
+        if l.strip() and not _es_linea_descriptiva(l)
+    ]
+
+
+async def _medicamentos_de_ocr(
+    ocr: str, buscar: Any
+) -> tuple[list[str], str]:
+    """Interpreta el OCR: UNA caja (1 medicamento) o una RECETA (varios).
+
+    Devuelve `(terminos, motivo)`. `buscar` es un callable async que consulta el
+    catálogo (`nombre -> list[str]` de nombres de producto).
+
+    El discriminador está VERIFICADO contra el catálogo, porque la estructura del texto
+    sola no basta (un OCR de caja sin etiquetas parece una lista):
+      · si el NOMBRE de la caja está en el catálogo y ALGÚN producto suyo cubre también
+        los demás componentes del OCR → esos componentes son del MISMO envase → es una
+        caja, se consulta UNA vez con el nombre (lo más discriminante);
+      · si no, es una RECETA y se trocea como siempre.
+
+    Medido: TRIMIC FORTE L (caja) → 1 término; ESOZ/LEPRIT, ACETAMINOFEN/IBUPROFENO/
+    OMEPRAZOL y LOSARTAN/METFORMINA/ATORVASTATINA (recetas) → 3 términos cada una.
+    """
+    lineas = _lineas_candidatas_medicamento(ocr)
+    if not lineas:
+        return [], "sin líneas claras"
+
+    nombre = _limpiar_etiquetas_ocr(lineas[0]) or lineas[0]
+    term = " ".join(re.findall(r"[a-záéíóúüñ0-9]+", nombre.lower()))
+    componentes = lineas[1:]
+
+    if term:
+        try:
+            productos = await buscar(term)
+        except Exception:  # noqa: BLE001
+            productos = []
+        if productos:
+            if not componentes:
+                return [term], "caja (el OCR solo trae el nombre)"
+            # ¿algún producto del catálogo cubre TAMBIÉN los otros componentes?
+            for prod in productos:
+                palabras_ok = True
+                for comp in componentes:
+                    utiles = re.findall(r"[a-záéíóúüñ]{5,}", comp.lower())
+                    if not utiles:
+                        continue
+                    if not any(es_relevante(w, prod) for w in utiles):
+                        palabras_ok = False
+                        break
+                if palabras_ok:
+                    return [term], "caja (un producto cubre todos los componentes)"
+
+    # Receta: se devuelven las líneas como medicamentos independientes, con la misma
+    # lógica que ya usaba el backstop.
+    meds = _parsear_medicamentos_receta(ocr)
+    if not meds and _parece_lista_medicamentos(ocr):
+        meds = _parsear_medicamentos_receta(
+            "\n".join(_lineas_lista_medicamentos(ocr))
+        )
+    return meds, "receta (varios medicamentos independientes)"
 
 
 def _extraer_termino_ocr(user_text: str) -> str | None:
