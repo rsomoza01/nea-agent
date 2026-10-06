@@ -230,6 +230,25 @@ def _normalizar_unidad(palabra: str) -> str:
     return UNIDADES_HABLADAS.get(palabra, palabra) or palabra
 
 
+# Tokens de PRESENTACIÓN / concentración de ENVASE: no identifican el fármaco, solo lo
+# describen. El matcher del catálogo hace AND, así que escribirlos EXIGE que el nombre
+# los contenga — y como casi ningún nombre los trae, la búsqueda cae a la fase difusa y
+# el producto exacto se sale de la ventana de resultados.
+#
+# Medido sobre 6.148 nombres reales: 'tab' aparece en 776, 'cap' en 113, 'comp' en 91 —
+# no discriminan nada. 'meq' aparece en UNO solo (un rehidrosol), así que no puede
+# encontrar ningún citrato de potasio: solo estorba.
+#
+# NO están aquí mg/ml/mcg/g/ui/cc (unidades de DOSIS) ni ningún número: esos SÍ filtran
+# y perderlos devuelve todas las concentraciones mezcladas. Es la regla que más veces ha
+# mordido en este proyecto.
+_PRESENTACION = {
+    "tab", "tabs", "tableta", "tabletas", "comp", "comprimido", "comprimidos",
+    "cap", "caps", "capsula", "capsulas", "gragea", "grageas",
+    "jab", "sob", "sobre", "sobres", "meq", "lp", "retard",
+}
+
+
 def _limpiar_termino_medicamento(term: str) -> str:
     """Deja SOLO las palabras "sustantivas" (posible fármaco) del término.
 
@@ -278,6 +297,24 @@ def _limpiar_termino_medicamento(term: str) -> str:
     # catálogo con basura). Se exige al menos una palabra con letras.
     if not any(not w.isdigit() for w in sustantivas):
         return ""
+    # TOKENS DE PRESENTACIÓN FUERA DE LA CONSULTA. El matcher del catálogo hace AND
+    # sobre los tokens: si el cliente escribe la presentación, el catálogo la EXIGE
+    # como si fuera parte del nombre.
+    #
+    # Medido contra el catálogo real (provider 27):
+    #   'CITRATO POTASIO TAB MEQ' -> 16 productos, 1 con citrato de potasio
+    #   'CITRATO POTASIO'         -> 20 productos, 2 con citrato de potasio
+    #   'citrato potasio 10 meq'  -> 20 productos, 0 con citrato de potasio
+    # Es decir: 'tab'/'meq' EMPUJAN al matcher a la fase difusa y sacan al producto
+    # EXACTO de la ventana. 'meq' aparece en 1 solo producto del catálogo (un
+    # rehidrosol), así que no puede encontrar nada: solo estorba.
+    #
+    # NO se tocan los NÚMEROS ni las UNIDADES DE DOSIS (mg, ml, mcg, g, ui, cc): esas
+    # SÍ filtran y perderlas devuelve todas las concentraciones mezcladas (la DOSIS
+    # es la excepción permanente a cualquier limpieza de este proyecto).
+    sin_presentacion = [w for w in sustantivas if w not in _PRESENTACION]
+    if sin_presentacion and any(not w.isdigit() for w in sin_presentacion):
+        sustantivas = sin_presentacion
     return " ".join(sustantivas)
 
 

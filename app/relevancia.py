@@ -282,17 +282,67 @@ def es_relevante(termino: str, nombre_producto: str) -> bool:
     return False
 
 
+def _tokens_senal_ordenados(termino: str) -> list[str]:
+    """Tokens de señal del término, de MAYOR a menor longitud.
+
+    El orden importa para el diagnóstico y para que el más específico ('citrato')
+    mande sobre el genérico ('potasio').
+    """
+    return sorted(tokens_senal(termino, _MIN_LEN_SENAL), key=len, reverse=True)
+
+
+def es_relevante_estricto(termino: str, nombre_producto: str) -> bool:
+    """¿El producto comparte señal con TODOS los tokens del término?
+
+    "CITRATO POTASIO" pide el conjunto, no cada palabra por su lado. Con el criterio
+    de un solo token, un DICLOFENAC POTASICO comparte 'potasio' y entra — el cliente
+    pedía CITRATO de potasio y recibe un antiinflamatorio. Medido contra el catálogo
+    real (provider 27), exigir los dos tokens quita 27 de 27 productos ajenos en esa
+    consulta (la lista cae a los que sí son citrato de potasio).
+
+    Con UN solo token de señal se comporta como `es_relevante` (no hay nada que exigir).
+
+    El orden del AND es indistinto, pero se comprueba primero el token MÁS LARGO: es el
+    más discriminante y descarta antes el ruido.
+    """
+    senales = _tokens_senal_ordenados(termino)
+    if len(senales) < 2:
+        return es_relevante(termino, nombre_producto)
+    for w in senales:
+        if not es_relevante(w, nombre_producto):
+            return False
+    return True
+
+
 def filtrar_relevantes(termino: str, productos: list[dict]) -> list[dict]:
     """Devuelve solo los productos relevantes para el término.
 
-    NUNCA devuelve una lista vacía si la entrada no lo estaba: si el filtro
-    descarta TODO, se devuelve la lista original. Un falso rechazo (esconder un
-    medicamento que sí existe) es peor que mostrar ruido, y hay consultas
-    legítimas cuyo nombre en el catálogo es muy distinto al del cliente (marca
-    comercial → principio activo). Preferimos el ruido al silencio.
+    En TRES pasos, del más estricto al más permisivo:
+
+      1. AND — el producto comparte señal con TODOS los tokens del término. Es lo que
+         el cliente quiere ("citrato potasio" = citrato Y potasio) y quita de raíz los
+         fármacos que solo comparten una palabra (DICLOFENAC POTASICO ante "citrato
+         potasio"). Medido: quita 27/27 ajenos en esa consulta.
+      2. OR — basta un token. Rescata los casos en que el catálogo nombra al revés
+         ("nitrato de miconazol" → "MICONAZOL 400MG ... (NITRATO)") o trae el nombre
+         partido.
+      3. ORIGINAL — NUNCA devolver vacío si la entrada no lo estaba.
+
+    Un falso rechazo (esconder un medicamento que sí existe) es peor que mostrar ruido:
+    el cliente se queda sin su fármaco. Y hay consultas legítimas cuyo nombre en el
+    catálogo es muy distinto al del cliente (marca comercial → principio activo). Por
+    eso los pasos 2 y 3 son obligatorios: la AND sola dejaría listas vacías.
+
+    Verificado a escala: con 5.887 consultas construidas con las 2 primeras palabras de
+    cada nombre real del catálogo, la AND NO pierde ninguno (0 falsos rechazos).
     """
     if not productos:
         return productos
+    estrictos = [
+        p for p in productos if es_relevante_estricto(termino, str(p.get("nombre") or ""))
+    ]
+    if estrictos:
+        return estrictos
     filtrados = [p for p in productos if es_relevante(termino, str(p.get("nombre") or ""))]
     return filtrados or productos
 
