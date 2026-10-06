@@ -747,10 +747,34 @@ async def run_turn(
     else:
         if runtime.proposed:
             updates["phase"] = "agendando"
+        # SEGUIMIENTO: solo si hay un PEDIDO que no se convirtió en venta. Antes se
+        # agendaba con CUALQUIER turno enviado (una consulta de precio, un "gracias",
+        # una reserva de demo) → 40 empujones a gente que nunca mostró intención de
+        # comprar. El negocio lo pidió explícito: seguimiento del PEDIDO a las 4 h si NO
+        # se convirtió en venta.
+        #   · hay ítems en el carrito → hay algo concreto que retomar (no un "¿sigues ahí?")
+        #   · el pedido NO se cerró → si el cliente finalizó (LISTO), ya compró y
+        #     empujarlo molesta. Se lee el flag FRESCO de la BD porque finalizar_pedido
+        #     lo escribe durante el turno (la `conv` en memoria puede estar vieja).
         if sent and not conv.followup_sent:
-            updates["followup_due_at"] = utcnow() + timedelta(
-                hours=settings.followup_hours
-            )
+            try:
+                pedido_abierto = bool(
+                    await ctx.store.cart_items(
+                        conv.id, session_hours=settings.followup_max_age_hours
+                    )
+                )
+                fresca_conv = await ctx.store.get_or_create_conversation(
+                    conv.wa_identity
+                )
+                ya_cerrado = bool(getattr(fresca_conv, "cart_closed", False))
+            except Exception:
+                # Ante la duda, NO agendar: un seguimiento de más molesta; uno de menos
+                # solo pierde una oportunidad.
+                pedido_abierto, ya_cerrado = False, True
+            if pedido_abierto and not ya_cerrado:
+                updates["followup_due_at"] = utcnow() + timedelta(
+                    hours=settings.followup_hours
+                )
     await ctx.store.update_conversation(conv.id, **updates)
 
     # Cerrar la traza de observabilidad con el resultado del turno.

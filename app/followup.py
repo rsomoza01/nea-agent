@@ -23,6 +23,24 @@ from app.turn import _agent_tz
 logger = logging.getLogger("nea.followup")
 
 
+def _dia_permitido(dia: int | None, config: str) -> bool:
+    """¿Se permite el seguimiento en este día de la semana? 0=lunes … 6=domingo.
+
+    `config` es un CSV ("0,1,2,3,4,5") o vacío/None = todos los días.
+    """
+    if dia is None:
+        return False
+    texto = (config or "").strip()
+    if not texto:
+        return True
+    try:
+        permitidos = {int(x) for x in texto.split(",") if x.strip() != ""}
+    except ValueError:
+        # Config mal escrita: no bloquees el seguimiento por eso.
+        return True
+    return dia in permitidos
+
+
 class FollowupWorker:
     INTERVAL = 60.0
 
@@ -39,21 +57,24 @@ class FollowupWorker:
 
     async def tick(self, now: datetime | None = None) -> None:
         now = now or utcnow()
-        # El seguimiento está APAGADO por decisión del negocio: escribirle al
-        # cliente horas después molesta (ver `followup_enabled` en config.py).
-        # El worker sigue corriendo para no rearmar el arranque, pero no hace nada.
-        if not self._ctx.settings.followup_enabled:
-            return
-        # Si algún día se reactiva: NUNCA fuera del horario del negocio. Medido en
-        # producción, 12 de 40 empujones salieron fuera de las 8-20 h (uno a las 4
-        # de la mañana). Un mensaje que despierta al cliente es peor que el silencio.
-        hora_local = now.astimezone(_agent_tz(self._ctx.settings)).hour
         s = self._ctx.settings
-        if not (s.followup_hour_start <= hora_local < s.followup_hour_end):
+        if not s.followup_enabled:
+            return
+        # NUNCA fuera del horario del negocio. Medido en producción, 12 de 40 empujones
+        # salieron fuera de las 8-20 h (uno a las 4 de la mañana). Un mensaje que
+        # despierta al cliente es peor que el silencio.
+        local = now.astimezone(_agent_tz(s))
+        if not (s.followup_hour_start <= local.hour < s.followup_hour_end):
             logger.debug(
                 "followup: %02d h locales — fuera de la franja %d-%d, se omite",
-                hora_local, s.followup_hour_start, s.followup_hour_end,
+                local.hour, s.followup_hour_start, s.followup_hour_end,
             )
+            return
+        # Días permitidos (0=lunes … 6=domingo). El domingo la farmacia está cerrada:
+        # un seguimiento que no se puede atender solo genera frustración.
+        if not _dia_permitido(local.weekday(), s.followup_dias):
+            logger.debug("followup: %s — día no permitido, se omite",
+                         local.strftime("%A"))
             return
         for conv in await self._ctx.store.due_followups(now):
             # Claim atómico ANTES de enviar: jamás un segundo empujón.
@@ -106,6 +127,36 @@ class FollowupWorker:
         if not info.get("windowOpen", False):
             logger.info(
                 "followup %s: ventana de 24 h cerrada — omitido con registro",
+                conv.wa_identity,
+            )
+            return
+
+        # LA CONDICIÓN DE NEGOCIO: el empujón es para el PEDIDO que no se cerró, no un
+        # "¿sigues ahí?" genérico. Se omite si:
+        #   · el cliente YA cerró el pedido (`cart_closed`) → ya compró, insistirle molesta
+        #   · el carrito está VACÍO → no hay pedido a retomar
+        # Antes esto no existía: el seguimiento se agendaba con CUALQUIER turno enviado
+        # (una consulta de precio, un "gracias", una reserva de demo), así que llegaba
+        # a quien nunca mostró intención de comprar. Medido: 40 empujones, y el que
+        # reportó el negocio era sobre una RESERVA DE DEMO, no un pedido.
+        #
+        # `cart_closed` es un flag LOCAL de bot_conversation (no viene del CRM): se
+        # activa solo en finalizar_pedido. Es la marca fiable de "esto fue una venta".
+        if getattr(conv, "cart_closed", False):
+            logger.info(
+                "followup %s: el pedido YA se cerró (venta hecha) — omitido",
+                conv.wa_identity,
+            )
+            return
+        # Antigüedad del pedido: se usa `followup_max_age_hours` (48 h), NO la ventana
+        # del carrito operativo (2 h en producción). Con la ventana operativa el pedido
+        # ya había expirado justo cuando toca el empujón de las 4 h → 0 seguimientos.
+        carrito = await ctx.store.cart_items(
+            conv.id, session_hours=ctx.settings.followup_max_age_hours
+        )
+        if not carrito:
+            logger.info(
+                "followup %s: sin pedido armado — no es seguimiento de pedido, omitido",
                 conv.wa_identity,
             )
             return

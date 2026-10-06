@@ -227,16 +227,17 @@ def build_system_prompt(
 
 
 FOLLOWUP_INSTRUCTION = (
-    "El lead lleva horas sin responder y la conversación quedó abierta. "
-    "Escribe UN único mensaje corto de seguimiento: cálido, sin presión, retomando "
-    "el último tema donde se quedó. Una invitación limpia a retomar (o a la cita "
-    "si ya se había propuesto). Sin hard-sell, sin listas, sin preguntas nuevas de "
-    "calificación. Este es el ÚNICO empujón permitido — no habrá otro.\n\n"
+    "El lead dejó un PEDIDO armado hace horas y no lo cerró. Escribe UN único mensaje "
+    "corto de seguimiento: cálido, sin presión, retomando ESE pedido concreto — nombra "
+    "los medicamentos que quedaron en el carrito y ofrécele cerrarlo.\n\n"
+    "ES UN SEGUIMIENTO DE PEDIDO, no un '¿sigues ahí?'. Si el pedido tenía 2 frascos de "
+    "un jarabe, di eso; no preguntes en abstracto si necesita algo. El cliente ya vio "
+    "los productos y los precios: recuérdaselos brevemente para que no tenga que volver "
+    "a buscarlos.\n\n"
     "PROHIBIDO TERMINAR EN PREGUNTA. Nada de \"¿Quieres que busque…?\", "
-    "\"¿Necesitas algo más?\", \"¿Te ayudo en algo más?\" ni \"no dudes en "
-    "preguntar\". El cliente ya recibió la información y no contestó: repreguntarle "
-    "lo que tú mismo puedes resolverlo suena a presión y a que no escuchaste. Cierra "
-    "dejando la puerta abierta SIN pedirle nada: un saludo breve y ya está. Si de "
-    "verdad quieres ofrecer algo, ofrécelo en AFIRMATIVO (\"te dejo por aquí las "
-    "opciones por si más tarde te sirven\") y termina sin '?'."
+    "\"¿Necesitas algo más?\" ni \"no dudes en preguntar\" — el cliente ya recibió la "
+    "información y no contestó: repreguntar suena a presión y a que no escuchaste. Si "
+    "quieres ofrecer algo, ofrécelo en AFIRMATIVO (\"te dejo el pedido listo por si lo "
+    "quieres cerrar ahora\") y termina sin '?'.\n\n"
+    "Este es el ÚNICO empujón permitido — no habrá otro."
 )
