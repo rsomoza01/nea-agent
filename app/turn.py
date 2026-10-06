@@ -1161,12 +1161,22 @@ async def _tool_loop(
                 contenido_cliente = _texto_cliente_sin_marcadores(user_text)
                 if (
                     not medicamentos
-                    and not _es_negativa_o_despedida(contenido_cliente)
                     and _parece_lista_medicamentos(contenido_cliente)
                 ):
-                    medicamentos = _parsear_medicamentos_receta(
-                        "\n".join(_lineas_lista_medicamentos(contenido_cliente))
-                    )
+                    # El troceado por LÍNEAS no sirve cuando la enumeración va en UNA
+                    # línea con comas o 'y' ("precio de valsartan e hidroclorotiazida y
+                    # omeprazol"): da un solo trozo. `_medicamentos_enumerados` respeta
+                    # los separadores y devuelve cada medicamento por separado.
+                    medicamentos = _medicamentos_enumerados(contenido_cliente)
+                    if not medicamentos:
+                        medicamentos = _parsear_medicamentos_receta(
+                            "\n".join(_lineas_lista_medicamentos(contenido_cliente))
+                        )
+                    if medicamentos:
+                        logger.info(
+                            "backstop lista: %d medicamento(s) en la consulta: %s",
+                            len(medicamentos), medicamentos[:5],
+                        )
                 # Consulta multi-medicamento en UNA línea sin separadores:
                 # "disponen de clopidogrel de 75 losartan de 50 atorvastatina
                 # de 30 nifedipina de 10 mg" — el patrón 'de <dosis>' repetido
@@ -3370,34 +3380,83 @@ def _es_negativa_o_despedida(texto: str) -> bool:
     )
 
 
-def _parece_lista_medicamentos(texto: str) -> bool:
-    """True si el texto parece una lista de 2+ medicamentos (receta en texto,
-    no una consulta simple). Detecta separadores de lista: comas, 'y',
-    'ademas', saltos de línea con nombres propios.
+# Vocabulario del MOTIVO: precio, disponibilidad, "¿tienes...?". NO acota la consulta a
+# un producto — solo dice por qué lo pregunta. Se descarta para contar medicamentos.
+# Caso real (provider 27, 2026-10): "Precio de valsartan 80 hidroclorotiazida 12.5 y
+# omeprazol" respondía SOLO omeprazol, porque 'precio' está en `_VERBOS_MEDICAMENTO` y
+# eso hacía que `_parece_lista_medicamentos` cortara con False. La consulta pedía DOS
+# medicamentos (valsartán+hidroclorotiazida es una combinación, y omeprazol aparte).
+_VERBOS_MOTIVO = re.compile(
+    r"\b(?:precio|precios|cuesta|cuestan|cuanto|cuánto|vale|valen|"
+    r"disponible|disponibles|disponen|disponemos|tienen|tienes|tiene|tenemos|"
+    r"venden|vendes|consigo|consigues|conseguir|hay|manejan|trabajan|"
+    r"necesito|busco|quiero|quisiera|dame|me das)\b",
+    re.IGNORECASE,
+)
+# Separadores de ENUMERACIÓN de medicamentos.
+_RE_SEP_LISTA = re.compile(r"[,;]|(?:\s+y\s+)|(?:\s+e\s+)|(?:ademas|además)",
+                            re.IGNORECASE)
 
-    'esoz, leprit y evigax' / 'ESOZ\nLEPRIT\nEVIGAX' → True
-    'tienes atamel forte?' → False (consulta simple)
+
+def _sin_motivo(texto: str) -> str:
+    """Quita el vocabulario del MOTIVO (precio, cuánto cuesta, tienes...)."""
+    return _VERBOS_MOTIVO.sub(" ", texto or "")
+
+
+def _medicamentos_enumerados(texto: str) -> list[str]:
+    """Medicamentos de una consulta que ENUMERA varios (con separadores).
+
+    'Precio de valsartan 80 hidroclorotiazida 12.5 y omeprazol'
+      → ['valsartan 80 hidroclorotiazida 12', 'omeprazol']
+    """
+    if not texto:
+        return []
+    trozos = [p.strip() for p in _RE_SEP_LISTA.split(texto) if p.strip()]
+    if len(trozos) < 2:
+        return []
+    out: list[str] = []
+    for trozo in trozos:
+        de = _parsear_medicamentos_receta(_sin_motivo(trozo))
+        if de:
+            out.extend(de)
+        else:
+            # Un trozo sin medicamento reconocido puede ser continuación del anterior
+            # ('valsartan 80' + 'hidroclorotiazida 12.5' describen la MISMA combinación).
+            limpio = " ".join(_sin_motivo(trozo).split())
+            if limpio and re.search(r"[a-záéíóúüñ]{5,}", limpio):
+                out.append(limpio)
+    return out
+
+
+def _parece_lista_medicamentos(texto: str) -> bool:
+    """True si la consulta ENUMERA 2+ medicamentos (aunque pida el precio).
+
+    'esoz, leprit y evigax'                          → True
+    'Precio de valsartan 80 hidroclorotiazida y omeprazol' → True  ← el caso reportado
+    'tienes atamel forte?'                          → False (consulta simple)
+    'precio del atamel'                             → False (un solo medicamento)
+
+    OJO — el verbo de consulta NO descalifica la lista. Antes esto cortaba con False en
+    cuanto aparecía 'precio'/'tienes', así que pedir el precio de VARIOS medicamentos se
+    trataba como consulta simple y el agente respondía solo UNO. Lo que decide es
+    CUÁNTOS medicamentos distintos menciona, no el motivo por el que los pide.
     """
     if not texto:
         return False
-    t = texto.strip().lower()
-    # Una LISTA de medicamentos es una enumeración de nombres, SIN verbo de
-    # consulta. Si el texto tiene "tiene/tienes/hay/busco..." es una consulta
-    # simple (aunque lleve comas y "y": "depomedrol 125mg o 500 MG, marca y
-    # precio" NO es una receta).
-    if _VERBOS_MEDICAMENTO.search(t):
+    # Una NEGATIVA o despedida NUNCA es una lista. Sin este guard,
+    # "No gracias no las voy a comprar y disculpe" se partía por la 'y' y el agente
+    # respondía "No disponibles: DISCULPE VOY COMPRAR" más una lista de chocolates.
+    if _es_negativa_o_despedida(texto):
         return False
-    # Separadores de lista explícitos (comas, 'y', 'ademas')
-    if re.search(r"[,;]|(?:\s+y\s+)|(?:ademas)", t):
-        # Separar por comas primero (una línea puede tener varios medicamentos)
-        trozos = re.split(r"[,;]+|\s+y\s+", texto, flags=re.IGNORECASE)
-        terminos = _parsear_medicamentos_receta("\n".join(p.strip() for p in trozos if p.strip()))
-        return len(terminos) >= 2
-    # Múltiples líneas con contenido (sin ser OCR)
+
+    # Con separadores de enumeración: contar los medicamentos de cada trozo.
+    if _RE_SEP_LISTA.search(texto):
+        return len(_medicamentos_enumerados(texto)) >= 2
+
+    # Sin separadores: varias LÍNEAS con medicamento (receta escrita en vertical).
     lineas = [l.strip() for l in texto.splitlines() if l.strip()]
     if len(lineas) >= 2:
-        terminos = _parsear_medicamentos_receta(texto)
-        return len(terminos) >= 2
+        return len(_parsear_medicamentos_receta(_sin_motivo(texto))) >= 2
     return False
 
 
