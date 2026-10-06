@@ -331,6 +331,48 @@ _PRESENTACION_AUDIENCIA = {
     "anciano", "ancianos",
 }
 
+# SUFIJOS COMERCIALES: acompañan a la marca pero NO la identifican.
+#
+# "ATAMEL PLUS" ya se identifica con 'atamel'; el 'plus' solo dice que es la variante
+# reforzada. Por eso NO pueden usarse para RESCATAR productos: 'plus' aparece en 51
+# nombres del catálogo (PAPEL PLUS, ALIVET PLUS, BETADEX PLUS, VITISIVAL PLUS...), así
+# que un rescate por 'plus' le muestra al cliente papel, cremas y analgésicos cuando
+# pidió un medicamento concreto.
+#
+# Caso real: "Isopray plus" (ISOSPRAY PLUS, escrito con una S menos). El AND exigía
+# {isopray, plus} y fallaba porque ISOSPRAY no está en el catálogo del provider 27; el
+# rescate por 'plus' devolvía 41 productos ajenos. Medido sobre 1000 consultas reales:
+# dejando que el sufijo rescate → 41; sin dejar que rescate → 5, sin un solo falso
+# rechazo nuevo en los catálogos 19 y 27.
+#
+# OJO: el sufijo SÍ sigue participando del AND (paso 1). Es lo que pide el cliente que
+# consulta "isopray plus" en conjunto: si el producto exacto existe, gana el AND.
+_SUFIJOS_COMERCIALES = {
+    "plus", "forte", "duo", "retard", "compuesto", "extra", "ultra", "active",
+    "pack", "super", "max", "pro", "lp", "sr", "xr", "mr", "cr", "er",
+}
+
+
+def _es_sufijo_comercial(palabra: str) -> bool:
+    """¿La palabra es un sufijo comercial, aunque esté mal escrita?
+
+    'plus'/'pluss'/'plas' → sí.  'plastico', 'losartan' → no.
+
+    Se compara también con distancia ≤1 porque el cliente escribe 'plus' de muchas
+    formas; un sufijo mal escrito que no se reconozca vuelve a colarse por el rescate.
+    """
+    for s in _SUFIJOS_COMERCIALES:
+        if palabra == s:
+            return True
+        # Solo se tolera typo en sufijos de 4+ letras: 'pro'/'max'/'duo' son demasiado
+        # cortos y cualquier palabra cercana colisionaría ('pro' ~ 'pero', 'max' ~ 'mas').
+        if len(s) < 4 or abs(len(palabra) - len(s)) > 1:
+            continue
+        if _levenshtein(palabra, s) <= 1:
+            return True
+    return False
+
+
 
 def tokens_farmaco(termino: str) -> list[str]:
     """Tokens del término que DEBEN identificar un fármaco.
@@ -420,7 +462,9 @@ def filtrar_relevantes(termino: str, productos: list[dict]) -> list[dict]:
          "citrato potasio"). Medido: quita 27/27 ajenos en esa consulta.
       2. OR — basta un token de FÁRMACO. Rescata los casos en que el catálogo nombra al
          revés ("nitrato de miconazol" → "MICONAZOL 400MG ... (NITRATO)") o trae el
-         nombre partido.
+         nombre partido. LOS SUFIJOS COMERCIALES NO RESCATAN: se prueban primero los
+         tokens ESPECÍFICOS y solo si no hay ninguno se cae al OR clásico. Ver
+         `_SUFIJOS_COMERCIALES`.
       3. VACÍO — si el cliente NOMBRÓ un fármaco concreto y NINGÚN producto del catálogo
          lo comparte, se devuelve vacío. Que el agente lo diga con honestidad o busque
          por principio activo (camino que ya existe en tools.py).
@@ -434,6 +478,12 @@ def filtrar_relevantes(termino: str, productos: list[dict]) -> list[dict]:
     falso positivo así es peor que el silencio: el cliente puede comprar el medicamento
     equivocado. El fail-safe se conserva solo donde de verdad protege (términos sin
     fármaco), no para inventar un resultado.
+
+    POR QUÉ EL OR EXCLUYE LOS SUFIJOS COMERCIALES: "Isopray plus" (ISOSPRAY PLUS, con una
+    S menos) exigía {isopray, plus} en el AND; como ISOSPRAY no está en el catálogo del
+    provider 27, el AND fallaba y el OR rescataba con 'plus' → 41 productos ajenos
+    (PAPEL PLUS, BETADEX PLUS, VITISIVAL PLUS...). Medido sobre 1000 consultas reales de
+    los catálogos 19 y 27: sin el rescate por sufijo, 0 falsos rechazos nuevos.
 
     Verificado a escala: 6.146 nombres reales buscados por su propio nombre → 0
     pérdidas, con los controles legítimos intactos (losartan potasico 11, diclofenac
@@ -451,12 +501,21 @@ def filtrar_relevantes(termino: str, productos: list[dict]) -> list[dict]:
     if estrictos:
         return estrictos
 
-    relajados = [
-        p for p in productos
-        if any(es_relevante(w, str(p.get("nombre") or "")) for w in utiles)
-    ]
-    if relajados:
-        return relajados
+    # RESCATE. El sufijo comercial NO rescata por sí solo: 'plus' vive en 51 nombres del
+    # catálogo y no identifica nada. Se intenta primero con los tokens ESPECÍFICOS; si el
+    # término SOLO tenía sufijos ('dol plus' → ['dol','plus'] deja ['dol']), se usa ese.
+    # Solo si no queda ninguno se cae al OR clásico, para no perder el caso del cliente
+    # que literalmente busca "plus".
+    especificos = [w for w in utiles if not _es_sufijo_comercial(w)]
+    for rescate in (especificos, utiles if not especificos else []):
+        if not rescate:
+            continue
+        relajados = [
+            p for p in productos
+            if any(es_relevante(w, str(p.get("nombre") or "")) for w in rescate)
+        ]
+        if relajados:
+            return relajados
 
     # No hay NINGÚN producto que comparta señal con los tokens útiles.
     if farmacos:
