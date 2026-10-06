@@ -325,6 +325,13 @@ _PRESENTACION_AUDIENCIA = {
     "capsula", "capsulas", "cap", "caps", "comprimido", "comprimidos", "comp",
     "ovulo", "ovulos", "supositorio", "supositorios", "parche", "parches",
     "grageas", "gragea", "inyectable", "emulsion", "jalea", "colirio", "ungüento",
+    # Sinónimos COLOQUIALES de la forma farmacéutica. Faltaban 'pastillas' y
+    # 'pildoras' —que es como el cliente PIDE— y con el rescate escalonado por
+    # selectividad se colaban: 'omeprazol pastillas' daba ['omeprazol','pastillas']
+    # y 'pastillas' matcheaba 6 productos (LAFARCAINA, ALURON) frente a 8 de
+    # 'omeprazol', así que el rescate elegía la FORMA y devolvía productos que no
+    # tienen omeprazol. Una forma farmacéutica nunca identifica el fármaco.
+    "pastilla", "pastillas", "pildora", "pildoras",
     # Audiencia
     "adulto", "adultos", "pediatrico", "pediatrica", "nino", "nina", "ninos",
     "ninas", "infantil", "bebe", "bebes", "lactante", "lactantes", "mayores",
