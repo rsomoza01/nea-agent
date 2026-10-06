@@ -41,6 +41,13 @@ class Conversation:
     # Último término consultado con buscar_medicamento. Permite re-consultar el
     # catálogo cuando el cliente refina con miligramo/marca sin repetir el nombre.
     last_term: str | None = None
+    # Término de medicamento leído por OCR de la última IMAGEN que mandó el
+    # cliente. Sirve para el turno siguiente, cuando el cliente solo hace
+    # REFERENCIA a esa imagen ("¿el producto de la foto lo tienes?") sin aportar
+    # un fármaco: buscar con la palabra "foto" hace que el matcher por SUBSTRING
+    # devuelva GOTAS OFTALMICA (FOTORRETIN) ("foto" ⊂ "FOTORRETIN"), y el agente
+    # responde con un oftálmico ante la foto de unos óvulos vaginales.
+    last_ocr_term: str | None = None
     # Lista de opciones (productos ordenados por precio) del último
     # buscar_medicamento — para resolver "quiero X cajas de la opción Z".
     last_options: list[dict[str, Any]] | None = None

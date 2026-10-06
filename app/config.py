@@ -66,7 +66,35 @@ class Settings(BaseSettings):
     # de pruebas en vivo había que cerrarle la puerta a los leads reales.
     tester_wa_ids: str = ""  # CSV; vacía = responde a todos (Constitución V)
     coalesce_seconds: float = 4.0
+    # Seguimiento automático ("empujón" a las N horas si el lead se calla).
+    #
+    # ENCENDIDO, pero con dos condiciones que antes no tenía (ver `followup.py`):
+    #   1. SOLO si el pedido NO se cerró (`cart_closed = TRUE`) — es decir, si la
+    #      conversación no se convirtió en venta. Si el cliente ya finalizó el pedido
+    #      (o hubo handoff / se le agendó / no calificó), el seguimiento no se agenda:
+    #      insistirle a quien ya compró molesta.
+    #   2. Solo dentro del horario del negocio (ver `followup_hour_start/end`). Medido
+    #      antes de esto: 12 de 40 empujones salieron fuera de las 8-20 h, uno a las 4
+    #      de la mañana. Un mensaje que despierta al cliente es peor que el silencio.
+    followup_enabled: bool = True
     followup_hours: float = 4.0
+    # Franja horaria (hora local del negocio) en la que SÍ se permite el empujón.
+    followup_hour_start: int = 9
+    followup_hour_end: int = 19
+    # Días en los que SÍ se permite. 0=lunes … 6=domingo. Vacío = todos los días.
+    # Por defecto de lunes a sábado: el domingo la farmacia está cerrada y un
+    # seguimiento que no se puede atender solo genera frustración.
+    followup_dias: str = "0,1,2,3,4,5"
+    # Antigüedad máxima del pedido para seguirlo (horas).
+    #
+    # NO se usa `cart_session_hours` aquí: esa ventana (2 h en producción) gobierna el
+    # carrito OPERATIVO y es MÁS CORTA que el propio seguimiento (4 h), así que el pedido
+    # ya habría "expirado" justo cuando toca empujarlo → la condición nunca se cumplía y
+    # no se enviaba ningún seguimiento. Medido: 0 candidatas de 127 conversaciones.
+    #
+    # 48 h: cubre de sobra el empujón de las 4 h y descarta el pedido abandonado hace
+    # semanas (a esas alturas el cliente ya resolvió de otra forma y molestarlo quema).
+    followup_max_age_hours: float = 48.0
     # Ventana de sesión del carrito (horas): los ítems que no se tocan en este
     # tiempo se descartan — el carrito no acumula medicamentos de sesiones
     # anteriores del mismo chat.
