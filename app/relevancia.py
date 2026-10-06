@@ -137,6 +137,26 @@ _VERBOS_Y_DISCURSO = {
     "jose", "maria", "juan", "carlos", "pedro", "luis", "ana", "luz", "carmen",
     "rodriguez", "perez", "garcia", "gonzalez", "fernandez", "lopez", "martinez",
     "medicamento", "medicamentos", "producto", "productos", "farmacia",
+    # Palabras GENÉRICAS del dominio que nombran la CATEGORÍA, no un fármaco.
+    # Bug real (2026-10): la lista tenía 'medicamento' y 'farmacia', pero 'medicina'
+    # —su sinónimo más usado en Venezuela— NO estaba, así que el cliente escribía
+    # "MEDICINA" y el agente le devolvía 10 presentaciones de ÁCIDO FÓLICO como si
+    # hubiera pedido algo. Faltaban también 'remedio(s)', 'medicinas', 'pastillas',
+    # 'inyecciones'. Al añadir una palabra de esta familia, añade la familia completa:
+    # el hueco se abre justo por el sinónimo que nadie listó.
+    "medicina", "medicinas", "remedio", "remedios", "botica", "boticas",
+    "pastilla", "pastillas", "pildora", "pildoras", "droga", "drogas",
+    "farmaco", "farmacos", "articulo", "articulos",
+    "inyeccion", "inyecciones", "ampolla", "ampollas",
+    # Verbos de CONSULTA con los que el cliente pide (faltaban, y dejaban pasar
+    # 'tienes medicina' / 'que medicina me recomienda' como si fueran fármacos).
+    "tienes", "tiene", "tienen", "tenemos", "tengan",
+    "algun", "alguna", "algunos", "algunas",
+    "recomienda", "recomiendas", "recomiendan", "recomiende", "recomiendame",
+    "sugiere", "sugieres", "sugieran", "sugiereme",
+    "vende", "vendes", "venden", "maneja", "manejan", "manejas",
+    "trabaja", "trabajan", "existe", "existen", "conseguir", "consigues",
+    "tengan", "hay", "haber", "dispongan", "disponen", "dispone",
     "caja", "cajas", "unidad", "unidades", "paquete", "paquetes", "venia",
     "venian", "vino", "vienen", "viene", "abierta", "abierto", "vacia", "vacio",
     "roto", "rota", "sirve", "sirven", "funciona", "funcionan", "dato", "datos",
