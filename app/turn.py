@@ -414,8 +414,55 @@ async def run_turn(
     )
     if state_block:
         system = system + "\n\n" + state_block
+    # Los mensajes del CLIENTE vuelven al LLM sin los marcadores del sistema — SALVO
+    # el del turno EN CURSO. Al llegar una imagen/audio, `media.py` guarda (y se
+    # persiste) un marcador que es una INSTRUCCIÓN NUESTRA:
+    #
+    #   [El lead mandó una imagen — la tienes adjunta, puedes verla. OCR de la
+    #    imagen: "Fexofenadina Clorhidrato 120 mg 10 Tabletas". Si es un
+    #    medicamento/receta, interpreta la imagen, extrae el/los medicamento(s) que
+    #    pide y consúltalos en el catálogo (buscar_medicamento). No inventes
+    #    disponibilidad.]
+    #
+    # En el TURNO de la imagen eso es correcto y necesario. Pero el marcador se queda
+    # en el historial y en los turnos SIGUIENTES el LLM lo lee como si el cliente lo
+    # hubiera dicho y lo OBEDECE: el cliente escribe "Hola" y el agente busca y ofrece
+    # la Fexofenadina de la foto de dos días antes.
+    #
+    # Caso real (provider 19, 2026-10): dos "Hola" seguidos → las dos veces el agente
+    # ofreció FEXOFENADINA 120 MG en lugar de saludar, porque el marcador de la imagen
+    # estaba en su ventana de contexto. Reproducido 3/3 con el LLM real y el historial
+    # real de la BD.
+    #
+    # Se conserva el DATO del cliente (el OCR) y se descartan las instrucciones. El
+    # mensaje del turno en curso NO se toca: quitarlo dejaría al LLM sin la
+    # instrucción cuando de verdad toca leer la foto (la ruta de más valor, medido:
+    # el turno de la imagen es el ÚNICO en que el marcador debe llegar íntegro).
+    # `user_text` es exactamente lo que se acaba de persistir para este turno, así
+    # que el mensaje del turno en curso se identifica por su contenido. Si no se
+    # encontrara (p. ej. el marcador llegó vacío), se cae al ÚLTIMO mensaje del
+    # cliente del historial — que es el de este turno — antes que limpiar de más:
+    # tocar el turno de la imagen rompería la lectura de recetas por foto.
+    idx_actual = next(
+        (i for i in range(len(history) - 1, -1, -1)
+         if history[i].role == "user" and (history[i].content or "") == user_text),
+        None,
+    )
+    if idx_actual is None:
+        idx_actual = next(
+            (i for i in range(len(history) - 1, -1, -1) if history[i].role == "user"),
+            -1,
+        )
     messages: list[dict[str, Any]] = [{"role": "system", "content": system}] + [
-        {"role": m.role, "content": m.content} for m in history
+        {
+            "role": m.role,
+            "content": (
+                m.content
+                if m.role != "user" or i == idx_actual
+                else _texto_cliente_sin_marcadores(m.content)
+            ),
+        }
+        for i, m in enumerate(history)
     ]
     # Hostilidad sostenida (AC-18): el CONTEO es determinista — el LLM salió
     # flaky contando entre turnos. Al tercer strike: alerta en el turno y
