@@ -39,6 +39,22 @@ class FollowupWorker:
 
     async def tick(self, now: datetime | None = None) -> None:
         now = now or utcnow()
+        # El seguimiento está APAGADO por decisión del negocio: escribirle al
+        # cliente horas después molesta (ver `followup_enabled` en config.py).
+        # El worker sigue corriendo para no rearmar el arranque, pero no hace nada.
+        if not self._ctx.settings.followup_enabled:
+            return
+        # Si algún día se reactiva: NUNCA fuera del horario del negocio. Medido en
+        # producción, 12 de 40 empujones salieron fuera de las 8-20 h (uno a las 4
+        # de la mañana). Un mensaje que despierta al cliente es peor que el silencio.
+        hora_local = now.astimezone(_agent_tz(self._ctx.settings)).hour
+        s = self._ctx.settings
+        if not (s.followup_hour_start <= hora_local < s.followup_hour_end):
+            logger.debug(
+                "followup: %02d h locales — fuera de la franja %d-%d, se omite",
+                hora_local, s.followup_hour_start, s.followup_hour_end,
+            )
+            return
         for conv in await self._ctx.store.due_followups(now):
             # Claim atómico ANTES de enviar: jamás un segundo empujón.
             if not await self._ctx.store.claim_followup(conv.id):

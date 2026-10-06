@@ -66,7 +66,24 @@ class Settings(BaseSettings):
     # de pruebas en vivo había que cerrarle la puerta a los leads reales.
     tester_wa_ids: str = ""  # CSV; vacía = responde a todos (Constitución V)
     coalesce_seconds: float = 4.0
+    # Seguimiento automático ("empujón" a las N horas si el lead se calla).
+    #
+    # APAGADO A PROPÓSITO (decisión del negocio, 2026-10): en farmacia, escribirle
+    # al cliente horas después MOLESTA. Medido en producción, el worker de 4 h había
+    # enviado 40 empujones, 12 de ellos (30%) fuera del horario de la farmacia
+    # (8:00-20:00), y con preguntas ("¿Quieres que busque alguno de los
+    # medicamentos que mencionaste?"). El mensaje llega cuando el cliente ya
+    # resolvió, ya compró en otra parte o simplemente está durmiendo — y un mensaje
+    # que no pediste es la vía más rápida a que te bloqueen el número.
+    #
+    # `followup_enabled=False` apaga el worker; `followup_hours` se conserva por si
+    # se reactiva con las reglas correctas (horario + sin pregunta).
+    followup_enabled: bool = False
     followup_hours: float = 4.0
+    # Franja horaria (hora local del negocio) en la que SÍ se permite el empujón si
+    # algún día se reactiva. Nunca a las 4 de la mañana.
+    followup_hour_start: int = 9
+    followup_hour_end: int = 19
     # Ventana de sesión del carrito (horas): los ítems que no se tocan en este
     # tiempo se descartan — el carrito no acumula medicamentos de sesiones
     # anteriores del mismo chat.

@@ -678,6 +678,13 @@ async def run_turn(
         # texto en vez de llamar la tool): jamás debe llegar al cliente.
         clean = _strip_internal_markup(final_text.strip())
         clean = _quitar_ofrecimiento_consulta(clean)
+        # Si el lead acaba de agradecer o despedirse, el agente NO debe repreguntar
+        # ("¿Quieres que busque alguno de los medicamentos que mencionaste?"). Se
+        # evalúa SOLO el contenido del cliente (sin los marcadores del sistema), así
+        # que funciona igual si la despedida llegó escrita o en una nota de voz.
+        clean = _quitar_repregunta_tras_cierre(
+            clean, _texto_cliente_sin_marcadores(user_text) or None
+        )
         if clean:
             sent = await _send(ctx, conv.id, str(crm_conv_id), clean)
             if sent:
@@ -2188,6 +2195,145 @@ def _quitar_ofrecimiento_consulta(texto: str) -> str:
     if not texto:
         return texto
     return _MENTIRA_CONSULTA.sub("", texto).strip()
+
+
+# Cierre tras agradecimiento. El lead dice "gracias" / "de nada" / "ok" / "hasta
+# luego" y el agente le DEVUELVE una pregunta ("¿Quieres que busque alguno de los
+# medicamentos que mencionaste?"). Casos reales (2026-10), medidos sobre 503
+# mensajes del agente: 365 terminaban en pregunta.
+#
+#   cliente: "gracias"
+#   agente : "¡De nada! Si necesitas algo más, no dudes en preguntar.
+#             ¿Quieres que busque alguno de los medicamentos que mencionaste?"
+#
+# Repreguntar tras un agradecimiento suena a bot que no escucha y a presión de
+# venta. El prompt YA lo prohíbe (sección CERRAR SIN REPREGUNTAR) — pero en este
+# proyecto quedó demostrado que el prompt no es garantía: el arreglo que cuenta es
+# el backstop en código.
+#
+# El marcador se busca AL FINAL del mensaje, no en cualquier parte: la gente cierra
+# al final ("Ah, ok. Está bien, gracias"), mientras que un "ok" en medio suele
+# anunciar una pregunta nueva ("ok, y cuánto sale el losartan?").
+_CIERRE_DEL_LEAD = re.compile(
+    r"(?:"
+    r"gracias(?:\s+\w+){0,3}"
+    r"|de\s+nada|ok(?:ay)?|listo|dale|perfecto|genial"
+    r"|hasta\s+luego|nos\s+vemos|chao|adiós|adios|hasta\s+mañana|hasta\s+pronto"
+    r"|buenas\s+noches|buen\s+d[ií]a|buenas\s+tardes|feliz\s+\w+"
+    r"|bendiciones|am[eé]n|que\s+est[eé]s?\s+bien"
+    r"|ya\s+me\s+atendi[oó]\s*\w*|ya\s+est[aá]\s+bien"
+    r")\s*[.!¡]*\s*[\U0001F300-\U0001FAFF\u2600-\u27BF\u2764\uFE0F]*\s*$",
+    re.IGNORECASE,
+)
+
+# Preguntas de reapertura que NO deben seguir a un cierre del lead.
+_PREGUNTA_REAPERTURA = re.compile(
+    r"(?:"
+    r"quieres\s+que\s+(?:busque|te\s+busque|consulte|te\s+muestre|agregue)"
+    r"|necesitas\s+(?:algo|algo\s+m[aá]s|informaci[oó]n)"
+    r"|te\s+ayudo\s+(?:en\s+)?(?:algo|algo\s+m[aá]s)"
+    r"|deseas\s+(?:algo|algo\s+m[aá]s|buscar|que\s+busque)"
+    r"|hay\s+algo\s+m[aá]s"
+    r"|algo\s+m[aá]s\s+en\s+lo\s+que\s+(?:te\s+)?pueda\s+ayudar"
+    r"|te\s+comparto\s+m[aá]s\s+informaci[oó]n"
+    r"|(?:te\s+)?gustar[ií]a\s+(?:hacer\s+un\s+pedido|agregarlo?|m[aá]s\s+informaci)"
+    r"|qu[eé]\s+puedo\s+hacer\s+por\s+ti"
+    r"|en\s+qu[eé]\s+(?:te\s+)?puedo\s+ayudar"
+    r"|(?:te\s+)?ayudo\s+con\s+algo\s+m[aá]s"
+    r"|puedo\s+ayudarte\s+en\s+algo\s+m[aá]s"
+    r"|busco\s+alguno\s+de\s+los\s+medicamentos"
+    r")",
+    re.IGNORECASE,
+)
+
+# Una oración "es pregunta" si lleva '?' o abre con interrogativo. Hace falta este
+# filtro ANTES de borrar: si no, una línea de cortesía legítima ("Si necesitas algo
+# más, no dudes en preguntar.") matchea el patrón y se lleva por delante la mitad de
+# la frase — quedaba "¡De nada! Simás, no dudes en preguntar.alguno de los
+# medicamentos que mencionaste?".
+_ABRE_PREGUNTA = re.compile(
+    r"^\s*(?:¿|qu[eé]\b|cu[aá]l\b|c[oó]mo\b|cu[aá]ndo\b|d[oó]nde\b|qui[eé]n\b|"
+    r"tienes\b|hay\b|puedes\b|podr[ií]as\b)",
+    re.IGNORECASE,
+)
+
+
+def _es_repregunta(oracion: str) -> bool:
+    """True si la oración repregunta al lead sobre algo que el agente ya resolvió."""
+    o = (oracion or "").strip()
+    if not o or not _PREGUNTA_REAPERTURA.search(o):
+        return False
+    return "?" in o or bool(_ABRE_PREGUNTA.match(o))
+
+
+# Dónde EMPIEZA la pregunta dentro del texto: el final de la oración previa. El '¿' se
+# EXCLUYE a propósito — de él se encarga el paso siguiente, que corta justo ahí para
+# que no quede un '¿' huérfano colgando ("Perfecto, Milagros. ¿").
+_INICIO_ORACION = re.compile(r"[.!?…\n]")
+
+
+def _lead_esta_cerrando(texto: str | None) -> bool:
+    """True si el mensaje del lead es un agradecimiento o una despedida.
+
+    Se apoya en `_es_negativa_o_despedida` (ya probado: 30/30 en su batería) y le
+    suma los cierres que ese helper no cubre ("ok", "listo", "buenas noches",
+    "ya me atendió Bruli"). Los mensajes reales llegan con relleno delante — "Ah, ok.
+    Está bien, gracias." — así que el marcador se busca al FINAL, no como mensaje
+    completo: un "gracias" en medio suele anunciar una pregunta nueva ("gracias, me
+    puedes decir el precio del atamel?").
+    """
+    if not texto:
+        return False
+    return bool(_es_negativa_o_despedida(texto) or _CIERRE_DEL_LEAD.search(texto))
+
+
+def _quitar_repregunta_tras_cierre(texto: str, ultimo_del_lead: str | None) -> str:
+    """Quita la repregunta si el lead acaba de agradecer o despedirse.
+
+    Se CORTA DESDE EL INICIO DE LA PREGUNTA hasta el final, no se borra la frase que
+    matchea. Borrar solo el fragmento rompía la cortesía que lo precedía —
+    "¡De nada! Si necesitas algo más, no dudes en preguntar. ¿Quieres que busque…?"
+    quedaba como "¡De nada! Simás, no dudes en preguntar.alguno de los
+    medicamentos…?", que es peor que la repregunta original.
+
+    El corte es por ORACIÓN, no por palabra, porque la cortesía y la pregunta suelen
+    vivir en la MISMA oración: "De nada 😊 ¿Necesitas algo más en lo que pueda
+    ayudarte?" (un solo bloque, sin punto intermedio).
+
+    Si el mensaje del lead no es un cierre, o si al quitar la pregunta no queda nada,
+    devuelve el texto intacto: borrar una respuesta legítima o dejar al cliente sin
+    mensaje es peor que la repregunta.
+    """
+    if not texto or not ultimo_del_lead:
+        return texto
+    if not _lead_esta_cerrando(ultimo_del_lead):
+        return texto
+
+    # Se recorre cada repregunta y se calcula dónde arranca su oración. Se toma la
+    # MÁS TEMPRANA: así cae también el "¿Algo más?" que venga detrás.
+    corte: int | None = None
+    for m in _PREGUNTA_REAPERTURA.finditer(texto):
+        inicio = 0
+        for b in _INICIO_ORACION.finditer(texto, 0, m.start()):
+            inicio = b.end()
+        # Retrocede hasta el '¿' que abre la pregunta (si lo hay): sin esto queda un
+        # "Perfecto, Milagros. ¿" colgando, que el cliente ve como un error.
+        hueco = texto[inicio:m.start()]
+        interrogante = hueco.rfind("¿")
+        if interrogante != -1:
+            inicio = inicio + interrogante
+        # Solo si desde ahí hasta el final hay una pregunta de verdad.
+        cola = texto[inicio:]
+        if "?" not in cola:
+            continue
+        corte = inicio if corte is None else min(corte, inicio)
+    if corte is None:
+        return texto
+    limpio = texto[:corte].strip().rstrip("¿¡,;:—-")
+    if not limpio:
+        # El mensaje ERA solo la pregunta: quitarlo dejaría al cliente sin respuesta.
+        return texto
+    return limpio
 
 
 # Frases redundantes del LLM que invitan al carrito de forma libre y duplican
