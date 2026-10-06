@@ -582,10 +582,20 @@ async def run_turn(
     # NO menciona el medicamento (ni el término ni ningún nombre de producto),
     # el cliente recibiría un "¿Cuál prefieres?" sin contexto. Reemplazamos con
     # la lista real para que la respuesta sea autocontenida.
+    #
+    # GUARD DEL CIERRE: si el lead acaba de agradecer/despedirse, NO se re-lista.
+    # Caso real (provider 27, 2026-10): tras la consulta de omeprazol + asaprol el
+    # cliente escribió "Gracias". El LLM contestó cortés y sin repetir productos
+    # (correcto), pero este backstop vio `last_products` con productos y un texto
+    # que no los mencionaba → REEMPLAZÓ la cortesía con la lista completa de
+    # ASAPROL PINA (PINZA UMBILICAL, pañales...). El cliente que se despedía
+    # recibió otra vez el catálogo. Re-listar a quien ya se despidió es el mismo
+    # daño que la repregunta que ya se corrigió en el texto.
     if (
         farmacia
         and runtime.last_products
         and final_text
+        and not _lead_esta_cerrando(_texto_cliente_sin_marcadores(user_text))
         and not _menciona_producto(final_text, runtime.last_products, runtime.last_term)
     ):
         logger.warning(
@@ -618,12 +628,18 @@ async def run_turn(
     # pero el LLM despide al cliente o lo pasa a humano (sin que el medicamento
     # esté agotado), reemplazamos con la lista real. El cliente jamás debe ser
     # despedido cuando hay productos disponibles.
+    #
+    # GUARD DEL CIERRE: si quien se despide es EL CLIENTE (no el LLM), re-listar
+    # es justo lo contrario de lo que corresponde. Aquí el texto del LLM es una
+    # despedida porque el lead se despidió: se le deja la cortesía y NO se le
+    # devuelve el catálogo.
     if (
         farmacia
         and runtime.last_products
         and final_text
         and not runtime.med_not_found
         and _es_despedida_o_handoff(final_text)
+        and not _lead_esta_cerrando(_texto_cliente_sin_marcadores(user_text))
     ):
         logger.warning(
             "backstop handoff injustificado: el LLM despidió pese a %d productos — reemplazo con lista real",
