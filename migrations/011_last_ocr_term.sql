@@ -1,0 +1,15 @@
+-- 011_last_ocr_term.sql — persiste el término de medicamento leído por OCR de la
+-- última imagen que mandó el cliente.
+--
+-- Motivo (bug real, provider 19, 2026-10): el cliente manda la foto de una caja
+-- (ACIDO HIALURONICO 2% OVULOS) y DESPUÉS pregunta "El producto de la foto lo
+-- tienes?". En ese segundo turno no hay imagen nueva, así que el agente buscaba
+-- en el catálogo con las palabras de la pregunta — "foto" — y el matcher por
+-- SUBSTRING devolvía GOTAS OFTALMICA (FOTORRETIN) ("foto" ⊂ "FOTORRETIN").
+-- Resultado: "Sí, tengo el producto que aparece en la foto" mostrando un
+-- oftálmico ante una foto de óvulos vaginales.
+--
+-- Con esta columna, cuando el turno actual solo hace REFERENCIA a una imagen
+-- (foto/imagen/adjunto) y no aporta un fármaco real, el término de búsqueda se
+-- toma del OCR de esa imagen anterior — que es el dato correcto.
+ALTER TABLE bot_conversation ADD COLUMN IF NOT EXISTS last_ocr_term TEXT;
