@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime
 from typing import Any
 
@@ -39,6 +40,118 @@ def _dia_permitido(dia: int | None, config: str) -> bool:
         # Config mal escrita: no bloquees el seguimiento por eso.
         return True
     return dia in permitidos
+
+
+def _medicamentos_inventados(texto: str, carrito: list[Any]) -> list[str]:
+    """Medicamentos que el texto menciona y que NO están en el pedido real.
+
+    El LLM inventa el contenido del pedido cuando no se le da: medido en producción, con
+    el carrito en 2 cajas de acetaminofén generó "1 caja de Losartán 50mg, 1 caja de
+    Daflon 500mg y 1 caja de ESOZ 40mg". Enviar eso es peor que no enviar nada.
+
+    Se compara contra los NOMBRES COMPLETOS del carrito: un nombre propio del pedido
+    ("ACETAMINOFEN 650 MG X 10 TAB ELTER") cubre sus palabras, así que nombrarlo en
+    cualquier forma no dispara el detector. Solo salta cuando aparece un fármaco ajeno.
+    """
+    if not texto:
+        return []
+    # Palabras que el texto puede usar libremente: nada de lo que hay en el carrito, ni
+    # vocabulario de la conversación/negocio.
+    permitidas: set[str] = set()
+    for item in carrito:
+        for campo in (getattr(item, "producto", ""), getattr(item, "presentacion", ""),
+                      getattr(item, "laboratorio", "")):
+            permitidas.update(_palabras(str(campo or "")))
+    permitidas |= {
+        "hola", "soy", "asistente", "agente", "ia", "pedido", "carrito", "listo",
+        "caja", "cajas", "unidad", "unidades", "frasco", "frascos", "tubo", "tubos",
+        "sobre", "sobres", "ampolla", "ampollas", "tableta", "tabletas", "capsula",
+        "capsulas", "jarabe", "crema", "gel", "gotas", "solucion", "suspension",
+        "mas", "más", "para", "con", "sin", "por", "tu", "tus", "su", "sus", "que",
+        "qué", "como", "cómo", "cuando", "cuándo", "donde", "dónde", "todo", "toda",
+        "todos", "todas", "este", "esta", "estos", "estas", "ese", "esa", "esos",
+        "esas", "aquel", "aquella", "puedo", "puedes", "quieres", "quiere", "deseas",
+        "necesitas", "ayudar", "ayudarte", "agregar", "cerrar", "cerrarlo", "confirmar",
+        "recordar", "recordatorio", "dejar", "dejo", "deje", "dejé", "quedar", "queda",
+        "quedo", "quedó", "armado", "pendiente", "disponible", "precio", "total",
+        "farmacia", "medicamento", "medicamentos", "producto", "productos", "si",
+        "sí", "no", "gracias", "buenas", "buenos", "dias", "días", "tardes", "noches",
+        "saludo", "saludos", "cordial", "atento", "gusto", "ayudo", "ayude", "ayudé",
+        "escribir", "escribeme", "escríbeme", "avisame", "avísame", "cualquier",
+        "cualquiera", "cosa", "cuenta", "gusto", "mucho", "muchas", "mil", "buena",
+        "buen", "hoy", "manana", "mañana", "luego", "ahora", "aun", "aún", "tambien",
+        "también", "espero", "esperando", "estoy", "aqui", "aquí", "esta", "está",
+        "estan", "están", "fue", "ser", "esta", "tiene", "tengo", "tienes", "tenia",
+        "hacer", "hago", "hice", "hace", "hacemos", "vamos", "vas", "voy", "ver",
+        "vemos", "veo", "sabes", "sabe", "se", "sé",
+    }
+    # Los números y las dosis NO son "medicamentos inventados": 650 mg del carrito puede
+    # aparecer como "650" o "650mg".
+    intrusos: list[str] = []
+    for w in _palabras(texto):
+        if w.isdigit() or len(w) < 5:
+            continue
+        if w in permitidas:
+            continue
+        # ¿parece un fármaco? Solo palabras con cuerpo de nombre de medicamento
+        # (evita disparar con una palabra suelta de cortesía que no listé).
+        if _parece_farmaco(w):
+            intrusos.append(w)
+    return intrusos
+
+
+def _palabras(texto: str) -> list[str]:
+    """Palabras normalizadas (minúsculas, sin tildes) de un texto."""
+    t = texto.lower()
+    for a, b in (("á", "a"), ("é", "e"), ("í", "i"), ("ó", "o"), ("ú", "u"),
+                 ("ü", "u"), ("ñ", "n")):
+        t = t.replace(a, b)
+    return re.findall(r"[a-z0-9]+", t)
+
+
+# Sufijos/raíces de presentación, cortesía y vocabulario comercial: una palabra que los
+# contenga NO es el nombre de un fármaco. Sin estos filtros, cualquier palabra larga
+# ("farmacia", "cordialmente", "recordatorio") dispararía el detector y bloquearía
+# seguimientos legítimos.
+_NO_FARMACO_PALABRA = (
+    # presentación / envase
+    "mg", "ml", "mcg", "tab", "cap", "jarab", "crem", "got", "susp", "soluc",
+    "ampoll", "sobr", "blister", "caja", "unidad", "frasco", "presentac",
+    # marcas del catálogo
+    "laborat", "drotafar", "genven", "calox", "aless", "sant", "elter", "cofasa",
+    # cortesía / conversación
+    "farmac", "cordial", "atent", "recordat", "agradec", "asistent", "mensaje",
+    "pedido", "carrito", "precio", "disponib", "pendient", "confirm", "cerrar",
+    "esperand", "cualquier", "saludo", "bienvenid", "excelent", "perfect",
+    "informac", "consult", "necesit", "quier", "podem", "pued", "gustar",
+    "teng", "tien", "hac", "decir", "avisar", "avisam", "escrib",
+)
+# Raíces de fármacos que SÍ son nombres reales: si aparece una, es un intruso seguro.
+_RAICES_FARMACO = (
+    "losartan", "diclofenac", "ibuprof", "omeprazol", "esomeprazol", "acetaminof",
+    "paracetamol", "metformin", "atorvastat", "amoxicil", "azitromic", "cefadrox",
+    "nifedipin", "amlodipin", "enalapril", "losartan", "daflon", "esoz", "leprit",
+    "evigax", "atamel", "depofem", "salbutamol", "loratadin", "cetirizin",
+    "ranitidin", "omeprazol", "pantoprazol", "clopidogrel", "aspirina", "warfarina",
+    "levotirox", "prednison", "dexametason", "ketorolac", "tramadol", "tramal",
+    "naproxeno", "ketoprofeno", "ceftriaxon", "ciprofloxac", "cloranfenicol",
+    "vitamin", "complejo", "insulina", "heparina", "sulfato", "carbonato",
+)
+
+
+def _parece_farmaco(palabra: str) -> bool:
+    """¿Esta palabra parece el nombre de un medicamento (no una de cortesía)?
+
+    Dos criterios, ambos deliberadamente conservadores — un falso positivo aquí haría
+    que NO se envíe un seguimiento legítimo, así que solo se dispara ante evidencia clara:
+      (a) contiene una RAÍZ de fármaco conocida (losartan, diclofenac, ibuprof…);
+      (b) es una palabra larga (≥7) que NO es presentación ni marca del catálogo.
+    """
+    if any(r in palabra for r in _RAICES_FARMACO):
+        return True
+    if len(palabra) >= 7 and not any(s in palabra for s in _NO_FARMACO_PALABRA):
+        return True
+    return False
 
 
 class FollowupWorker:
@@ -168,13 +281,30 @@ class FollowupWorker:
             offered=[],
             tz=_agent_tz(ctx.settings),
         )
+        # EL PEDIDO REAL, en texto, y la instrucción de retomarlo. Sin esto el LLM NO
+        # sabe qué quedó en el carrito e INVENTA el contenido: probado en producción, con
+        # 2 cajas de acetaminofén en el carrito el seguimiento hablaba de "1 caja de
+        # Losartán 50mg, 1 caja de Daflon 500mg y 1 caja de ESOZ 40mg" — tres
+        # medicamentos que el cliente NUNCA pidió. Un seguimiento que describe mal el
+        # pedido es peor que no enviarlo: el cliente cree que compró otra cosa.
+        pedido_txt = "\n".join(
+            f"- {i.cantidad} x {i.producto}" + (f" ({i.presentacion})" if i.presentacion else "")
+            for i in carrito
+        )
         history = await ctx.store.recent_messages(
             conv.id, ctx.settings.history_window
         )
         messages: list[dict[str, Any]] = (
             [{"role": "system", "content": system}]
             + [{"role": m.role, "content": m.content} for m in history]
-            + [{"role": "system", "content": FOLLOWUP_INSTRUCTION}]
+            + [{
+                "role": "system",
+                "content": (
+                    "PEDIDO QUE EL LEAD DEJÓ ARMADO (datos EXACTOS del carrito, no los "
+                    "inventes ni los cambies):\n" + pedido_txt + "\n\n"
+                    + FOLLOWUP_INSTRUCTION
+                ),
+            }]
         )
         try:
             reply = await ctx.llm.complete(messages, tools=None)
@@ -184,6 +314,25 @@ class FollowupWorker:
         text = (reply.content or "").strip()
         if not text:
             logger.warning("followup %s: LLM sin texto — omitido", conv.wa_identity)
+            return
+        # BACKSTOP DETERMINISTA: el prompt ya prohíbe inventar el pedido, pero en este
+        # proyecto el prompt no es garantía (probado: inventó Losartán/Daflon/ESOZ con un
+        # carrito de acetaminofén). Si el texto nombra un medicamento que NO está en el
+        # carrito, se descarta el mensaje: un seguimiento que describe mal el pedido es
+        # peor que no enviarlo — el cliente creería que compró otra cosa.
+        intrusos = _medicamentos_inventados(text, carrito)
+        if intrusos:
+            logger.warning(
+                "followup %s: el texto nombra medicamentos que NO están en el pedido "
+                "(%s) — NO se envía",
+                conv.wa_identity, ", ".join(intrusos[:3]),
+            )
+            return
+        # Y no puede terminar en pregunta (regla del negocio).
+        if text.rstrip().endswith("?"):
+            logger.warning(
+                "followup %s: el texto termina en pregunta — NO se envía", conv.wa_identity
+            )
             return
         try:
             await ctx.crm.send_message(str(crm_conv_id), text)
