@@ -1504,7 +1504,17 @@ class ToolRuntime:
                 data = await self._ctx.crm.get_products(
                     self._provider_id, q=fallback, limit=20
                 )
+                # RE-FILTRAR el reintento. Sin esto, un fallback que afloja el término
+                # devuelve CUALQUIER producto que comparta una palabra genérica.
+                # Caso real: 'dovilin jarabe adulto' → el filtro lo vacía (DOVILIN no
+                # existe) → aquí se prueba 'dovilin adulto' → el catálogo devuelve 16
+                # productos con 'adulto' (ELECTRODO DESECHABLE ADULTO, RECOLECTOR DE
+                # ORINA ADULTO, CANULA NASAL ADULTO...) y se le mostrarían al cliente
+                # como respuesta a su consulta de DOVILIN. El acortamiento sirve para
+                # quitar ruido del TÉRMINO (un OCR verboso), nunca para aflojar la
+                # RELEVANCIA.
                 products = _dedupe_por_nombre(data.get("products") or [])
+                products = filtrar_relevantes(nombre, products)
                 if products:
                     self.last_term = fallback
         if not products:
@@ -1520,7 +1530,14 @@ class ToolRuntime:
                 data_v = await self._ctx.crm.get_products(
                     self._provider_id, q=variante, limit=20
                 )
-                products = _dedupe_por_nombre(data_v.get("products") or [])
+                # RE-FILTRAR la variante. Una variante de typo cambia el término, así
+                # que su relevancia hay que re-evaluarla contra el término ORIGINAL.
+                # Sin esto: 'dovilin jarabe adulto' (DOVILIN no existe) prueba la
+                # variante 'dovilin jarabe aulto', el catálogo la resuelve por fuzzy a
+                # los mismos 4 jarabes ajenos, y se le mostrarían al cliente como si
+                # fueran su DOVILIN.
+                candidatos = _dedupe_por_nombre(data_v.get("products") or [])
+                products = filtrar_relevantes(nombre, candidatos)
                 if products:
                     logger.info(
                         "buscar_medicamento: '%s' sin resultados — encontrado con la "

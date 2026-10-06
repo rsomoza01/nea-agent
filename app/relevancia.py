@@ -282,6 +282,47 @@ def es_relevante(termino: str, nombre_producto: str) -> bool:
     return False
 
 
+# PRESENTACIÓN (forma farmacéutica) y AUDIENCIA (a quién va dirigido): describen el
+# envase, NO identifican el fármaco. Por eso NO pueden validar un producto.
+#
+# Medido sobre 6.148 nombres reales del catálogo: 'jarabe' aparece en 82, 'crema' en
+# 103, 'ampolla' en 104, 'pediatrico' en 52, 'adulto' en 47, 'gotas' en 54. Un token que
+# está en cientos de productos DISTINTOS no discrimina ninguno.
+#
+# Caso real (provider 27): "Dovilin en jarabe para adulto" → DOVILIN no existe en ese
+# catálogo, pero el agente devolvió 4 jarabes ajenos (MUCOFAR, MISULVAN, LAMEDOR,
+# GULAPER — este último es carboximetilcisteína, OTRO fármaco) porque 'jarabe' y
+# 'adulto' contaban como señal. Al cliente que pidió un jarabe de DOVILIN se le ofreció
+# otro medicamento como si fuera el suyo.
+#
+# NO están aquí mg/ml/mcg/g/ui/cc (unidades de DOSIS) ni los números: esos SÍ filtran y
+# perderlos devuelve todas las concentraciones mezcladas.
+_PRESENTACION_AUDIENCIA = {
+    # Forma farmacéutica
+    "jarabe", "jbe", "suspension", "solucion", "gotas", "crema", "gel", "pomada",
+    "unguento", "locion", "shampoo", "spray", "aerosol", "polvo", "sobres", "sobre",
+    "ampolla", "ampollas", "amp", "vial", "tableta", "tabletas", "tab", "tabs",
+    "capsula", "capsulas", "cap", "caps", "comprimido", "comprimidos", "comp",
+    "ovulo", "ovulos", "supositorio", "supositorios", "parche", "parches",
+    "grageas", "gragea", "inyectable", "emulsion", "jalea", "colirio", "ungüento",
+    # Audiencia
+    "adulto", "adultos", "pediatrico", "pediatrica", "nino", "nina", "ninos",
+    "ninas", "infantil", "bebe", "bebes", "lactante", "lactantes", "mayores",
+    "anciano", "ancianos",
+}
+
+
+def tokens_farmaco(termino: str) -> list[str]:
+    """Tokens del término que DEBEN identificar un fármaco.
+
+    Excluye presentación y audiencia: 'dovilin jarabe adulto' → ['dovilin']. Si el
+    término es SOLO presentación ('jarabe para la tos'), devuelve []: no hay fármaco
+    que exigir y el comportamiento permisivo es el correcto.
+    """
+    return [w for w in tokens_senal(termino, _MIN_LEN_SENAL)
+            if w not in _PRESENTACION_AUDIENCIA]
+
+
 def _tokens_senal_ordenados(termino: str) -> list[str]:
     """Tokens de señal del término, de MAYOR a menor longitud.
 
@@ -292,7 +333,7 @@ def _tokens_senal_ordenados(termino: str) -> list[str]:
 
 
 def es_relevante_estricto(termino: str, nombre_producto: str) -> bool:
-    """¿El producto comparte señal con TODOS los tokens del término?
+    """¿El producto comparte señal con TODOS los tokens de FÁRMACO del término?
 
     "CITRATO POTASIO" pide el conjunto, no cada palabra por su lado. Con el criterio
     de un solo token, un DICLOFENAC POTASICO comparte 'potasio' y entra — el cliente
@@ -300,14 +341,17 @@ def es_relevante_estricto(termino: str, nombre_producto: str) -> bool:
     real (provider 27), exigir los dos tokens quita 27 de 27 productos ajenos en esa
     consulta (la lista cae a los que sí son citrato de potasio).
 
-    Con UN solo token de señal se comporta como `es_relevante` (no hay nada que exigir).
+    Se usan los tokens de FÁRMACO: 'jarabe'/'adulto' no se exigen porque no identifican
+    nada (si se exigieran, 'ambroxol jarabe adulto' dejaría fuera al propio MISULVAN
+    cada vez que el catálogo escriba 'JBE' en vez de 'JARABE').
 
-    El orden del AND es indistinto, pero se comprueba primero el token MÁS LARGO: es el
-    más discriminante y descarta antes el ruido.
+    Con UN solo token de fármaco se comporta como `es_relevante`.
     """
-    senales = _tokens_senal_ordenados(termino)
+    senales = sorted(tokens_farmaco(termino), key=len, reverse=True)
+    if not senales:
+        senales = _tokens_senal_ordenados(termino)
     if len(senales) < 2:
-        return es_relevante(termino, nombre_producto)
+        return es_relevante(senales[0], nombre_producto) if senales else False
     for w in senales:
         if not es_relevante(w, nombre_producto):
             return False
@@ -317,32 +361,58 @@ def es_relevante_estricto(termino: str, nombre_producto: str) -> bool:
 def filtrar_relevantes(termino: str, productos: list[dict]) -> list[dict]:
     """Devuelve solo los productos relevantes para el término.
 
-    En TRES pasos, del más estricto al más permisivo:
+    En CUATRO pasos, del más estricto al más permisivo:
 
-      1. AND — el producto comparte señal con TODOS los tokens del término. Es lo que
-         el cliente quiere ("citrato potasio" = citrato Y potasio) y quita de raíz los
-         fármacos que solo comparten una palabra (DICLOFENAC POTASICO ante "citrato
-         potasio"). Medido: quita 27/27 ajenos en esa consulta.
-      2. OR — basta un token. Rescata los casos en que el catálogo nombra al revés
-         ("nitrato de miconazol" → "MICONAZOL 400MG ... (NITRATO)") o trae el nombre
-         partido.
-      3. ORIGINAL — NUNCA devolver vacío si la entrada no lo estaba.
+      1. AND — el producto comparte señal con TODOS los tokens de FÁRMACO del término.
+         Es lo que el cliente quiere ("citrato potasio" = citrato Y potasio) y quita de
+         raíz los fármacos que solo comparten una palabra (DICLOFENAC POTASICO ante
+         "citrato potasio"). Medido: quita 27/27 ajenos en esa consulta.
+      2. OR — basta un token de FÁRMACO. Rescata los casos en que el catálogo nombra al
+         revés ("nitrato de miconazol" → "MICONAZOL 400MG ... (NITRATO)") o trae el
+         nombre partido.
+      3. VACÍO — si el cliente NOMBRÓ un fármaco concreto y NINGÚN producto del catálogo
+         lo comparte, se devuelve vacío. Que el agente lo diga con honestidad o busque
+         por principio activo (camino que ya existe en tools.py).
+      4. FAIL-SAFE — si el término NO tenía ningún token de fármaco (solo relleno o
+         presentación: "jarabe para la tos"), se devuelve el original como siempre.
 
-    Un falso rechazo (esconder un medicamento que sí existe) es peor que mostrar ruido:
-    el cliente se queda sin su fármaco. Y hay consultas legítimas cuyo nombre en el
-    catálogo es muy distinto al del cliente (marca comercial → principio activo). Por
-    eso los pasos 2 y 3 son obligatorios: la AND sola dejaría listas vacías.
+    POR QUÉ EL PASO 3 ES NUEVO Y NECESARIO: antes el fail-safe del paso 4 se aplicaba
+    SIEMPRE. Con "dovilin jarabe adulto" (DOVILIN no existe en el catálogo del provider
+    27), el OR aceptaba cualquier producto con 'jarabe' o 'adulto' y el cliente recibía
+    GULAPER (carboximetilcisteína) — OTRO fármaco — como respuesta a su consulta. Un
+    falso positivo así es peor que el silencio: el cliente puede comprar el medicamento
+    equivocado. El fail-safe se conserva solo donde de verdad protege (términos sin
+    fármaco), no para inventar un resultado.
 
-    Verificado a escala: con 5.887 consultas construidas con las 2 primeras palabras de
-    cada nombre real del catálogo, la AND NO pierde ninguno (0 falsos rechazos).
+    Verificado a escala: 6.146 nombres reales buscados por su propio nombre → 0
+    pérdidas, con los controles legítimos intactos (losartan potasico 11, diclofenac
+    sodico 11, acetaminofen 650 mg 1, omeprasol 3, amoxicilna 10).
     """
     if not productos:
         return productos
+    farmacos = tokens_farmaco(termino)
+    utiles = farmacos or tokens_senal(termino, _MIN_LEN_SENAL)
+
     estrictos = [
-        p for p in productos if es_relevante_estricto(termino, str(p.get("nombre") or ""))
+        p for p in productos
+        if all(es_relevante(w, str(p.get("nombre") or "")) for w in utiles)
     ]
     if estrictos:
         return estrictos
+
+    relajados = [
+        p for p in productos
+        if any(es_relevante(w, str(p.get("nombre") or "")) for w in utiles)
+    ]
+    if relajados:
+        return relajados
+
+    # No hay NINGÚN producto que comparta señal con los tokens útiles.
+    if farmacos:
+        # El cliente nombró un fármaco concreto y no está en el catálogo: NO mostrarle
+        # otro medicamento. Vacío a propósito.
+        return []
+    # Término sin fármaco (solo relleno/presentación): fail-safe clásico.
     filtrados = [p for p in productos if es_relevante(termino, str(p.get("nombre") or ""))]
     return filtrados or productos
 
