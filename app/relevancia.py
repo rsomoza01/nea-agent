@@ -575,3 +575,54 @@ def _tokens_farmaco(termino: str) -> list[str]:
     """Tokens que podrían ser fármaco: ni relleno, ni negocio, ni verbo/discurso."""
     return [w for w in tokens_senal(termino, _MIN_LEN_ENTRADA)
             if w not in _NO_FARMACO and w not in _VERBOS_Y_DISCURSO]
+
+
+# El OCR de una imagen que NO es un medicamento devuelve una FRASE, no un nombre.
+#
+# Caso real (provider 19, 2026-10): el cliente mandó el COMPROBANTE DE UN PAGO
+# ("Hola buenos días este es el pago muchas gracias" + la captura de Pagomóvil
+# BDV) y el OCR respondió:
+#
+#   "No se puede extraer texto relacionado con medicamentos o recetas de la
+#    imagen proporcionada, ya que no contiene dicha información."
+#
+# Esa frase es PEOR que un OCR vacío: pasa el blindaje anti-prompt (no repite el
+# vocabulario del prompt) y se usa como TÉRMINO DE BÚSQUEDA. El catálogo difuso
+# resolvió `'extraer texto relacionado proporcionad'` a FREEGELLS EXTRA FUERTE y
+# JABON ANITA PEARL EXTRACT; en el otro caso (`'texto legible proporcionada
+# cuchara medidora'`) a UNA PERA VAGINAL. El cliente mandó un pago y recibió
+# productos que no pidió.
+#
+# El prompt del OCR ASUME que la imagen es un medicamento ("Extrae SOLO el texto
+# legible de esta imagen de medicamento o receta"), así que ante un comprobante el
+# modelo no puede cumplir y escribe esa negación. Hay que tratarla como OCR vacío:
+# el marcador queda honesto (imagen sin texto de medicamento) y el agente responde
+# al CONTEXTO (el texto del cliente dice que es un pago), no a la frase.
+_PISTAS_OCR_SIN_MEDICAMENTO = (
+    r"no\s+(?:se\s+puede|hay|es\s+posible|contiene|muestra|aparece|se\s+observa)",
+    r"(?:imagen|foto|captura)\s+(?:proporcionada|adjunta|enviada)",
+    r"sin\s+(?:informaci[oó]n|texto)\s+(?:sobre|de|relacionad)",
+    r"no\s+(?:contiene|muestra|presenta|incluye)\s+(?:informaci[oó]n|texto|medicamento)",
+    r"no\s+(?:es|se\s+trata\s+de)\s+(?:una?\s+)?(?:medicamento|receta)",
+    r"no\s+hay\s+texto",
+)
+
+
+def parece_ocr_sin_medicamento(texto: str) -> bool:
+    """¿El texto del OCR dice que la imagen NO trae un medicamento?
+
+    True para las respuestas que hablan de la IMAGEN o de la AUSENCIA de
+    medicamento ("no contiene información sobre medicamentos", "la imagen no
+    muestra ningún medicamento"). Esas frases NO son un término de búsqueda.
+
+    Guarda contra el falso positivo: una dosis con unidad (`500 mg`, `2 ml`) es
+    señal inequívoca de un medicamento de VERDAD — aunque la frase diga "no" (un
+    OCR que transcribe "NO USAR MÁS DE 500 MG" sigue siendo un medicamento). Con
+    dosis presente, nunca se descarta.
+    """
+    if not texto:
+        return False
+    t = texto.lower()
+    if re.search(r"\d+\s*(?:mg|ml|mcg|g|ui|%)", t):
+        return False
+    return any(re.search(p, t) for p in _PISTAS_OCR_SIN_MEDICAMENTO)
