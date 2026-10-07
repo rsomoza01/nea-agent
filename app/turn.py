@@ -584,7 +584,7 @@ async def run_turn(
             len(runtime.last_products),
         )
         final_text = _formatear_lista_productos(
-            runtime.last_products, runtime.last_term or ""
+            runtime.last_products, runtime.last_products_term or runtime.last_term or ""
         ) + "\n\n" + MENSAJE_SUGERIDO_CARRITO
 
     # Backstop de lista desordenada: si el LLM enumeró TODOS los productos
@@ -603,7 +603,7 @@ async def run_turn(
             len(runtime.last_products),
         )
         final_text = _formatear_lista_productos(
-            runtime.last_products, runtime.last_term or ""
+            runtime.last_products, runtime.last_products_term or runtime.last_term or ""
         ) + "\n\n" + MENSAJE_SUGERIDO_CARRITO
 
     # Backstop de formato no canónico: el LLM enumeró los productos pero con
@@ -622,7 +622,7 @@ async def run_turn(
             len(runtime.last_products),
         )
         final_text = _formatear_lista_productos(
-            runtime.last_products, runtime.last_term or ""
+            runtime.last_products, runtime.last_products_term or runtime.last_term or ""
         ) + "\n\n" + MENSAJE_SUGERIDO_CARRITO
 
     # Backstop de omisión: si el catálogo devolvió productos pero el texto final
@@ -650,7 +650,7 @@ async def run_turn(
             len(runtime.last_products),
         )
         final_text = _formatear_lista_productos(
-            runtime.last_products, runtime.last_term or ""
+            runtime.last_products, runtime.last_products_term or runtime.last_term or ""
         ) + "\n\n" + MENSAJE_SUGERIDO_CARRITO
 
     # Backstop de precios inventados: si el catálogo devolvió productos pero el
@@ -668,7 +668,7 @@ async def run_turn(
             len(runtime.last_products),
         )
         final_text = _formatear_lista_productos(
-            runtime.last_products, runtime.last_term or ""
+            runtime.last_products, runtime.last_products_term or runtime.last_term or ""
         ) + "\n\n" + MENSAJE_SUGERIDO_CARRITO
 
     # Backstop de handoff injustificado: si el catálogo SÍ devolvió productos
@@ -693,7 +693,7 @@ async def run_turn(
             len(runtime.last_products),
         )
         final_text = _formatear_lista_productos(
-            runtime.last_products, runtime.last_term or ""
+            runtime.last_products, runtime.last_products_term or runtime.last_term or ""
         ) + "\n\n" + MENSAJE_SUGERIDO_CARRITO
 
     # Backstop de bloque de carrito: SIEMPRE que se consultaron productos
