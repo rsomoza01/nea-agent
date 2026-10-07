@@ -1594,6 +1594,44 @@ async def _tool_loop(
             }
         )
         for tc in reply.tool_calls:
+            # GUARD DEL PASO DE ENTREGA: no se puede mostrar el RESUMEN sin haber
+            # preguntado antes cómo quiere recibir el pedido. Igual que el guard de
+            # finalizar, va en el DESPACHO de tools porque el modelo puede llamar
+            # ver_carrito por su cuenta y saltarse la pregunta — que es exactamente
+            # lo que hace cuando el cliente dice "no" (medido: el modelo responde
+            # "Perfecto, cuando estés listo puedo ayudarte a finalizar" sin tool, o
+            # llama finalizar_pedido/ver_carrito directamente).
+            #
+            # Se intercepta antes de ejecutar: se envía el menú 1/2 y el turno
+            # termina ahí. El resumen se mostrará en el turno siguiente, ya con el
+            # método elegido (y la dirección si es delivery).
+            if (
+                farmacia
+                and tc.name == "ver_carrito"
+                and runtime._conv.delivery_method is None
+                and not runtime._conv.delivery_pending
+                and not runtime.delivery_pregunta_enviada
+            ):
+                items_e = await ctx.store.cart_items(
+                    runtime._conv.id, session_hours=ctx.settings.cart_session_hours
+                )
+                if items_e:
+                    runtime.delivery_pregunta_enviada = True
+                    runtime.delivery_pendiente = "method"
+                    runtime._conv.delivery_pending = "method"
+                    await ctx.store.update_conversation(
+                        runtime._conv.id, delivery_pending="method"
+                    )
+                    logger.info(
+                        "guard entrega: el LLM iba a mostrar el resumen sin preguntar "
+                        "la entrega (%d producto(s)) — pregunto delivery/retiro",
+                        len(items_e),
+                    )
+                    await _send(
+                        ctx, runtime._conv.id, runtime._crm_conv_id,
+                        MENSAJE_METODO_ENTREGA,
+                    )
+                    return None
             # GUARD: NO SE PUEDE FINALIZAR SIN HABER MOSTRADO EL RESUMEN.
             #
             # El cliente debe ver nombre, cajas y subtotal de cada medicamento ANTES
