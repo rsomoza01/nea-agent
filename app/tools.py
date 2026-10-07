@@ -14,7 +14,11 @@ from decimal import Decimal
 from typing import Any
 
 from app.crm import CrmConflict, CrmError, SlotTaken
-from app.relevancia import filtrar_relevantes, hay_senal_de_farmaco
+from app.relevancia import (
+    _token_cabeza_farmaco,
+    filtrar_relevantes,
+    hay_senal_de_farmaco,
+)
 
 # Palabras que revelan que el LLM alucinó una frase como término de búsqueda
 # (backstops del prompt, mensajes de "unsupported", instrucciones, etc.).
@@ -1485,6 +1489,33 @@ class ToolRuntime:
         # farmacia/precio). Quedarse con el de MENOR precio evita listas de 20
         # con 14 duplicados idénticos.
         products = _dedupe_por_nombre(products)
+
+        # REINTENTO POR EL FÁRMACO CABEZA: la frase completa no trajo el fármaco al
+        # catálogo (el motor del CRM matchea TODOS los tokens, así que "magnesio plus
+        # life" devuelve lo que comparte 'life' y ni un magnesio). El cliente nombra el
+        # fármaco PRIMERO y añade descriptores después ('plus', 'life', la marca): se
+        # reintenta con ese token, que en el catálogo del provider 27 devuelve los 10
+        # magnesios reales.
+        #
+        # Va ANTES del acortamiento porque es más preciso: el acortamiento solo quita
+        # la cola, mientras que aquí se aísla el fármaco. Y se RE-FILTRA con el término
+        # original, como los demás reintentos, para no aflojar la relevancia.
+        if not products:
+            cabeza = _token_cabeza_farmaco(nombre)
+            if cabeza and cabeza != nombre.lower():
+                data_c = await self._ctx.crm.get_products(
+                    self._provider_id, q=cabeza, limit=20
+                )
+                candidatos = _dedupe_por_nombre(data_c.get("products") or [])
+                products = filtrar_relevantes(nombre, candidatos)
+                if products:
+                    logger.info(
+                        "buscar_medicamento: '%s' sin resultados — encontrado por el "
+                        "fármaco cabeza '%s' (%d productos)",
+                        nombre, cabeza, len(products),
+                    )
+                    self.last_term = cabeza
+                    data = data_c
         # Fallback de acortamiento: si el término completo (p. ej. un OCR muy
         # verboso "sitagliptina metformina clorhidrato 50 mg 500 mg comprimidos")
         # no da resultados porque el motor matchea TODOS los tokens (AND), suelta
