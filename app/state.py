@@ -61,6 +61,19 @@ class Conversation:
     # la siguiente consulta de medicamento arranca un carrito nuevo en vez de
     # acumular sobre el pedido ya procesado.
     cart_closed: bool = False
+    # MÉTODO DE ENTREGA del pedido. Antes del Resumen se le pregunta al cliente:
+    #   1. Delivery          → se pide la DIRECCIÓN (delivery_address)
+    #   2. Retirar en Farmacia
+    # El resumen final (ver_carrito) muestra el MÉTODO DE ENTREGA con ese dato.
+    # None = todavía no eligió (la pregunta de entrega no se ha hecho o no se ha
+    # respondido). Persistente: la elección y la dirección sobreviven entre turnos.
+    delivery_method: str | None = None      # 'delivery' | 'pickup'
+    delivery_address: str | None = None     # solo cuando method='delivery'
+    # Qué pregunta de entrega está ESPERANDO respuesta ('method' | 'address' | '').
+    # Sin esto no se distingue un "1"/"2" sueltos (respuesta a NUESTRA pregunta) de
+    # un mensaje nuevo que empiece por número, ni se sabe que el mensaje siguiente
+    # a "¿a qué dirección?" es la dirección y no una consulta de medicamento.
+    delivery_pending: str = ""
     # Puesta cuando el agente cierra por conversación sin rumbo: mientras
     # viva, el turno guarda silencio (ver app/stall.py).
     stalled_at: datetime | None = None

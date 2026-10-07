@@ -39,6 +39,9 @@ _CONV_COLUMNS = frozenset(
         "last_ocr_term",
         "cart_summary_shown",
         "cart_closed",
+        "delivery_method",
+        "delivery_address",
+        "delivery_pending",
     }
 )
 
@@ -61,6 +64,9 @@ def _conv_from_row(row: asyncpg.Record) -> Conversation:
         last_ocr_term=row.get("last_ocr_term"),
         cart_summary_shown=row.get("cart_summary_shown", False),
         cart_closed=row.get("cart_closed", False),
+        delivery_method=row.get("delivery_method"),
+        delivery_address=row.get("delivery_address"),
+        delivery_pending=row.get("delivery_pending") or "",
     )
 
 

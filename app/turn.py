@@ -1215,13 +1215,108 @@ async def _tool_loop(
                 result = await runtime.execute("info_provider", {})
                 _append_forced_tool(messages, "info_provider", {}, result)
                 continue
+            # PASO DE ENTREGA (nuevo, va ANTES del Resumen del Pedido): cuando el
+            # cliente quiere ver el resumen y todavía no eligió cómo recibirlo, se
+            # le pregunta primero:
+            #     1. Delivery          → luego se pide la dirección
+            #     2. Retirar en Farmacia
+            # Solo después se muestra el Resumen, que incluye el MÉTODO DE ENTREGA.
+            #
+            # Va aquí y no como backstop de la rama sin-tools porque el modelo puede
+            # llamar ver_carrito por su cuenta y saltarse la pregunta (ver la lección
+            # "los backstops dentro de if not tool_calls no corren").
+            carrito_activo = bool(await ctx.store.cart_items(
+                runtime._conv.id, session_hours=ctx.settings.cart_session_hours
+            ))
+            if (
+                farmacia
+                and carrito_activo
+                and not runtime.delivery_pregunta_enviada
+                and not runtime._conv.cart_summary_shown
+                and _quiere_ver_resumen(user_text, tiene_carrito=carrito_activo)
+            ):
+                # ¿El cliente ya respondió con una elección? (p.ej. "delivery" directo)
+                eleccion_directa = _eleccion_entrega(user_text)
+                if eleccion_directa:
+                    await runtime.guardar_eleccion_entrega(eleccion_directa)
+                elif runtime._conv.delivery_method is None:
+                    runtime.delivery_pregunta_enviada = True
+                    runtime.delivery_pregunta = True
+                    runtime.delivery_pendiente = "method"
+                    await runtime._ctx.store.update_conversation(
+                        runtime._conv.id, delivery_pending="method"
+                    )
+                    logger.info(
+                        "paso de entrega: preguntando delivery/retiro antes del resumen"
+                    )
+                    await _send(
+                        ctx, runtime._conv.id, runtime._crm_conv_id,
+                        MENSAJE_METODO_ENTREGA,
+                    )
+                    return None  # turno atendido por la pregunta de entrega
+
+            # RESPUESTA A LA PREGUNTA DE ENTREGA PENDIENTE. El cliente contestó
+            # "1"/"2" (o "delivery"/"retirar") o mandó su dirección. Se resuelve AQUÍ,
+            # en código, sin pasar por el LLM: una dirección no debe interpretarse como
+            # consulta de medicamento ni un "1" como elección de producto.
+            if farmacia and runtime._conv.delivery_pending:
+                pendiente = runtime._conv.delivery_pending
+                if pendiente == "method":
+                    eleccion = _eleccion_entrega(user_text)
+                    if eleccion == "delivery":
+                        await runtime.guardar_eleccion_entrega("delivery")
+                        logger.info("paso de entrega: eligió DELIVERY — pido la dirección")
+                        await _send(
+                            ctx, runtime._conv.id, runtime._crm_conv_id,
+                            MENSAJE_PEDIR_DIRECCION,
+                        )
+                        return None
+                    if eleccion == "pickup":
+                        await runtime.guardar_eleccion_entrega("pickup")
+                        logger.info("paso de entrega: eligió RETIRAR EN FARMACIA")
+                        # Ya hay método: se muestra el resumen (con el bloque de
+                        # entrega) en este mismo turno.
+                        result = await runtime.execute("ver_carrito", {})
+                        _append_forced_tool(messages, "ver_carrito", {}, result)
+                        continue
+                    # No se reconoce la respuesta: se repite la pregunta UNA vez y se
+                    # deja que el LLM atienda (puede ser una consulta nueva).
+                    logger.info(
+                        "paso de entrega: respuesta no reconocida (%r) — dejo al LLM",
+                        user_text[:60],
+                    )
+                    runtime._conv.delivery_pending = ""
+                    await runtime._ctx.store.update_conversation(
+                        runtime._conv.id, delivery_pending=""
+                    )
+                elif pendiente == "address":
+                    if _parece_direccion(user_text):
+                        direccion = user_text.strip()
+                        # Quitar el marcador de media si lo hubiera (no debería).
+                        direccion = _texto_cliente_sin_marcadores(direccion) or direccion
+                        await runtime.guardar_direccion_entrega(direccion)
+                        logger.info(
+                            "paso de entrega: DIRECCIÓN guardada (%r)", direccion[:70]
+                        )
+                        result = await runtime.execute("ver_carrito", {})
+                        _append_forced_tool(messages, "ver_carrito", {}, result)
+                        continue
+                    # No parece dirección (¿el cliente cambió de tema?): se le vuelve a
+                    # pedir sin bloquear el turno.
+                    logger.info(
+                        "paso de entrega: %r no parece dirección — la pido de nuevo",
+                        user_text[:60],
+                    )
+                    await _send(
+                        ctx, runtime._conv.id, runtime._crm_conv_id,
+                        MENSAJE_PEDIR_DIRECCION,
+                    )
+                    return None
+
             # Backstop de resumen: si el cliente quiere ver el resumen y el LLM
             # no llamó ver_carrito, lo forzamos (el modelo a veces no lo llama).
             # El "no" suelto (a "¿Deseas buscar otro medicamento?") con carrito
             # activo también cuenta: quiere el resumen, no handoff.
-            carrito_activo = bool(await ctx.store.cart_items(
-                runtime._conv.id, session_hours=ctx.settings.cart_session_hours
-            ))
             if farmacia and _quiere_ver_resumen(user_text, tiene_carrito=carrito_activo) and not runtime.summary_forced:
                 runtime.summary_forced = True
                 logger.info("backstop resumen: forzando ver_carrito")
@@ -1685,6 +1780,24 @@ async def _tool_loop(
                 # Solo se exige el resumen si HAY algo que resumir: sin carrito,
                 # finalizar_pedido devuelve 'carrito_vacio' y no hay nada que mostrar.
                 if items_cart:
+                    # Si el cliente aún no eligió CÓMO recibirlo, primero el paso de
+                    # entrega. Un pedido sin método de entrega deja al humano sin saber
+                    # si despachar o preparar para retiro.
+                    if runtime._conv.delivery_method is None:
+                        runtime.delivery_pregunta_enviada = True
+                        runtime.delivery_pendiente = "method"
+                        await ctx.store.update_conversation(
+                            runtime._conv.id, delivery_pending="method"
+                        )
+                        logger.info(
+                            "guard finalizar: sin método de entrega — pregunto "
+                            "delivery/retiro antes de cerrar"
+                        )
+                        await _send(
+                            ctx, runtime._conv.id, runtime._crm_conv_id,
+                            MENSAJE_METODO_ENTREGA,
+                        )
+                        return None
                     runtime.summary_forced = True
                     logger.info(
                         "guard finalizar: el LLM quiso finalizar sin mostrar el resumen "
@@ -2155,6 +2268,95 @@ def _pregunta_cierre_resumen(messages: list[dict[str, Any]]) -> bool:
     if not texto:
         return False
     return any(p in texto.lower() for p in _PREGUNTA_CIERRE_RESUMEN)
+
+
+# ------------------------------------------------------------- ENTREGA ---
+# Antes del Resumen del Pedido se pregunta CÓMO quiere recibirlo:
+#   1. Delivery          → se pide la dirección
+#   2. Retirar en Farmacia
+# El resumen final muestra el bloque MÉTODO DE ENTREGA con ese dato.
+
+# "1" suelto o la palabra delivery. El "1"/"2" solo cuenta si NUESTRA pregunta de
+# entrega está pendiente (lo garantiza delivery_pending), así que aquí basta con
+# reconocer las formas explícitas y los números.
+_DELIVERY_NUM = re.compile(r"\s*1\b")
+_PICKUP_NUM = re.compile(r"\s*2\b")
+
+_DELIVERY_PALABRAS = re.compile(
+    r"\b(delivery|delibery|deliberi|env[íi]o|enviar|enviarlo|mandar|mandarlo|"
+    r"a\s+domicilio|domicilio|a\s+mi\s+casa|traerlo|traelo|llevar|llevarlo|"
+    r"despacho|motorizado)\b",
+    re.IGNORECASE,
+)
+
+# Menú del MÉTODO DE ENTREGA y petición de la dirección. Mensajes DETERMINISTAS:
+# se envían tal cual (no pasan por el LLM) para que las opciones 1/2 sean siempre
+# las mismas y el cliente pueda responder con un número.
+MENSAJE_METODO_ENTREGA = (
+    "Antes de cerrar tu pedido, ¿cómo prefieres recibirlo?\n\n"
+    "1️⃣ Delivery (envío a tu dirección)\n"
+    "2️⃣ Retirar en Farmacia\n\n"
+    "Responde *1* o *2*."
+)
+
+MENSAJE_PEDIR_DIRECCION = (
+    "¡Perfecto! 🛵 Envíame la *dirección* donde quieres recibir el pedido "
+    "(calle, número, sector y una referencia si aplica)."
+)
+_PICKUP_PALABRAS = re.compile(
+    r"\b(retirar|retiro|reto|buscar(?:lo)?|voy\s+a\s+buscar|paso\s+a\s+buscar|"
+    r"paso\s+por|lo\s+recojo|recojo|recoger|en\s+la\s+farmacia|en\s+tienda|"
+    r"presencial|yo\s+lo\s+busco)\b",
+    re.IGNORECASE,
+)
+
+
+def _eleccion_entrega(texto: str) -> str | None:
+    """¿El cliente eligió delivery o retiro? None si no se reconoce.
+
+    Se usa SOLO cuando el agente acaba de preguntar por el método de entrega
+    (`delivery_pending == 'method'`), así que un "1"/"2" suelto es la respuesta a
+    ESA pregunta. Las palabras explícitas también se aceptan por si el cliente
+    contesta "quiero delivery" o "lo retiro yo".
+    """
+    if not texto:
+        return None
+    t = texto.strip().lower()
+    # Número suelto (la respuesta más común al menú 1/2).
+    if re.fullmatch(r"\s*1\s*[.)]?\s*", t):
+        return "delivery"
+    if re.fullmatch(r"\s*2\s*[.)]?\s*", t):
+        return "pickup"
+    # Palabras explícitas. El retiro gana si menciona ambas ("lo retiro, no envío").
+    if _PICKUP_PALABRAS.search(t):
+        return "pickup"
+    if _DELIVERY_PALABRAS.search(t):
+        return "delivery"
+    return None
+
+
+def _parece_direccion(texto: str) -> bool:
+    """¿El texto parece una dirección de entrega?
+
+    Se evalúa cuando el agente pidió la dirección (`delivery_pending=='address'`),
+    así que el mensaje es la respuesta a ESA pregunta. Se exige una señal mínima de
+    dirección para no guardar una consulta de medicamento como si fuera dirección.
+    """
+    if not texto:
+        return False
+    t = texto.strip()
+    if len(t) < 5 or len(t) > 300:
+        return False
+    # Señales típicas de dirección en Venezuela.
+    señales = re.compile(
+        r"(\b(av(?:e|enida)?|calle|callej[oó]n|carrera|carera|urbanizaci[oó]n|urb|"
+        r"sector|barrio|manzana|mz|parcela|pc|residencias|res\.|edificio|edif|"
+        r"torre|apto|apartamento|aparta|piso|pto|casa|cas\.|quinta|qta|villa|"
+        r"vereda|pasaje|pje|transversal|diagonal|bloque|nro|n[uú]mero|#)\b"
+        r"|\d{1,4})",
+        re.IGNORECASE,
+    )
+    return bool(señales.search(t))
 
 
 def _agente_pidio_precisar(messages: list[dict[str, Any]]) -> bool:
@@ -2904,8 +3106,32 @@ def _build_state_block(
         total = sum((it.precio_usd or 0) * it.cantidad for it in cart)
         lines.append(f"- Carrito actual: {items_str}. Total parcial: ${total:.2f}.")
 
+    # MÉTODO DE ENTREGA. Se le dice al modelo en qué punto del paso va, para que no
+    # invente la entrega ni contradiga lo que ya eligió el cliente.
+    if conv.delivery_pending == "method":
+        lines.append(
+            "- ENTREGA: le preguntaste cómo quiere recibir el pedido (1. Delivery / "
+            "2. Retirar en Farmacia) y aún NO responde. No avances al resumen."
+        )
+    elif conv.delivery_pending == "address":
+        lines.append(
+            "- ENTREGA: el cliente eligió DELIVERY y le pediste la dirección; aún no "
+            "la dio. No avances al resumen."
+        )
+    elif conv.delivery_method == "delivery":
+        dir_ = conv.delivery_address or "(sin dirección registrada)"
+        lines.append(f"- ENTREGA: DELIVERY a '{dir_}'. Ya está registrada.")
+    elif conv.delivery_method == "pickup":
+        lines.append("- ENTREGA: RETIRAR EN FARMACIA. Ya está registrado.")
+
     # Si no hay estado relevante (sin producto, término ni carrito), no inyectar
-    if not conv.last_product and not conv.last_term and not cart:
+    if (
+        not conv.last_product
+        and not conv.last_term
+        and not cart
+        and not conv.delivery_method
+        and not conv.delivery_pending
+    ):
         return ""
 
     lines.append("Usa este estado para responder con coherencia. NO inventes productos, precios ni cantidades que no estén aquí.")
