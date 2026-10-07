@@ -1499,6 +1499,51 @@ async def _tool_loop(
             }
         )
         for tc in reply.tool_calls:
+            # GUARD: NO SE PUEDE FINALIZAR SIN HABER MOSTRADO EL RESUMEN.
+            #
+            # El cliente debe ver nombre, cajas y subtotal de cada medicamento ANTES
+            # de que el pedido quede registrado. Si el LLM llama finalizar_pedido de
+            # una vez, el cliente recibe solo "Tu pedido ha sido registrado. Total:
+            # $1.80" — sin detalle — y el pedido ya se cerró (cart_clear), así que el
+            # resumen es IMPOSIBLE de recuperar después.
+            #
+            # Caso real (provider 05, 2026-10): el agente preguntó "¿Deseas buscar otro
+            # medicamento? (SI/NO)", el cliente dijo "No" y el LLM llamó
+            # finalizar_pedido directamente (medido 5/5 con el modelo real). El
+            # backstop que fuerza el resumen vive en el bloque `if not reply.tool_calls`,
+            # así que NUNCA se evaluó: el modelo llamó una tool y se saltó todos los
+            # backstops. El cliente vio su pedido registrado sin ver qué compró.
+            #
+            # Se sustituye la llamada por el resumen y se le da otra ronda al LLM para
+            # que lo presente; el cliente confirma en el turno siguiente y ahí sí
+            # finaliza (con `cart_summary_shown` ya activo).
+            if (
+                farmacia
+                and tc.name == "finalizar_pedido"
+                and not runtime.summary_forced
+                and not runtime.cart_summary_text
+            ):
+                items_cart = await ctx.store.cart_items(
+                    runtime._conv.id, session_hours=ctx.settings.cart_session_hours
+                )
+                # Solo se exige el resumen si HAY algo que resumir: sin carrito,
+                # finalizar_pedido devuelve 'carrito_vacio' y no hay nada que mostrar.
+                if items_cart:
+                    runtime.summary_forced = True
+                    logger.info(
+                        "guard finalizar: el LLM quiso finalizar sin mostrar el resumen "
+                        "(%d producto(s)) — fuerzo ver_carrito antes de cerrar",
+                        len(items_cart),
+                    )
+                    result = await runtime.execute("ver_carrito", {})
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": json.dumps(result, ensure_ascii=False, default=str),
+                        }
+                    )
+                    continue
             result = await runtime.execute(tc.name, tc.arguments)
             messages.append(
                 {
