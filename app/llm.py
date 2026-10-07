@@ -187,13 +187,24 @@ class OpenAiLlm:
                                 {
                                     "type": "text",
                                     "text": (
-                                        "Extrae SOLO el texto legible de esta imagen de "
-                                        "medicamento o receta. Devuelve: nombre del "
-                                        "medicamento, principio activo y concentración "
-                                        "(mg/ml), y presentación si se ve. Si es una "
-                                        "receta, extrae cada medicamento en una línea. "
-                                        "No inventes nada que no esté en la imagen. "
-                                        "Responde en texto plano."
+                                        "Extrae el texto legible de esta imagen, en "
+                                        "texto plano.\n"
+                                        "Si la imagen es de un MEDICAMENTO (caja, "
+                                        "envase, blíster) o de una RECETA, extrae el "
+                                        "nombre del medicamento, el principio activo "
+                                        "y la concentración (mg/ml), y la "
+                                        "presentación si se ve. Si es una receta, "
+                                        "extrae cada medicamento en una línea. "
+                                        "Aunque el texto esté manuscrito, borroso o "
+                                        "a medias, escribe lo que alcances a leer: "
+                                        "NUNCA respondas NO_APLICA si ves un envase "
+                                        "de medicamento, una receta, un papel con "
+                                        "nombres de fármacos o una caja de farmacia.\n"
+                                        "Responde NO_APLICA SOLO si la imagen no "
+                                        "tiene nada que ver con medicamentos (un "
+                                        "comprobante de pago, una factura, un "
+                                        "utensilio de cocina, ropa, comida...).\n"
+                                        "No inventes nada que no esté en la imagen."
                                     ),
                                 },
                                 {"type": "image_url", "image_url": {"url": uri}},
