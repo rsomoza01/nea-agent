@@ -615,6 +615,11 @@ def parece_ocr_sin_medicamento(texto: str) -> bool:
     medicamento ("no contiene información sobre medicamentos", "la imagen no
     muestra ningún medicamento"). Esas frases NO son un término de búsqueda.
 
+    También cubre el marcador EXACTO `NO_APLICA` que el prompt del OCR pide cuando
+    la imagen no es de un medicamento (comprobante de pago, utensilio, comida): es
+    una señal deliberada y estable, mucho más fiable que una frase libre — el
+    modelo la redactaba distinto en cada corrida.
+
     Guarda contra el falso positivo: una dosis con unidad (`500 mg`, `2 ml`) es
     señal inequívoca de un medicamento de VERDAD — aunque la frase diga "no" (un
     OCR que transcribe "NO USAR MÁS DE 500 MG" sigue siendo un medicamento). Con
@@ -622,7 +627,10 @@ def parece_ocr_sin_medicamento(texto: str) -> bool:
     """
     if not texto:
         return False
-    t = texto.lower()
+    t = texto.lower().strip()
+    if t.startswith("no_aplica") or t == "no aplica":
+        # El marcador deliberado: puede venir SOLO o con una explicación detrás.
+        return True
     if re.search(r"\d+\s*(?:mg|ml|mcg|g|ui|%)", t):
         return False
     return any(re.search(p, t) for p in _PISTAS_OCR_SIN_MEDICAMENTO)
