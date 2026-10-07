@@ -1984,6 +1984,47 @@ class ToolRuntime:
                     "(SI/NO). No vuelvas a llamar agregar_al_carrito para lo mismo."
                 ),
             }
+        # IDEMPOTENCIA ENTRE TURNOS: el producto YA está en el carrito con la MISMA
+        # cantidad que se pide ahora → el LLM está re-confirmando una selección que ya
+        # se hizo, no agregando más unidades. Sin esto la cantidad se DOBLA.
+        #
+        # Caso real (provider 05, 2026-10): el cliente dijo "si" al resumen y el LLM
+        # volvió a llamar agregar_al_carrito + finalizar_pedido en la misma ronda. El
+        # carrito ya tenía 1 caja; cart_add (ON CONFLICT cantidad + EXCLUDED.cantidad)
+        # la habría dejado en 2 — el cliente veía un resumen de $0,52 y el pedido
+        # registrado cobraba $1,04. El `backstop_added_skus` de arriba solo cubre el
+        # MISMO turno del backstop, no una re-confirmación en un turno posterior.
+        #
+        # Solo se deduplica si la cantidad coincide EXACTAMENTE: "quiero 2 más" sí es
+        # un aumento legítimo y debe sumar.
+        if sku_final:
+            existentes = await self._ctx.store.cart_items(
+                self._conv.id, session_hours=self._ctx.settings.cart_session_hours
+            )
+            for ex in existentes:
+                if str(ex.product_id or "").strip() == sku_final and ex.cantidad == cantidad:
+                    logger.info(
+                        "agregar_al_carrito: '%s' ya está en el carrito con la misma "
+                        "cantidad (%d) — no se duplica",
+                        producto or sku_final, cantidad,
+                    )
+                    return {
+                        "ok": True,
+                        "dedup": True,
+                        "item": {
+                            "productId": sku_final,
+                            "producto": ex.producto,
+                            "cantidad": ex.cantidad,
+                            "precioUsd": ex.precio_usd,
+                            "precioBs": ex.precio_bs,
+                        },
+                        "instrucciones": (
+                            "confirma en una línea que quedó agregado (cantidad + producto). "
+                            "SI el cliente acaba de confirmar el pedido, llama "
+                            "finalizar_pedido; NO vuelvas a llamar agregar_al_carrito "
+                            "para lo mismo."
+                        ),
+                    }
         presentacion = str(args.get("presentacion") or "")
         laboratorio = str(args.get("laboratorio") or "")
         precio_usd = args.get("precioUsd")
