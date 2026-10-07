@@ -1028,6 +1028,15 @@ class ToolRuntime:
         self.last_product: dict[str, Any] | None = None
         # Lista completa de productos consultados (backstop de contradicción).
         self.last_products: list[dict[str, Any]] = []
+        # TÉRMINO DEL QUE SALIÓ `last_products`. Los backstops de turn.py componen el
+        # título con `last_term` y las líneas con `last_products`: si ambos vienen de
+        # búsquedas distintas, la respuesta mezcla dos consultas y el cliente recibe un
+        # producto que NO pidió (ver `_lista_coincide_con_termino` en turn.py). Comparar
+        # estos dos valores es un criterio EXACTO, a diferencia de comparar textos: el
+        # camino de principio activo ('depomedrol' → 'METILPREDNISOLONA') tiene título y
+        # productos con nombres legítimamente distintos, y una comparación textual lo
+        # bloquearía.
+        self.last_products_term: str = ""
         # Lista de opciones del último buscar_medicamento, ORDENADA por precio
         # (menor a mayor), tal como la muestra el formateador. Permite resolver
         # "quiero X cajas de la opción Z" en un turno nuevo.
@@ -1606,6 +1615,9 @@ class ToolRuntime:
                 self.last_term = nombre
                 self.last_product = alternativas[0]
                 self.last_products = alternativas
+                # El principio activo SÍ corresponde a este término (el LLM lo mapeó
+                # desde él), así que la lista está en contexto: el guard no la invalida.
+                self.last_products_term = nombre
                 self.last_options = sorted(
                     alternativas,
                     key=lambda p: (p.get("precio") if isinstance(p.get("precio"), (int, float)) else 0),
@@ -1631,6 +1643,39 @@ class ToolRuntime:
                     ),
                 }
             self.med_not_found = True
+            # LA BÚSQUEDA FALLIDA INVALIDA LA LISTA ANTERIOR. `last_products` guarda la
+            # lista de la ÚLTIMA búsqueda CON RESULTADOS, y los backstops de turn.py la
+            # usan con `last_term` como TÍTULO. Si este turno buscó un medicamento y no
+            # hay nada, dejar la lista vieja produce una respuesta que mezcla DOS
+            # consultas distintas.
+            #
+            # Caso real (provider 05, 2026-10): el cliente mandó una receta de
+            # ALPRAZOLAM. En el mismo turno el LLM había buscado 'Ibuprofeno 200 mg'
+            # (tradujo la caja BRUGESIC de la imagen anterior) → last_products =
+            # [BRUDOL (IBUPROFENO - CAFEINA) 200 MG]. Luego buscó 'alprazolam' → 0.
+            # El backstop de contradicción tomó el TÍTULO del término nuevo y la LISTA
+            # del viejo:
+            #
+            #     ALPRAZOLAM
+            #     💊 1. BRUDOL (IBUPROFENO - CAFEINA) 200 MG X 20 COMP
+            #
+            # Un antiinflamatorio con cafeína presentado como el ansiolítico que pidió.
+            # Peor que decir "no disponible": el cliente puede comprar el medicamento
+            # equivocado. El título y la lista deben venir SIEMPRE del mismo turno.
+            #
+            # `last_term` NO se limpia a propósito: el backstop de refinamiento construye
+            # `f"{last_term} {ref}"` y, sin él, un "el de 50 mg" posterior se buscaría
+            # como '50 mg' → fuzzy a cualquier cosa. El prompt también lo cita como
+            # "Última búsqueda". Lo que se invalida es la LISTA, nunca el término.
+            if self.last_products:
+                logger.info(
+                    "buscar_medicamento: '%s' sin resultados — invalido last_products "
+                    "(%d productos de una búsqueda anterior)",
+                    nombre, len(self.last_products),
+                )
+            self.last_products = []
+            self.last_options = []
+            self.last_product = None
             await self._log_med_query(nombre, [], added_to_cart=False)
             return {
                 "ok": False,
@@ -1660,6 +1705,10 @@ class ToolRuntime:
         # contradicción: si el LLM niega disponibilidad pese a haber resultados,
         # reemplazamos su texto con la lista real).
         self.last_products = products
+        # Con qué término se obtuvo esta lista. Los backstops componen el título con
+        # `last_term`, así que si `last_term` cambia (búsqueda posterior sin resultados)
+        # la lista queda huérfana y hay que invalidarla (ver el `if not products` arriba).
+        self.last_products_term = nombre
         # Lista de opciones ORDENADA por precio (menor a mayor), tal como la
         # muestra _formatear_lista_productos: así "opción Z" se resuelve contra
         # el MISMO orden que el cliente vio.
