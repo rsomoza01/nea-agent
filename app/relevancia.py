@@ -529,6 +529,34 @@ def filtrar_relevantes(termino: str, productos: list[dict]) -> list[dict]:
     #
     # Los sufijos comerciales se saltan aquí (ya se explicó arriba por qué).
     especificos = [w for w in utiles if not _es_sufijo_comercial(w)]
+
+    # EL FÁRMACO CABEZA MANDA: si el PRIMER token específico —el que el cliente
+    # escribió como nombre del producto— no comparte señal con NINGÚN producto de
+    # la lista, NO se rescata con los tokens que le siguen.
+    #
+    # Caso real (provider 27, 2026-10): "magnesio plus life". El CRM devolvió 20
+    # productos donde NINGUNO tenía magnesio, pero 8 tenían 'life' (STRON LIFE /
+    # WALIFE). El rescate escalonado ordena por selectividad DENTRO de la lista
+    # devuelta: 'magnesio' → 0, 'life' → 8. Como mide sobre la lista y no sobre el
+    # catálogo, 'magnesio' quedó descartado y ganó 'life': el cliente pidió
+    # MAGNESIO y recibió SAW PALMETO, CASCARA SAGRADA, FORCEHUMAINE... todos de la
+    # marca STRON LIFE. Un falso positivo así es peor que el silencio: el cliente
+    # puede comprar el producto equivocado.
+    #
+    # La marca no identifica el fármaco. Si el fármaco no está en la lista, se
+    # devuelve VACÍO (el agente dirá que no está disponible, o `tools.py` reintenta
+    # la búsqueda por el token cabeza — ver `_token_cabeza_farmaco`).
+    #
+    # No afecta a los rescates legítimos: en "asaprol as pina" el cabeza 'asaprol'
+    # SÍ matchea (2 productos, los correctos) y el guard no se activa; en "omeprazol
+    # pastillas" hay un solo token específico. Medido en la batería de regresión.
+    if len(especificos) > 1:
+        cabeza = especificos[0]
+        if not any(
+            es_relevante(cabeza, str(p.get("nombre") or "")) for p in productos
+        ):
+            return []
+
     for rescate in (especificos, utiles if not especificos else []):
         if not rescate:
             continue
@@ -553,6 +581,22 @@ def filtrar_relevantes(termino: str, productos: list[dict]) -> list[dict]:
     # Término sin fármaco (solo relleno/presentación): fail-safe clásico.
     filtrados = [p for p in productos if es_relevante(termino, str(p.get("nombre") or ""))]
     return filtrados or productos
+
+
+def _token_cabeza_farmaco(termino: str) -> str | None:
+    """El token que NOMBRA el fármaco: el primero específico del término.
+
+    'magnesio plus life' → 'magnesio'.  'asaprol as pina' → 'asaprol'.
+
+    Es el token con el que hay que reintentar la búsqueda cuando la frase completa
+    no trajo el fármaco al catálogo (el motor del CRM matchea todos los tokens).
+    El cliente escribe el nombre del producto primero y añade descriptores después
+    ('plus', 'life', 'forte', la marca, la presentación): el primero es el fármaco.
+    """
+    for w in tokens_farmaco(termino):
+        if not _es_sufijo_comercial(w):
+            return w
+    return None
 
 
 def hay_senal_de_farmaco(termino: str) -> bool:
