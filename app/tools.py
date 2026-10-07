@@ -1998,6 +1998,22 @@ class ToolRuntime:
             float(precio_usd) if precio_usd is not None else None,
             float(precio_bs) if precio_bs is not None else None,
         )
+        # EL CARRITO CAMBIÓ DESPUÉS DEL RESUMEN: el flag `cart_summary_shown` debe
+        # volver a False. Si no, el cliente que ya vio el resumen, agrega otra cosa y
+        # dice "LISTO" finalizaría SIN ver el resumen actualizado — cerrando un pedido
+        # cuyo detalle nunca vio. El propósito del flag es "el resumen MOSTRADO
+        # corresponde al carrito ACTUAL", no "alguna vez se mostró un resumen".
+        #
+        # Caso real (provider 05, 2026-10): el cliente dijo "no" → vio el resumen →
+        # dijo "si" y volvió a ver el MISMO resumen (el guard de finalizar lo exigía
+        # porque `cart_summary_text` es por turno). Con el flag persistente, "si"
+        # finaliza; pero si entre el resumen y el "si" agrega otra caja, hay que
+        # re-resumir para que el detalle refleje lo que realmente va a comprar.
+        if self._conv.cart_summary_shown:
+            await self._ctx.store.update_conversation(
+                self._conv.id, cart_summary_shown=False
+            )
+            self._conv.cart_summary_shown = False
         return {
             "ok": True,
             "item": {
