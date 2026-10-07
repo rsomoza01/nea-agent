@@ -1068,6 +1068,44 @@ class ToolRuntime:
         # que el monto SIEMPRE aparezca en Bs y por medicamento aunque el modelo
         # omita ese formato.
         self.cart_summary_text: str | None = None
+        # PASO DE ENTREGA (delivery / retiro). Coordina la pregunta dentro del turno:
+        #   delivery_pregunta_enviada → ya se envió el menú 1/2 en ESTE turno (evita
+        #     repetirlo si el loop vuelve a pasar por el backstop).
+        #   delivery_pregunta / delivery_pendiente → espejo del estado de la
+        #     conversación, para no re-consultar la BD en cada vuelta del loop.
+        self.delivery_pregunta_enviada = False
+        self.delivery_pregunta = False
+        self.delivery_pendiente = ""
+
+    async def guardar_eleccion_entrega(self, metodo: str) -> None:
+        """Guarda el MÉTODO DE ENTREGA elegido ('delivery' | 'pickup').
+
+        Con 'pickup' no hay dirección que pedir: el resumen ya puede mostrarse.
+        Con 'delivery' queda pendiente la dirección.
+        """
+        metodo = "pickup" if metodo == "pickup" else "delivery"
+        pendiente = "address" if metodo == "delivery" else ""
+        await self._ctx.store.update_conversation(
+            self._conv.id,
+            delivery_method=metodo,
+            delivery_pending=pendiente,
+        )
+        self._conv.delivery_method = metodo
+        self._conv.delivery_pending = pendiente
+        self.delivery_pendiente = pendiente
+
+    async def guardar_direccion_entrega(self, direccion: str) -> None:
+        """Guarda la DIRECCIÓN de entrega y cierra la pregunta pendiente."""
+        await self._ctx.store.update_conversation(
+            self._conv.id,
+            delivery_address=direccion,
+            delivery_method="delivery",
+            delivery_pending="",
+        )
+        self._conv.delivery_address = direccion
+        self._conv.delivery_method = "delivery"
+        self._conv.delivery_pending = ""
+        self.delivery_pendiente = ""
 
     async def execute(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -2167,6 +2205,18 @@ class ToolRuntime:
             bloque.append("💳 *Formas de pago:*")
             bloque.append(pago)
             bloque.append("")
+        # MÉTODO DE ENTREGA: el cliente eligió delivery (con dirección) o retiro en
+        # farmacia ANTES de llegar al resumen. Se muestra siempre que haya elección,
+        # para que el pedido quede sin ambigüedad sobre cómo se entrega.
+        metodo = self._conv.delivery_method
+        if metodo == "delivery":
+            bloque.append("🚚 *MÉTODO DE ENTREGA:*")
+            bloque.append(f"Delivery — {self._conv.delivery_address or ''}".rstrip(" —"))
+            bloque.append("")
+        elif metodo == "pickup":
+            bloque.append("🏥 *MÉTODO DE ENTREGA:*")
+            bloque.append("Retirar en Farmacia")
+            bloque.append("")
         bloque.append(
             "¿Confirmas el pedido con un *SI*, o quieres agregar otro medicamento?"
         )
@@ -2225,6 +2275,19 @@ class ToolRuntime:
         # distingue "finalicé el pedido" de "solo vi el resumen y quiero seguir
         # agregando" (que mantiene el carrito vivo).
         await self._ctx.store.update_conversation(self._conv.id, cart_closed=True)
+        # EL PEDIDO SE CERRÓ: se limpia el estado de ENTREGA. El próximo pedido debe
+        # volver a preguntar delivery/retiro en vez de heredar la dirección o el
+        # "Retirar en Farmacia" del pedido anterior. Solo se limpia AQUÍ (pedido
+        # cerrado): ver el resumen no cierra nada, el cliente puede seguir agregando.
+        await self._ctx.store.update_conversation(
+            self._conv.id,
+            delivery_method=None,
+            delivery_address=None,
+            delivery_pending="",
+        )
+        self._conv.delivery_method = None
+        self._conv.delivery_address = None
+        self._conv.delivery_pending = ""
         # Si el Resumen del Pedido ya mostró las formas de pago (ver_carrito,
         # flag persistente cart_summary_shown), NO repetirlas aquí: el mensaje
         # final solo confirma que un humano lo procesará. Leer el flag fresco
