@@ -17,6 +17,7 @@ import logging
 from dataclasses import dataclass
 
 from app.state import AppContext, InboundMessage
+from app.relevancia import parece_ocr_sin_medicamento
 
 logger = logging.getLogger("nea.media")
 
@@ -136,12 +137,40 @@ async def _image(ctx: AppContext, msg: InboundMessage) -> MediaPart:
             ocr_text = (await ocr(data, mime_clean)).strip()
         except Exception:
             logger.warning("media image: OCR no disponible/falló — imagen va sola")
+    # OCR que NO describe un medicamento: el cliente mandó otra cosa (un
+    # COMPROBANTE DE PAGO, una foto de un producto no medicinal). El prompt del OCR
+    # asume que la imagen ES un medicamento, así que ante un pago el modelo
+    # responde con una frase de negación:
+    #
+    #   "No se puede extraer texto relacionado con medicamentos o recetas de la
+    #    imagen proporcionada, ya que no contiene dicha información."
+    #
+    # Esa frase es PEOR que no tener OCR: pasa el blindaje anti-prompt y el backstop
+    # la usa como TÉRMINO DE BÚSQUEDA, y el catálogo difuso devuelve cualquier cosa
+    # (medido: FREEGELLS EXTRA FUERTE, JABON ANITA PEARL) ante un cliente que solo
+    # mandó su pago. Se trata como OCR vacío: el marcador queda honesto y el agente
+    # responde al TEXTO del cliente ("este es el pago"), no a la frase.
+    if ocr_text and parece_ocr_sin_medicamento(ocr_text):
+        logger.info(
+            "media image: el OCR no describe un medicamento (%r) — lo descarto",
+            ocr_text[:80],
+        )
+        ocr_text = ""
     extra = ""
     if ocr_text:
         extra = (
             f" OCR de la imagen: \"{ocr_text}\"."
             " Si es un medicamento/receta, consúltalo en el catálogo "
             "(buscar_medicamento) y no inventes precios ni disponibilidad."
+        )
+    else:
+        # Sin OCR de medicamento: dejar claro que la imagen NO trae texto de
+        # medicamento, para que el LLM no busque en el catálogo y atienda el
+        # contexto real (un pago, un comprobante, una consulta administrativa).
+        extra = (
+            " No se reconoce texto de medicamento en la imagen:"
+            " NO busques en el catálogo por lo que se ve en ella."
+            " Atiende lo que el cliente dice en su mensaje."
         )
     return MediaPart(
         text=(
