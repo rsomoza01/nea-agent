@@ -1677,7 +1677,7 @@ async def _tool_loop(
                 farmacia
                 and tc.name == "finalizar_pedido"
                 and not runtime.summary_forced
-                and not runtime.cart_summary_text
+                and not runtime._conv.cart_summary_shown
             ):
                 items_cart = await ctx.store.cart_items(
                     runtime._conv.id, session_hours=ctx.settings.cart_session_hours
