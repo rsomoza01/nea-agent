@@ -1587,6 +1587,13 @@ async def _tool_loop(
                 if medicamentos and not runtime.receta_atendida:
                     runtime.receta_atendida = True
                     runtime.catalog_retried = True
+                    # DOSIS POR MEDICAMENTO, extraída ANTES de tocar el término: la dosis
+                    # vive en la LÍNEA del cliente y hay que conservarla para filtrar. El
+                    # término va LIMPIO para que la cascada de typos resuelva el nombre.
+                    dosis_por_term: dict[str, str] = {}
+                    for _t, _d in _medicamentos_con_dosis(contenido_cliente or ""):
+                        if _d:
+                            dosis_por_term[_t] = _d
                     logger.info(
                         "backstop receta: %d medicamentos detectados — consultando todos",
                         len(medicamentos),
@@ -1598,12 +1605,24 @@ async def _tool_loop(
                         runtime.corregido_a = None
                         result = await runtime.execute("buscar_medicamento", {"nombre": med})
                         prods = (result or {}).get("products") or []
-                        # FILTRAR POR LA DOSIS QUE PIDIÓ EL CLIENTE. El motor del catálogo
-                        # matchea por el fármaco e IGNORA el número, así que devuelve las
+                        # FILTRAR POR LA DOSIS QUE PIDIÓ EL CLIENTE.
+                        #
+                        # SE FILTRA AL FINAL, NO SE BUSCA CON LA DOSIS. Medido: si el
+                        # término lleva la dosis pegada, `_quitar_saludos` convierte el
+                        # decimal en un espacio ('hidrocoticida 12.5 mg' → 'hidrocoticida
+                        # 12 5 mg') y la cascada de typos YA NO ENCUENTRA el fármaco → 0
+                        # productos. El typo debe resolverse con el nombre LIMPIO y la dosis
+                        # aplicarse después, sobre los productos devueltos.
+                        #
+                        # POR QUÉ HACE FALTA EL FILTRO LOCAL: el motor del catálogo matchea
+                        # por el fármaco e IGNORA el número, así que devuelve las
                         # concentraciones mezcladas (medido: 'carvedilol 6.25 mg' → 5 de
-                        # 25 mg). El cliente escribió la dosis de cada medicamento; hay que
-                        # mostrarle solo la que pidió.
-                        dosis_pedida = _extraer_dosis(med) or _dosis_sin_unidad(med)
+                        # 25 mg). El cliente escribió su dosis; hay que mostrarle solo esa.
+                        dosis_pedida = (
+                            dosis_por_term.get(med)
+                            or _dosis_sin_unidad(med)
+                            or _extraer_dosis(med)
+                        )
                         if dosis_pedida:
                             antes = len(prods)
                             prods = _filtrar_por_dosis(prods, dosis_pedida)
@@ -4472,6 +4491,36 @@ def _filtrar_por_dosis(
     return out or products
 
 
+def _medicamentos_con_dosis(texto: str) -> list[tuple[str, str]]:
+    """Medicamentos de una consulta enumerada, cada uno con la dosis que el cliente pidió.
+
+    Devuelve [(termino_limpio, dosis_sin_unidad)]. La dosis va SEPARADA del término a
+    propósito: el término debe ir limpio para que la cascada de typos resuelva el nombre
+    (medido: pegar la dosis convierte 'hidrocoticida 12.5 mg' en 'hidrocoticida 12 5 mg' y
+    ya no encuentra el fármaco), y la dosis se aplica después filtrando los productos.
+
+    Caso real (provider 05): "Dame precio de hidrocoticida de 12.5 / Cardesartan de 16 /
+    Cardevidol 6.25" — el cliente dijo la dosis de cada uno y recibía todas las
+    concentraciones mezcladas.
+    """
+    if not texto:
+        return []
+    pares: list[tuple[str, str]] = []
+    vistos: set[str] = set()
+    for linea in _lineas_lista_medicamentos(texto):
+        limpia = _sin_motivo(linea)
+        term = _extraer_termino_medicamento(limpia)
+        if not term or not _termino_es_medicamento_plausible(term):
+            continue
+        # La dosis se busca en la LÍNEA (donde vive el número), no en el término ya limpio.
+        dosis = _extraer_dosis(linea) or _dosis_sin_unidad(limpia) or _dosis_sin_unidad(term)
+        if term in vistos:
+            continue
+        vistos.add(term)
+        pares.append((term, dosis))
+    return pares
+
+
 def _parece_lista_medicamentos(texto: str) -> bool:
     """True si la consulta ENUMERA 2+ medicamentos (aunque pida el precio).
 
@@ -4705,18 +4754,19 @@ def _parsear_medicamentos_receta(texto: str) -> list[str]:
         # receta y el agente respondía con una lista de medicamentos.
         if term and not _termino_es_medicamento_plausible(term):
             continue
-        # LA DOSIS SIN UNIDAD SE CONSERVA. `_extraer_termino_medicamento` descarta todo
-        # número que no vaya seguido de unidad, así que "Cardesartan de 16" daba
-        # 'cardesartan' y el catálogo devolvía 8 y 16 mg MEZCLADOS. Caso real (provider 05):
-        # el cliente pidió 3 medicamentos con su dosis sin escribir 'mg' y recibió todas
-        # las concentraciones de cada uno. Se asume mg (es lo que pidió el usuario) con las
-        # guardas de `_dosis_sin_unidad` (un decimal es dosis; '2 cajas' / 'x 30 tab' no).
-        if term:
-            sin_unidad = _dosis_sin_unidad(linea)
-            if sin_unidad and not re.search(
-                rf"\b{re.escape(sin_unidad)}\s*(?:mg|mcg|g|ml)\b", term.lower()
-            ):
-                term = f"{term} {sin_unidad} mg"
+        # LA DOSIS CON UNIDAD SE CONSERVA; LA QUE VA SIN UNIDAD **NO** SE PEGA AQUÍ.
+        #
+        # `_extraer_termino_medicamento` ya conserva '20 mg' (número + unidad). Pero
+        # cuando el cliente escribe la dosis SIN 'mg' ("Cardesartan de 16"), el número se
+        # descarta y el término queda sin dosis.
+        #
+        # NO se reinyecta aquí a propósito: se MEDIÓ que pegar la dosis rompe la corrección
+        # de typos. `_quitar_saludos` convierte el decimal en un espacio
+        # ('hidrocoticida 12.5 mg' → 'hidrocoticida 12 5 mg') y la cascada de typos ya no
+        # encuentra el fármaco → 0 productos. El typo necesita el nombre LIMPIO.
+        #
+        # La dosis se aplica DESPUÉS, filtrando los productos devueltos
+        # (`_filtrar_por_dosis` en el bucle de la receta). Ver `_dosis_sin_unidad`.
         if term and term not in vistos:
             vistos.add(term)
             out.append(term)
