@@ -896,6 +896,115 @@ async def _fetch_context(
     return None
 
 
+async def _resolver_paso_entrega(
+    ctx: AppContext,
+    runtime: ToolRuntime,
+    user_text: str,
+    *,
+    farmacia: bool = False,
+) -> tuple[bool, str | None]:
+    """Resuelve el PASO DE ENTREGA antes de llamar al LLM. Un solo punto para todos.
+
+    Devuelve ``(manejado, texto)``:
+
+      * ``(False, None)`` — no hay nada del paso de entrega en vuelo: seguir con el LLM.
+      * ``(True, None)``  — el turno ya se atendió (se envió una pregunta por ``_send``).
+      * ``(True, resumen)`` — ya está todo resuelto; enviar ese texto.
+
+    POR QUÉ AQUÍ Y NO EN LA RAMA SIN-TOOLS: cuando el cliente responde al menú de
+    entrega, el modelo NO se queda sin tool-calls — llama ``finalizar_pedido`` o
+    ``ver_carrito`` directamente, así que esa rama nunca se evalúa. Medido en
+    producción (provider 05, 2026-10):
+
+        20:57:58  paso de entrega: preguntando delivery/retiro      ← menú #1
+        20:58:11  backstop carrito: '2' responde a la pregunta de ENTREGA
+        20:58:13  guard finalizar: sin método de entrega — pregunto  ← menú #2
+        20:58:13  backstop resumen determinista                      ← resumen SIN método
+
+    El cliente vio el menú DOS veces y su "2" se perdió. Al resolverlo antes del LLM,
+    en el único punto por el que pasan TODOS los turnos, el modelo no puede saltárselo.
+    """
+    if not farmacia:
+        return False, None
+
+    conv = runtime._conv
+    pendiente = conv.delivery_pending or ""
+
+    # --- 1) RESPUESTA A UNA PREGUNTA DE ENTREGA EN VUELO ---
+    if pendiente == "method":
+        eleccion = _eleccion_entrega(user_text)
+        if eleccion == "delivery":
+            await runtime.guardar_eleccion_entrega("delivery")
+            logger.info("paso de entrega: eligió DELIVERY — pido la dirección")
+            await _send(ctx, conv.id, runtime._crm_conv_id, MENSAJE_PEDIR_DIRECCION)
+            return True, None
+        if eleccion == "pickup":
+            await runtime.guardar_eleccion_entrega("pickup")
+            logger.info("paso de entrega: eligió RETIRAR EN FARMACIA — muestro el resumen")
+            result = await runtime.execute("ver_carrito", {})
+            if not runtime.cart_summary_text:
+                # Sin carrito no hay resumen que mostrar; que el LLM continúe.
+                return False, None
+            return True, runtime.cart_summary_text
+        # No se reconoce: puede ser una consulta nueva (el cliente cambió de tema).
+        # Se limpia la pregunta pendiente y se deja al LLM atender el mensaje.
+        logger.info(
+            "paso de entrega: %r no responde al menú — limpio la pregunta y sigo",
+            user_text[:60],
+        )
+        await ctx.store.update_conversation(conv.id, delivery_pending="")
+        conv.delivery_pending = ""
+        runtime.delivery_pendiente = ""
+        return False, None
+
+    if pendiente == "address":
+        if _parece_direccion(user_text):
+            direccion = _texto_cliente_sin_marcadores(user_text) or user_text.strip()
+            await runtime.guardar_direccion_entrega(direccion.strip())
+            logger.info("paso de entrega: DIRECCIÓN guardada (%r)", direccion[:70])
+            result = await runtime.execute("ver_carrito", {})
+            return True, runtime.cart_summary_text
+        logger.info(
+            "paso de entrega: %r no parece dirección — la pido de nuevo",
+            user_text[:60],
+        )
+        await _send(ctx, conv.id, runtime._crm_conv_id, MENSAJE_PEDIR_DIRECCION)
+        return True, None
+
+    # --- 2) ¿HAY QUE PREGUNTAR EL MÉTODO AHORA? ---
+    # El cliente quiere ver el resumen y aún no eligió cómo recibirlo. Se pregunta
+    # ANTES del resumen, en este mismo punto (cubre todos los caminos, incluido que el
+    # LLM llame ver_carrito por su cuenta).
+    carrito = await ctx.store.cart_items(
+        conv.id, session_hours=ctx.settings.cart_session_hours
+    )
+    if (
+        carrito
+        and conv.delivery_method is None
+        and not conv.cart_summary_shown
+        and _quiere_ver_resumen(user_text, tiene_carrito=True)
+    ):
+        # Si el cliente ya dijo "delivery"/"retirar" en el mismo mensaje, no se
+        # pregunta: se toma la elección.
+        eleccion = _eleccion_entrega(user_text)
+        if eleccion:
+            await runtime.guardar_eleccion_entrega(eleccion)
+            if eleccion == "delivery":
+                await _send(ctx, conv.id, runtime._crm_conv_id, MENSAJE_PEDIR_DIRECCION)
+                return True, None
+            result = await runtime.execute("ver_carrito", {})
+            return True, runtime.cart_summary_text
+        await ctx.store.update_conversation(conv.id, delivery_pending="method")
+        conv.delivery_pending = "method"
+        runtime.delivery_pendiente = "method"
+        runtime.delivery_pregunta_enviada = True
+        logger.info("paso de entrega: pregunto delivery/retiro antes del resumen")
+        await _send(ctx, conv.id, runtime._crm_conv_id, MENSAJE_METODO_ENTREGA)
+        return True, None
+
+    return False, None
+
+
 async def _tool_loop(
     ctx: AppContext,
     messages: list[dict[str, Any]],
@@ -905,6 +1014,29 @@ async def _tool_loop(
     user_text: str = "",
 ) -> str | None:
     """Rondas de tool-calling hasta obtener texto final (o rendirse)."""
+
+    # ------------------------------------------------- PASO DE ENTREGA ---
+    # SE RESUELVE AQUÍ, EN CÓDIGO Y ANTES DE LLAMAR AL LLM. Es el único punto por el
+    # que pasa TODOS los turnos, así que el modelo no puede saltárselo.
+    #
+    # POR QUÉ NO EN LA RAMA SIN-TOOLS (donde estaba): cuando el cliente responde "2"
+    # al menú de entrega, el modelo NO se queda sin tool-calls — llama
+    # `finalizar_pedido`/`ver_carrito` directamente. Esa rama nunca se evalúa, así que
+    # la respuesta del cliente se descartaba y el guard del despacho volvía a
+    # preguntar el método. Medido en producción (provider 05, 2026-10):
+    #
+    #     20:57:58  paso de entrega: preguntando delivery/retiro      ← menú #1
+    #     20:58:11  backstop carrito: '2' responde a la pregunta de ENTREGA
+    #     20:58:13  guard finalizar: sin método de entrega — pregunto  ← menú #2
+    #     20:58:13  backstop resumen determinista                      ← resumen sin método
+    #
+    # El cliente vio el menú DOS veces y el resumen salió sin el método de entrega.
+    resuelto, texto_entrega = await _resolver_paso_entrega(
+        ctx, runtime, user_text, farmacia=farmacia
+    )
+    if resuelto:
+        return texto_entrega  # None = ya se atendió con _send; texto = el resumen
+
     schemas = active_tool_schemas(farmacia=farmacia)
     # Cuenta rondas consecutivas donde el LLM llamó tools con arguments vacíos
     # ({}): señal de bucle degenerado — cortamos con un texto de respaldo.
@@ -1137,63 +1269,12 @@ async def _tool_loop(
                     )
                     return None  # turno atendido por la pregunta de entrega
 
-            # RESPUESTA A LA PREGUNTA DE ENTREGA PENDIENTE. El cliente contestó
-            # "1"/"2" (o "delivery"/"retirar") o mandó su dirección. Se resuelve AQUÍ,
-            # en código, sin pasar por el LLM: una dirección no debe interpretarse como
-            # consulta de medicamento ni un "1" como elección de producto.
-            if farmacia and runtime._conv.delivery_pending:
-                pendiente = runtime._conv.delivery_pending
-                if pendiente == "method":
-                    eleccion = _eleccion_entrega(user_text)
-                    if eleccion == "delivery":
-                        await runtime.guardar_eleccion_entrega("delivery")
-                        logger.info("paso de entrega: eligió DELIVERY — pido la dirección")
-                        await _send(
-                            ctx, runtime._conv.id, runtime._crm_conv_id,
-                            MENSAJE_PEDIR_DIRECCION,
-                        )
-                        return None
-                    if eleccion == "pickup":
-                        await runtime.guardar_eleccion_entrega("pickup")
-                        logger.info("paso de entrega: eligió RETIRAR EN FARMACIA")
-                        # Ya hay método: se muestra el resumen (con el bloque de
-                        # entrega) en este mismo turno.
-                        result = await runtime.execute("ver_carrito", {})
-                        _append_forced_tool(messages, "ver_carrito", {}, result)
-                        continue
-                    # No se reconoce la respuesta: se repite la pregunta UNA vez y se
-                    # deja que el LLM atienda (puede ser una consulta nueva).
-                    logger.info(
-                        "paso de entrega: respuesta no reconocida (%r) — dejo al LLM",
-                        user_text[:60],
-                    )
-                    runtime._conv.delivery_pending = ""
-                    await runtime._ctx.store.update_conversation(
-                        runtime._conv.id, delivery_pending=""
-                    )
-                elif pendiente == "address":
-                    if _parece_direccion(user_text):
-                        direccion = user_text.strip()
-                        # Quitar el marcador de media si lo hubiera (no debería).
-                        direccion = _texto_cliente_sin_marcadores(direccion) or direccion
-                        await runtime.guardar_direccion_entrega(direccion)
-                        logger.info(
-                            "paso de entrega: DIRECCIÓN guardada (%r)", direccion[:70]
-                        )
-                        result = await runtime.execute("ver_carrito", {})
-                        _append_forced_tool(messages, "ver_carrito", {}, result)
-                        continue
-                    # No parece dirección (¿el cliente cambió de tema?): se le vuelve a
-                    # pedir sin bloquear el turno.
-                    logger.info(
-                        "paso de entrega: %r no parece dirección — la pido de nuevo",
-                        user_text[:60],
-                    )
-                    await _send(
-                        ctx, runtime._conv.id, runtime._crm_conv_id,
-                        MENSAJE_PEDIR_DIRECCION,
-                    )
-                    return None
+            # EL PASO DE ENTREGA YA SE RESOLVIÓ ARRIBA, ANTES DE LLAMAR AL LLM
+            # (`_resolver_paso_entrega`, al inicio de `_tool_loop`). Vivía aquí y no
+            # servía: cuando el cliente responde al menú, el modelo llama
+            # `finalizar_pedido`/`ver_carrito` directamente, así que esta rama NUNCA
+            # se evaluaba — el "2" del cliente se descartaba y el guard del despacho
+            # volvía a preguntar. No reintroducir lógica de entrega en este bloque.
 
             # Backstop de resumen: si el cliente quiere ver el resumen y el LLM
             # no llamó ver_carrito, lo forzamos (el modelo a veces no lo llama).
