@@ -7,6 +7,7 @@ turno.
 """
 from __future__ import annotations
 
+import difflib
 import logging
 import re
 from datetime import datetime, timezone
@@ -953,6 +954,54 @@ def _variantes_typo(term: str, max_variantes: int | None = None) -> list[str]:
     return out[:max_variantes]
 
 
+# Umbral de similitud para aceptar un token del catálogo como la grafía correcta.
+# CALIBRADO con datos reales (provider 27): los typos verdaderos puntúan
+# 'hidrocoticida'→hidroclorotiazida 0.800, 'cardesartan'→candesartan 0.909,
+# 'cardevidol'→carvedilol 0.700, 'atamle'→atamel 0.833, 'omeprasol'→omeprazol 0.889.
+# Los NO-typos quedan por debajo: 'magnesio plus life' 0.571,
+# 'medicamento controlado manejan' 0.556, 'dovilin' 0.533, 'audio lead' 0.444.
+# 0.65 separa ambos grupos con margen (el typo más flojo es 0.700).
+_UMBRAL_TYPO_CATALOGO = 0.65
+
+# Prefijos con los que se sondea el catálogo, de más largo a más corto. Hace falta bajar
+# hasta 3 letras: en 'cardevidol' el error está en la posición 4, así que 'card' NO trae
+# CARVEDILOL — solo un prefijo más corto ('car') lo alcanza.
+_PREFIJOS_SONDEO = (8, 6, 5, 4, 3)
+
+
+def _tokens_de_catalogo(products: list[dict[str, Any]]) -> set[str]:
+    """Tokens 'con cuerpo' (5+ letras) de los nombres del catálogo."""
+    out: set[str] = set()
+    for p in products:
+        nom = str(p.get("producto") or p.get("nombre") or p.get("title") or "").lower()
+        for w in re.split(r"[\s\-+/()]+", nom):
+            w = w.strip(".,;:")
+            if len(w) >= 5 and w.isalpha():
+                out.add(w)
+    return out
+
+
+def _mejor_token_catalogo(nucleo: str, tokens: set[str]) -> tuple[str | None, float, float]:
+    """El token del catálogo más parecido al núcleo escrito, con su margen.
+
+    Devuelve (token, ratio, margen_sobre_el_segundo). El margen es lo que distingue
+    'cardevidol'→carvedilol (margen 0.033, gana igual) de 'colmo'→colonia (margen 0.000,
+    empate: no se debe elegir). Un empate significa que el catálogo tiene varias palabras
+    igual de parecidas y elegir una sería adivinar.
+    """
+    if not nucleo or not tokens:
+        return None, 0.0, 0.0
+    scored = sorted(
+        ((difflib.SequenceMatcher(None, nucleo, t).ratio(), t) for t in tokens),
+        reverse=True,
+    )
+    if not scored:
+        return None, 0.0, 0.0
+    mejor_ratio, mejor = scored[0]
+    segundo = scored[1][0] if len(scored) > 1 else 0.0
+    return mejor, mejor_ratio, mejor_ratio - segundo
+
+
 def _formatear_lista_productos(
     products: list[dict[str, Any]], titulo: str
 ) -> str:
@@ -1659,6 +1708,59 @@ class ToolRuntime:
                     self.last_term = variante
                     data = data_v
                     break
+        if not products:
+            # TERCERA PASADA: typos LARGOS (distancia 3+), usando el CATÁLOGO como
+            # diccionario. `_variantes_typo` genera variantes a ciegas y solo alcanza
+            # distancia ≤2; estos dos casos reales se le escapan:
+            #     'hidrocoticida' → hidroclorotiazida   (distancia 5)
+            #     'cardevidol'    → carvedilol          (distancia 3)
+            # El cliente los escribió así y recibió "no disponibles" aunque el
+            # medicamento SÍ estaba (provider 27, conv 2824).
+            #
+            # CÓMO: se sondea el catálogo con prefijos decrecientes del término y se
+            # busca el TOKEN REAL más parecido (difflib). NUNCA se inventa: el término
+            # con el que se reintenta es un token que EXISTE en el catálogo.
+            #
+            # POR QUÉ CON PREFIJOS: el catálogo no tiene endpoint de listado, solo
+            # búsqueda. En 'cardevidol' el error está en la posición 4, así que el
+            # prefijo 'card' NO trae CARVEDILOL; hace falta bajar hasta 'car'.
+            nucleo_typo = nombre.strip().lower().split()[-1] if nombre.strip() else ""
+            prefijo_typo = " ".join(nombre.strip().split()[:-1])
+            tokens_cat: set[str] = set()
+            for n_p in _PREFIJOS_SONDEO:
+                if n_p > len(nucleo_typo):
+                    continue
+                try:
+                    d_p = await self._ctx.crm.get_products(
+                        self._provider_id, q=nucleo_typo[:n_p], limit=25
+                    )
+                except Exception:
+                    continue
+                tokens_cat |= _tokens_de_catalogo(d_p.get("products") or [])
+                if len(tokens_cat) >= 60:
+                    break
+            token_ok, ratio_t, margen_t = _mejor_token_catalogo(nucleo_typo, tokens_cat)
+            if token_ok and ratio_t >= _UMBRAL_TYPO_CATALOGO and margen_t > 0.0:
+                term_corregido = (
+                    f"{prefijo_typo} {token_ok}".strip() if prefijo_typo else token_ok
+                )
+                logger.info(
+                    "buscar_medicamento: '%s' sin resultados — recuperado por catálogo: "
+                    "'%s' (ratio %.3f, margen %.3f, %d tokens)",
+                    nombre, term_corregido, ratio_t, margen_t, len(tokens_cat),
+                )
+                data_c = await self._ctx.crm.get_products(
+                    self._provider_id, q=term_corregido, limit=20
+                )
+                # RE-FILTRAR contra el término CORREGIDO (no contra el escrito): el
+                # token ya es del catálogo, así que la relevancia debe evaluarse sobre él.
+                candidatos_c = _dedupe_por_nombre(data_c.get("products") or [])
+                products = filtrar_relevantes(term_corregido, candidatos_c)
+                if products:
+                    self.corregido_desde = nombre
+                    self.corregido_a = term_corregido
+                    self.last_term = term_corregido
+                    data = data_c
         if not products:
             # Fallback por principio activo: 'depomedrol' → 'metilprednisolona'.
             # El cliente pregunta por una MARCA que no está, pero su principio
