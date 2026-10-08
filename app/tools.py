@@ -2129,9 +2129,7 @@ class ToolRuntime:
                          if _norm(str(c.get("producto") or c.get("nombre") or "")) == objetivo),
                         None,
                     )
-                # 3) por RELEVANCIA con coincidencia ESTRICTA (todos los tokens del
-                #    nombre del carrito presentes en el del catálogo) **Y LA MISMA
-                #    DOSIS**.
+                # 3) por RELEVANCIA ESTRICTA, con DOSIS COINCIDENTE y resultado ÚNICO.
                 #
                 #    Hace falta un tercer intento porque el CRM busca DIFUSO: al pedirle
                 #    un nombre del carrito devuelve productos PARECIDOS pero no idénticos.
@@ -2141,22 +2139,38 @@ class ToolRuntime:
                 #    PERO LA RELEVANCIA NO BASTA: medido, el matcher estricto acepta
                 #    'ACETAMINOFEN 500MG TAB X 20 -ELTER-' como equivalente de
                 #    'ACETAMINOFEN 650 MG X 10 TAB ELTER' (mismo fármaco y marca, DISTINTA
-                #    concentración) y 'LOSARTAN POT. 50MG X 10' como equivalente de
-                #    'LOSARTAN 50 MG X 30'. Colgarle ese precio en Bs sería un precio
-                #    FALSO — peor que omitirlo, que es el problema que estamos arreglando.
+                #    concentración). Colgarle ese precio en Bs sería un precio FALSO —
+                #    peor que omitirlo, que es el problema que estamos arreglando.
                 #
-                #    Se exige la MISMA DOSIS (los números con unidad) para aceptar.
+                #    DOS CONDICIONES, ambas necesarias:
+                #      a) SI el nombre del carrito trae dosis, el candidato debe traer la
+                #         MISMA. Si el carrito no la trae ('TILODRIN JBE'), no se exige —
+                #         exigirla ahí descartaba coincidencias correctas.
+                #      b) El resultado debe ser ÚNICO. Varios candidatos que pasan el
+                #         filtro significa ambigüedad (misma dosis, distinto tamaño de
+                #         envase → distinto precio): mejor omitir el Bs que arriesgar.
                 if elegido is None and producto:
                     dosis_obj = _extraer_dosis(producto)
-                    elegido = next(
-                        (c for c in candidatos
-                         if es_relevante_estricto(
-                             producto, str(c.get("producto") or c.get("nombre") or "")
-                         )
-                         and _extraer_dosis(str(c.get("producto") or c.get("nombre") or ""))
-                         == dosis_obj),
-                        None,
-                    )
+                    matches = [
+                        c for c in candidatos
+                        if es_relevante_estricto(
+                            producto, str(c.get("producto") or c.get("nombre") or "")
+                        )
+                        and (
+                            not dosis_obj
+                            or _extraer_dosis(
+                                str(c.get("producto") or c.get("nombre") or "")
+                            ) == dosis_obj
+                        )
+                    ]
+                    if len(matches) == 1:
+                        elegido = matches[0]
+                    elif len(matches) > 1:
+                        logger.info(
+                            "agregar_al_carrito: %d candidatos ambiguos para '%s' — "
+                            "no recupero el Bs (mejor omitirlo que arriesgar otro precio)",
+                            len(matches), producto,
+                        )
                 if elegido is not None:
                     if elegido.get("precioBs") is not None:
                         precio_bs = elegido.get("precioBs")
