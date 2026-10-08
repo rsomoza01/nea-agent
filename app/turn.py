@@ -1737,6 +1737,17 @@ async def _tool_loop(
                     term = trans_term_2
                 elif _parece_consulta_medicamento(user_text):
                     term = _extraer_termino_medicamento(user_text)
+                # EL TÍTULO TIENE QUE SER EL FÁRMACO, NO LA FRASE. `_extraer_termino_medicamento`
+                # quita verbos de consulta y relleno, pero NO el ruido del HABLA (muletillas,
+                # coletillas) — eso solo lo hace `_limpiar_transcripcion`. Con una nota de voz
+                # el término conservaba la frase y el ENCABEZADO de la respuesta era:
+                #     EN QUÉ LA VENDA SOL? LA CAJA TRAE DOS
+                # (caso real conv 2834). El cliente lee eso como el nombre del producto.
+                # Se vuelve a pasar por el limpiador de audio para que quede 'venda'.
+                if term and _texto_transcripcion_completo(user_text):
+                    term_audio = _extraer_termino_medicamento(_limpiar_transcripcion(term))
+                    if term_audio:
+                        term = term_audio
                 # El cliente REFERENCIA una imagen anterior ("el producto de la
                 # foto lo tienes?") sin aportar un fármaco. Buscar con las
                 # palabras de la pregunta devuelve basura por SUBSTRING: 'foto'
@@ -3882,6 +3893,22 @@ def _limpiar_transcripcion(texto: str) -> str:
         if len(w) < 3:
             continue
         utiles.append(w)
+    # COLETILLA DEL HABLA: "la caja TRAE dos", "la caja viene con dos". Es una pregunta
+    # conversacional sobre el ENVASE, no parte del nombre del producto. Se corta el término
+    # en el patrón, porque dejarlo producía títulos como
+    #     EN QUÉ LA VENDA SOL? LA CAJA TRAE DOS
+    # (caso real conv 2834): el cliente lee la frase entera como nombre del producto.
+    #
+    # POR QUÉ POR PATRÓN Y NO POR PALABRA: medido contra el catálogo real, 'caja' es token
+    # de 'DIOSMINA-HESPER 450/50 MG CAJA X 10 TAB' y 'dos' de 'FRON DOS KETACONAZOL'. Quitar
+    # esas palabras sueltas rompería esas búsquedas. Lo que NO existe es la secuencia
+    # 'caja' + verbo de habla, así que cortar ahí es seguro.
+    corte = re.search(
+        r"\b(?:caja|empaque|envase|frase)\s+(?:trae|tiene|viene|traen|tienen|vienen)\b",
+        " ".join(utiles),
+    )
+    if corte:
+        utiles = " ".join(utiles)[: corte.start()].split()
     return " ".join(utiles)
 
 
