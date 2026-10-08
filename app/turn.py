@@ -1526,8 +1526,19 @@ async def _tool_loop(
                     # los separadores y devuelve cada medicamento por separado.
                     medicamentos = _medicamentos_enumerados(contenido_cliente)
                     if not medicamentos:
+                        # CADA LÍNEA SE PASA POR `_sin_motivo` ANTES DE PARSEAR. Sin esto el
+                        # verbo del motivo queda PEGADO al nombre y llega al cliente como si
+                        # fuera un medicamento. Caso real (conv 2824): el cliente escribió
+                        # "Dame precio de hidrocoticida de 12.5" y el aviso salió
+                        #     ⚠️ No disponibles en el catálogo: DAME HIDROCOTICIDA, CARDEVIDOL
+                        # — el verbo 'DAME' incluido, y el cliente lee que 'DAME HIDROCOTICIDA'
+                        # es un medicamento que no existe. `_lineas_lista_medicamentos` reparte
+                        # el texto en trozos pero NO limpia el motivo de cada uno.
                         medicamentos = _parsear_medicamentos_receta(
-                            "\n".join(_lineas_lista_medicamentos(contenido_cliente))
+                            "\n".join(
+                                _sin_motivo(l)
+                                for l in _lineas_lista_medicamentos(contenido_cliente)
+                            )
                         )
                     if medicamentos:
                         logger.info(
