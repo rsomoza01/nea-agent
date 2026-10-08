@@ -2017,7 +2017,25 @@ _FILLER = {
     "voy", "vas", "vamos", "compro", "comprar", "comprare", "deseo",
     "interesa", "interesada", "interesado", "olvidalo", "dejalo", "adios",
     "chao", "luego", "vemos", "bendiciones", "amable", "atentamente",
+    # Verbos de CONSULTA que el cliente escribe antes del medicamento y que no
+    # estaban: 'Ok me INDICA el precio del fulgran' → el término salía
+    # 'indica del fulgran' y el TÍTULO de la respuesta era "INDICA DEL FULGRAN",
+    # presentado al cliente como si fuera el nombre del producto (conv 2826).
+    # Son vocabulario del motivo, nunca parte de un nombre comercial: se midió
+    # contra el catálogo real del provider 27 y ninguna aparece en nombres.
+    "indica", "indico", "indique", "indicas", "indiquen", "indícame", "indicame",
+    "menciona", "mencioname", "mencione", "cotiza", "cotizame", "cotizacion",
+    "averigua", "averiguame", "averiguar", "consultar", "consulta", "consulto",
+    "sabes", "sabe", "dice", "decir", "decirme", "saberme", "confirmame",
 }
+
+# Preposiciones y artículos que pueden QUEDAR AL PRINCIPIO del término cuando el cliente
+# escribe "el precio DEL fulgran": el recorte deja 'del fulgran'. Se quitan SOLO al
+# inicio — nunca en medio, porque 'del' aparece DENTRO de nombres reales del catálogo
+# ('JUGO DEL VALLE', 'MIOVIT VITAMINAS DEL COMPLEJO B'). Medido: 3 productos reales lo
+# contienen en medio y NINGUNO empieza por él, así que quitarlo al principio no puede
+# borrar el término de una búsqueda legítima.
+_FILLER_INICIAL = {"del", "de", "la", "el", "los", "las", "un", "una", "al"}
 
 # Unidades de medida / presentación: cuando el usuario responde con una
 # CANTIDAD (p. ej. "2 cajas", "3 unidades", "1 blíster"), NO está buscando un
@@ -4608,6 +4626,18 @@ def _extraer_termino_medicamento(texto: str) -> str | None:
                 terminos.append(w)
             continue
         terminos.append(w)
+    if not terminos:
+        return None
+    # PRIMERAS palabras funcionales FUERA: 'el precio DEL fulgran' deja 'del fulgran'.
+    # Se quitan solo al INICIO (nunca en medio: 'del' vive dentro de nombres reales
+    # como 'JUGO DEL VALLE'). Se midió que ningún producto del catálogo EMPIEZA por
+    # estas palabras, así que quitarlas aquí no puede borrar un término legítimo.
+    while terminos and terminos[0] in _FILLER_INICIAL:
+        terminos.pop(0)
+    # Igual al final: 'naproxeno por favor' ya está cubierto por _FILLER, pero una
+    # preposición suelta al cierre ('... de') no aporta nada al matcher.
+    while terminos and terminos[-1] in _FILLER_INICIAL:
+        terminos.pop()
     if not terminos:
         return None
     return " ".join(terminos)
