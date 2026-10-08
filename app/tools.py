@@ -56,6 +56,45 @@ def _termino_busqueda_plausible(term: str) -> bool:
     return True
 
 
+# Muletillas del HABLA que nunca identifican un medicamento por sí solas. Una nota de voz
+# trae cortesía y coletillas que el cliente jamás escribe como consulta ("buenos días mi
+# amor... verdad?"), y el LLM las extrae como si fueran fármacos.
+#
+# NO se usa `_MULETILLAS_HABLA` de turn.py: tools.py no puede importarlo (import circular).
+# Y NO se rechazan palabras sueltas: 'sol' es token REAL en 11 productos del catálogo
+# ('ACETAMINOFEN SOL GOTAS') y 'dias' aparece en 'DYMAZOL 6 DIAS'. El criterio es rechazar
+# solo cuando TODOS los tokens del término son muletillas — así 'venda sol' y
+# 'dymazol 6 dias' siguen pasando (tienen un token con cuerpo de fármaco).
+_MULETILLAS_HABLA_GATE = {
+    "amor", "verdad", "cierto", "buenas", "buenos", "tardes", "dias", "noches",
+    "saludos", "hola", "mi", "mijo", "mija", "linda", "lindo", "corazon",
+    "disculpe", "disculpa", "permiso", "mire", "mira", "vea", "oiga",
+    "favor", "porfa", "gracias", "agradezco", "amable", "regalame", "deme",
+    "entonces", "pues", "bueno", "okey", "okay",
+}
+
+
+def _es_solo_muletilla_habla(term: str) -> bool:
+    """True si TODOS los tokens del término son muletillas del habla.
+
+    Caso real (conv 2834, provider 27): el cliente mandó una nota de voz —
+    "Buenos días mi amor, en qué precio tienen la venda sol? La caja trae dos, verdad?" —
+    y el LLM extrajo dos "medicamentos" que son el saludo y la coletilla. Se consultaron
+    y el cliente recibió:
+        ⚠️ No disponibles en el catálogo: DÍAS AMOR, VERDAD
+    Ni 'amor' ni 'verdad' son productos: medido contra el catálogo, no aparecen como token
+    en NINGÚN nombre de producto.
+
+    Se exige que TODOS los tokens sean muletillas, nunca uno solo: 'sol' ES un token real
+    del catálogo, así que el rechazo solo es seguro cuando no queda ninguna palabra con
+    cuerpo de fármaco.
+    """
+    palabras = re.findall(r"[a-z0-9]+", _normalizar_tildes((term or "").lower()))
+    if not palabras:
+        return False
+    return all(w in _MULETILLAS_HABLA_GATE for w in palabras)
+
+
 # Saludos y cortesía que NUNCA son un medicamento. Si el LLM llama
 # buscar_medicamento con un término que es SOLO esto (p. ej. "saludos",
 # "buen día"), es un error del modelo: no hay que buscar en el catálogo ni
@@ -1476,6 +1515,31 @@ class ToolRuntime:
         # plausible, es ruido (CAJAS OPCION ECONOMICA, ...) — NO consultar el
         # catálogo, que devolvería basura irrelevante.
         nombre_sustantivo = _limpiar_termino_medicamento(nombre)
+        # MULETILLAS DEL HABLA: si TODOS los tokens del término son cortesía/coletilla, el
+        # LLM lo extrajo de una nota de voz y NO es un medicamento. Caso real (conv 2834):
+        # "Buenos días mi amor... verdad?" produjo los términos 'amor' y 'verdad', se
+        # consultaron y el cliente recibió "No disponibles: DÍAS AMOR, VERDAD".
+        #
+        # Va ANTES del guard de sustantivo porque ese los deja pasar: 'amor' y 'verdad'
+        # tienen 5-6 letras y no son funcionales, así que parecen plausibles sueltos.
+        if _es_solo_muletilla_habla(nombre):
+            logger.info(
+                "buscar_medicamento: '%s' es solo muletilla del habla — no busco "
+                "en catálogo (extraída de una nota de voz)",
+                nombre,
+            )
+            return {
+                "ok": False,
+                "error": "no_medicamento",
+                "detalle": (
+                    "Ese texto es parte de la CONVERSACIÓN del cliente (un saludo o una "
+                    "coletilla del habla), NO un medicamento. NO lo presentes como un "
+                    "producto que no está en el catálogo. Responde a lo que el cliente "
+                    "realmente pide: si preguntó por un producto, búscalo con su NOMBRE; "
+                    "si solo saludó, saluda y pregunta qué medicamento necesita. "
+                    "NUNCA muestres lista de productos."
+                ),
+            }
         if not _termino_es_medicamento_plausible(nombre) and not nombre_sustantivo:
             logger.info(
                 "buscar_medicamento: término '%s' sin sustantivo de fármaco — no busco en catálogo",

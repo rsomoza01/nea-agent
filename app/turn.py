@@ -37,6 +37,7 @@ from app.tools import (
     active_tool_schemas,
     _formatear_lista_productos,
     _fmt_ve,
+    _normalizar_tildes,
     _normalizar_unidad,
     _termino_es_medicamento_plausible,
     _PALABRAS_FUNCIONALES,
@@ -1679,6 +1680,27 @@ async def _tool_loop(
                 # fuzzy en 'leda' ≈ 'seda' y el cliente recibió SUTURA SEDA.
                 # El contenido del cliente se detecta con _texto_cliente_sin_marcadores.
                 contenido_cliente = _texto_cliente_sin_marcadores(user_text)
+                # AUDIO: una nota de voz es HABLA CONVERSACIONAL, no una receta. Si el
+                # mensaje es una transcripción, el troceo por comas produce piezas que no
+                # son medicamentos y hay que validarlas una por una.
+                #
+                # Caso real (conv 2834): "Buenos días mi amor, en qué precio tienen la
+                # venda sol? La caja trae dos, verdad?" se troceó en
+                #     ['días amor', 'en qué la venda sol? La caja trae dos', 'verdad']
+                # y el cliente recibió
+                #     ⚠️ No disponibles en el catálogo: DÍAS AMOR, VERDAD
+                #     EN QUÉ LA VENDA SOL? LA CAJA TRAE DOS   ← el título era la frase cruda
+                # o sea dos "medicamentos" que son el saludo y la coletilla, y un título
+                # que es la pregunta entera. El producto correcto (VENDA ELÁSTICA) sí
+                # estaba en la lista, pero envuelto en basura.
+                if _texto_transcripcion_completo(user_text):
+                    piezas_audio = _medicamentos_de_transcripcion(contenido_cliente or "")
+                    if piezas_audio:
+                        logger.info(
+                            "backstop lista (audio): %d medicamento(s) reales: %s",
+                            len(piezas_audio), piezas_audio[:5],
+                        )
+                        medicamentos = piezas_audio
                 if (
                     not medicamentos
                     and _parece_lista_medicamentos(contenido_cliente)
@@ -3976,6 +3998,15 @@ def _limpiar_transcripcion(texto: str) -> str:
     dosis), que son las únicas que deben llegar al catálogo.
     """
     palabras = re.findall(r"[a-záéíóúüñ0-9]+", texto.lower())
+    # QUITAR TILDES ANTES DE COMPARAR contra `_FILLER` y `_MULETILLAS_HABLA`. Esas listas
+    # están escritas SIN tildes ("dias", "que", "mas"), pero la transcripción trae las
+    # tildes del habla ("días", "qué", "más"). Comparando en crudo no coinciden, así que
+    # las muletillas SOBREVIVEN y llegan al catálogo. Caso real (conv 2834):
+    #     "Buenos días mi amor, en qué precio tienen la venda sol?..."
+    #     → 'días qué venda sol caja trae dos'   ← 'días' y 'qué' se colaron
+    # y el catálogo, con el matcher difuso, devolvió GALLETA SODA EL SOL / ADRENALINA SOL /
+    # ALUMBRE en vez de las VENDAS. Con 'venda' solo, devuelve las 3 vendas correctas.
+    palabras = [_normalizar_tildes(w) for w in palabras]
     # Unidad HABLADA → abreviatura ('miligramos' → 'mg'). Sin esto el número que
     # la precede se descarta por corto y la dosis se pierde (ver UNIDADES_HABLADAS).
     palabras = [_normalizar_unidad(w) for w in palabras]
@@ -4008,6 +4039,47 @@ def _limpiar_transcripcion(texto: str) -> str:
             continue
         utiles.append(w)
     return " ".join(utiles)
+
+
+def _medicamentos_de_transcripcion(texto: str) -> list[str]:
+    """Medicamentos REALES dentro de la transcripción de una nota de voz.
+
+    POR QUÉ NO SIRVE EL TROCEO NORMAL: el habla es una frase conversacional con comas, no
+    una receta. Trocear por comas/y produce piezas que no son medicamentos. Caso real
+    (conv 2834), "Buenos días mi amor, en qué precio tienen la venda sol? La caja trae dos,
+    verdad?" daba:
+        ['días amor', 'en qué la venda sol? La caja trae dos', 'verdad']
+    y el cliente recibió "⚠️ No disponibles en el catálogo: DÍAS AMOR, VERDAD" con el
+    título "EN QUÉ LA VENDA SOL? LA CAJA TRAE DOS" — el saludo, la coletilla y la pregunta
+    entera presentados como medicamentos.
+
+    CÓMO: cada pieza se pasa por el pipeline de AUDIO (limpiar el ruido del habla + extraer
+    el término) y se exige que parezca un medicamento de verdad. Las piezas que quedan
+    vacías o son frases se descartan. Medido: así 0 de 5 consultas habladas se trocean,
+    mientras las 3 recetas habladas reales ('necesito esoz, leprit y evigax') siguen
+    devolviendo sus 3 medicamentos.
+
+    Devuelve [] cuando no hay 2+ medicamentos: una consulta de UN medicamento no es una
+    receta y debe seguir el camino normal (que ya limpia la transcripción).
+    """
+    if not texto:
+        return []
+    piezas = [p.strip() for p in _lineas_lista_medicamentos(texto) if p.strip()]
+    if len(piezas) < 2:
+        return []
+    out: list[str] = []
+    for p in piezas:
+        # El pipeline del audio: quita muletillas del habla y verbos de consulta.
+        limpio = _extraer_termino_medicamento(_limpiar_transcripcion(p))
+        if not limpio:
+            continue
+        # Descartar frases ('en qué la venda sol caja trae dos' no es un medicamento).
+        if not _termino_es_medicamento_plausible(limpio):
+            continue
+        if limpio not in out:
+            out.append(limpio)
+    # Menos de 2 medicamentos REALES no es una receta.
+    return out if len(out) >= 2 else []
 
 
 def _texto_transcripcion_completo(user_text: str) -> str:
