@@ -652,6 +652,63 @@ _PISTAS_OCR_SIN_MEDICAMENTO = (
 )
 
 
+def parece_presentacion_personal(texto: str) -> bool:
+    """¿El texto es una PRESENTACIÓN de la persona, no una consulta de medicamento?
+
+    'soy víctor', 'me llamo Pedro', 'soy la dueña', 'mi nombre es Ana'.
+
+    La construcción es la señal: "soy/me llamo/mi nombre es" + un nombre. El nombre
+    propio es un token sustantivo de 6 letras que ningún guard de "cuerpo de fármaco"
+    puede distinguir de 'losartan', así que hay que reconocer la ESTRUCTURA.
+
+    Caso real (conv 2720, 2026-10): el cliente venía de un audio donde alguien
+    preguntaba por él y escribió "Soy víctor". El agente buscó "Víctor" en el catálogo
+    y respondió "No te tengo información sobre 'Víctor' en el catálogo" — tratando a
+    una persona como un medicamento.
+
+    OJO: solo la construcción COMPLETA. 'soy' suelto o 'quiero 2 de la opción 1' no
+    cuentan. Si la frase trae una dosis ('soy diabético, necesito metformina 850 mg')
+    NO es una presentación a secas: hay un medicamento que buscar, y el guard de
+    entrada no debe bloquearlo.
+    """
+    if not texto:
+        return False
+    t = texto.strip().lower()
+    if not t:
+        return False
+    # Si trae dosis con unidad, hay una consulta de medicamento de verdad: no bloquear.
+    if re.search(r"\d+\s*(?:mg|ml|mcg|gr|g|cc|ui|%)\b", t):
+        return False
+    # Nombre de medicamento explícito tampoco: 'soy María, tienes atamel?' es consulta.
+    _VERBOS_MEDICINA = re.compile(
+        r"\b(tienes|tienen|tiene|hay|busco|necesito|quiero|venden|precio|"
+        r"cuesta|disponible|consigo|manejan)\b"
+    )
+    if _VERBOS_MEDICINA.search(t):
+        return False
+    # ESTADOS que empiezan con "soy" pero NO son una presentación: "soy alérgico a la
+    # penicilina", "soy diabético", "soy hipertenso". Ahí hay información clínica útil
+    # (y a veces un fármaco), no un nombre. Solo cuentan como presentación si lo que
+    # sigue es un nombre propio, no un adjetivo de condición.
+    _ESTADOS = re.compile(
+        r"^\s*(?:soy|me\s+llamo)\s+(?:al[eé]rgic\w*|diab[eé]tic\w*|hipertens\w*|"
+        r"asm[aá]tic\w*|embarazad\w*|operad\w*|client\w*|usuari\w*|"
+        r"un\s+paciente|una\s+paciente)\b"
+    )
+    if _ESTADOS.search(t):
+        return False
+    return bool(
+        re.search(
+            r"^\s*(?:hola\s+|buenas\s+|buenos\s+d[ií]as\s+|buenas\s+tardes\s+)?"
+            r"(?:soy|me\s+llamo|mi\s+nombre\s+es|aqui\s+habla|les\s+habla)\b",
+            t,
+        )
+        or re.fullmatch(
+            r"\s*(?:soy|me\s+llamo)\s+(?:el|la|un|una)?\s*\w{2,20}\s*[.!]?\s*", t
+        )
+    )
+
+
 def parece_ocr_sin_medicamento(texto: str) -> bool:
     """¿El texto del OCR dice que la imagen NO trae un medicamento?
 
