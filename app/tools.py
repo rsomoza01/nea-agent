@@ -18,6 +18,7 @@ from app.relevancia import (
     _token_cabeza_farmaco,
     filtrar_relevantes,
     hay_senal_de_farmaco,
+    parece_presentacion_personal,
 )
 
 # Palabras que revelan que el LLM alucinó una frase como término de búsqueda
@@ -1454,6 +1455,26 @@ class ToolRuntime:
         # respondida con chocolates), "gracias por todo", "hasta luego".
         # Se comprueba ANTES de consultar: `filtrar_relevantes` protege la
         # salida, pero no vale la pena ni hacer la llamada.
+        # GUARD DE PRESENTACIÓN: "soy víctor" / "me llamo Ana" no es una consulta de
+        # medicamento aunque el nombre tenga "cuerpo de fármaco" (6 letras, sin ser
+        # relleno). Sin esto el catálogo difuso busca el nombre de la PERSONA.
+        # Caso real (conv 2720, 2026-10): el cliente escribió "Soy víctor" y el agente
+        # respondió "No te tengo información sobre 'Víctor' en el catálogo".
+        if parece_presentacion_personal(nombre):
+            logger.info(
+                "buscar_medicamento: '%s' es una PRESENTACIÓN de la persona — no busco",
+                nombre,
+            )
+            return {
+                "ok": False,
+                "error": "presentacion_personal",
+                "detalle": (
+                    "El cliente se está PRESENTANDO (dijo su nombre), no pidiendo un "
+                    "medicamento. NO busques su nombre en el catálogo y NUNCA digas que "
+                    "no lo tienes: sería tratarlo como un producto. Salúdalo por su "
+                    "nombre con calidez y pregúntale en qué puedes ayudarlo."
+                ),
+            }
         if not hay_senal_de_farmaco(nombre):
             logger.info(
                 "buscar_medicamento: término '%s' sin señal de fármaco — no busco en catálogo",
