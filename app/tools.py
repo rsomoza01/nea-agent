@@ -2130,23 +2130,31 @@ class ToolRuntime:
                         None,
                     )
                 # 3) por RELEVANCIA con coincidencia ESTRICTA (todos los tokens del
-                #    nombre del carrito presentes en el del catálogo).
+                #    nombre del carrito presentes en el del catálogo) **Y LA MISMA
+                #    DOSIS**.
                 #
                 #    Hace falta un tercer intento porque el CRM busca DIFUSO: al pedirle
-                #    un nombre del carrito devuelve productos PARECIDOS pero no idénticos,
-                #    y ninguno iguala exactamente. Caso real: para
-                #    'COLON VITAL LIFE X 60 CAP WALIFE' devolvió FATSLIM, CASTAÑA DE
-                #    INDIA, ALCACHOFA… (todos de la marca WALIFE), sin el COLON VITAL.
+                #    un nombre del carrito devuelve productos PARECIDOS pero no idénticos.
+                #    Caso real: para 'COLON VITAL LIFE X 60 CAP WALIFE' devolvió FATSLIM,
+                #    CASTAÑA DE INDIA, ALCACHOFA… (todos de la marca WALIFE).
                 #
-                #    Se exige `es_relevante_estricto` (TODOS los tokens de fármaco), no
-                #    `es_relevante` (basta uno): con el permisivo, 'COLON VITAL LIFE'
-                #    colgaría el precio de un producto que solo comparte 'WALIFE'.
+                #    PERO LA RELEVANCIA NO BASTA: medido, el matcher estricto acepta
+                #    'ACETAMINOFEN 500MG TAB X 20 -ELTER-' como equivalente de
+                #    'ACETAMINOFEN 650 MG X 10 TAB ELTER' (mismo fármaco y marca, DISTINTA
+                #    concentración) y 'LOSARTAN POT. 50MG X 10' como equivalente de
+                #    'LOSARTAN 50 MG X 30'. Colgarle ese precio en Bs sería un precio
+                #    FALSO — peor que omitirlo, que es el problema que estamos arreglando.
+                #
+                #    Se exige la MISMA DOSIS (los números con unidad) para aceptar.
                 if elegido is None and producto:
+                    dosis_obj = _extraer_dosis(producto)
                     elegido = next(
                         (c for c in candidatos
                          if es_relevante_estricto(
                              producto, str(c.get("producto") or c.get("nombre") or "")
-                         )),
+                         )
+                         and _extraer_dosis(str(c.get("producto") or c.get("nombre") or ""))
+                         == dosis_obj),
                         None,
                     )
                 if elegido is not None:
