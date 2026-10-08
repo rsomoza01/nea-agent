@@ -2275,29 +2275,41 @@ class ToolRuntime:
         # distingue "finalicé el pedido" de "solo vi el resumen y quiero seguir
         # agregando" (que mantiene el carrito vivo).
         await self._ctx.store.update_conversation(self._conv.id, cart_closed=True)
-        # EL PEDIDO SE CERRÓ: se limpia el estado de ENTREGA. El próximo pedido debe
-        # volver a preguntar delivery/retiro en vez de heredar la dirección o el
-        # "Retirar en Farmacia" del pedido anterior. Solo se limpia AQUÍ (pedido
-        # cerrado): ver el resumen no cierra nada, el cliente puede seguir agregando.
+        # Si el Resumen del Pedido ya mostró las formas de pago (ver_carrito), NO
+        # repetirlas en el mensaje final. SE LEE ANTES DE LIMPIAR EL FLAG: si se lee
+        # después, `cart_summary_shown` ya estaría en False y el agente repetiría
+        # siempre las formas de pago.
+        summary_shown = bool(getattr(self._conv, "cart_summary_shown", False))
+        try:
+            conv_fresca = await self._ctx.store.get_or_create_conversation(
+                self._conv.wa_identity
+            )
+            summary_shown = bool(conv_fresca.cart_summary_shown)
+        except Exception:
+            pass
+        # EL PEDIDO SE CERRÓ: se limpia TODO el estado del pedido anterior — entrega
+        # incluida. El próximo pedido debe volver a preguntar delivery/retiro en vez de
+        # heredar la dirección o el "Retirar en Farmacia" del anterior.
+        #
+        # `cart_summary_shown` TAMBIÉN se limpia (hallazgo de la auditoría de estado):
+        # se quedaba en True tras cerrar, y como el paso de entrega exige
+        # `not cart_summary_shown`, el pedido NUEVO se SALTABA la pregunta de entrega y
+        # su resumen salía sin MÉTODO DE ENTREGA. Medido en la BD: 3 conversaciones
+        # cerradas con el flag colgado, listas para reproducir el fallo.
+        #
+        # Solo se limpia AQUÍ (pedido cerrado): ver el resumen NO cierra nada, el
+        # cliente puede seguir agregando.
         await self._ctx.store.update_conversation(
             self._conv.id,
             delivery_method=None,
             delivery_address=None,
             delivery_pending="",
+            cart_summary_shown=False,
         )
         self._conv.delivery_method = None
         self._conv.delivery_address = None
         self._conv.delivery_pending = ""
-        # Si el Resumen del Pedido ya mostró las formas de pago (ver_carrito,
-        # flag persistente cart_summary_shown), NO repetirlas aquí: el mensaje
-        # final solo confirma que un humano lo procesará. Leer el flag fresco
-        # de la BD por si el resumen se mostró en un turno anterior.
-        summary_shown = False
-        try:
-            conv = await self._ctx.store.get_or_create_conversation(self._conv.wa_identity)
-            summary_shown = bool(conv.cart_summary_shown)
-        except Exception:
-            summary_shown = bool(getattr(self._conv, "cart_summary_shown", False))
+        self._conv.cart_summary_shown = False
         # Formas de pago del tenant (multitenant, field `paymenType` de Firestore)
         # para recordarle al cliente cómo puede pagar — SOLO si el resumen no las
         # mostró ya (evitar duplicación del bloque).
