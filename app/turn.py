@@ -1153,13 +1153,29 @@ async def _resolver_paso_entrega(
     # El cliente quiere ver el resumen y aún no eligió cómo recibirlo. Se pregunta
     # ANTES del resumen, en este mismo punto (cubre todos los caminos, incluido que el
     # LLM llame ver_carrito por su cuenta).
+    #
+    # LA CONDICIÓN ES `delivery_method is None` A SECAS. NO se usa
+    # `cart_summary_shown` como puerta: ese flag significa "ya mostré un resumen en
+    # esta conversación" y es MEMORIA DE HISTORIAL, no de si ESTE pedido tiene método.
+    #
+    # Caso real (provider 05, 08-oct): el cliente cerró un pedido a las 00:16 — con el
+    # código ANTERIOR al fix de la auditoría, así que `cart_summary_shown` quedó en
+    # True para siempre. A las 01:20 hizo un pedido NUEVO: el carrito estaba vacío (se
+    # limpió al cerrar) y `delivery_method` era None, pero el flag viejo decía True, así
+    # que el paso de entrega se OMITIÓ y el resumen salió sin MÉTODO DE ENTREGA.
+    #
+    # El dato autoritativo de "este pedido ya tiene método" es `delivery_method`, que
+    # se limpia al cerrar el pedido. El flag del resumen es de otra cosa: si además
+    # quedó colgado de un pedido anterior, no hay que arrastrarlo.
     carrito = await ctx.store.cart_items(
         conv.id, session_hours=ctx.settings.cart_session_hours
     )
+    # `delivery_method is None` es el ÚNICO requisito de "este pedido no tiene método".
+    # `cart_summary_shown` NO participa: es memoria de "ya mostré un resumen", no de si
+    # ESTE pedido tiene método de entrega (ver el comentario de arriba).
     if (
         carrito
         and conv.delivery_method is None
-        and not conv.cart_summary_shown
         and _quiere_ver_resumen(user_text, tiene_carrito=True)
     ):
         # Si el cliente ya dijo "delivery"/"retirar" en el mismo mensaje, no se
@@ -1901,7 +1917,10 @@ async def _tool_loop(
                 farmacia
                 and tc.name == "finalizar_pedido"
                 and not runtime.summary_forced
-                and not runtime._conv.cart_summary_shown
+                and (
+                    not runtime._conv.cart_summary_shown
+                    or runtime._conv.delivery_method is None
+                )
             ):
                 items_cart = await ctx.store.cart_items(
                     runtime._conv.id, session_hours=ctx.settings.cart_session_hours
