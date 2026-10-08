@@ -1220,6 +1220,32 @@ async def _tool_loop(
     #     20:58:13  backstop resumen determinista                      ← resumen sin método
     #
     # El cliente vio el menú DOS veces y el resumen salió sin el método de entrega.
+    # ------------------------------------------------- HANDOFF POR PETICIÓN ---
+    # El cliente pide hablar con una persona → se atiende SIEMPRE y A LA PRIMERA, en
+    # código, sin depender del modelo. Va antes de todo lo demás (incluido el paso de
+    # entrega y cualquier búsqueda): quien pide un humano suele estar frustrado y no
+    # debe recibir una lista de productos ni una respuesta fría.
+    #
+    # Caso real (conv 2720, 07-oct): "Pasame el humano" → el agente respondió "no puedo
+    # pasarte el contacto de ninguna persona directamente" y NO hizo el handoff. El
+    # prompt pedía llamar la tool handoff "a la primera", pero sin guard determinista el
+    # caso quedaba al azar del modelo.
+    if farmacia:
+        texto_cliente_handoff = _texto_cliente_sin_marcadores(user_text) or user_text
+        if _pide_hablar_con_humano(texto_cliente_handoff):
+            logger.info(
+                "handoff por petición del cliente: %r — aviso al equipo y despido cálido",
+                texto_cliente_handoff[:60],
+            )
+            await ctx.store.update_conversation(
+                runtime._conv.id, phase="cerrada", followup_due_at=None
+            )
+            await _safe_handoff(ctx, runtime._crm_conv_id, "lead_request")
+            await _send(
+                ctx, runtime._conv.id, runtime._crm_conv_id, MENSAJE_HANDOFF_HUMANO
+            )
+            return None
+
     resuelto, texto_entrega = await _resolver_paso_entrega(
         ctx, runtime, user_text, farmacia=farmacia
     )
@@ -2443,6 +2469,75 @@ MENSAJE_PEDIR_DIRECCION = (
     "¡Perfecto! 🛵 Envíame la *dirección* donde quieres recibir el pedido "
     "(calle, número, sector y una referencia si aplica)."
 )
+
+# El cliente pide hablar con una persona del negocio. La respuesta es DETERMINISTA:
+# reconoce la petición, confirma que YA se avisó al equipo y no promete contactos
+# personales (el agente no debe dar teléfonos de empleados). El tono es cálido: el
+# cliente que pide un humano suele estar frustrado o con prisa.
+MENSAJE_HANDOFF_HUMANO = (
+    "¡Claro que sí! Ya avisé al equipo de la farmacia para que te atienda una "
+    "persona directamente. 🙌\n\n"
+    "En breve se comunican contigo por este mismo chat. Si quieres adelantar algo, "
+    "déjame aquí tu consulta y se la paso tal cual."
+)
+
+# ------------------------------------------------------------- HANDOFF ---
+# Detección DETERMINISTA de "quiero hablar con un humano". El prompt ya pide llamar
+# la tool `handoff` "SIEMPRE, a la primera", pero depender del modelo deja el caso al
+# azar: medido en producción (conv 2720, 07-oct), el cliente escribió "Pasame el humano"
+# y el agente respondió "no puedo pasarte el contacto de ninguna persona directamente"
+# SIN hacer el handoff.
+_HANDOFF_PALABRAS_PERSONA = (
+    "humano", "humana", "persona", "personas", "empleado", "empleada",
+    "encargado", "encargada", "gerente", "supervisor", "asesor", "vendedor",
+    "alguien", "dueño", "dueña",
+)
+_HANDOFF_VERBOS = (
+    "pasa", "pasame", "pásame", "pasen", "pasenme", "pasarme", "paselo", "pasamelo",
+    "paseme", "páseme", "pasemelo", "quiero", "quisiera", "necesito", "puedo",
+    "deseo", "prefiero", "hablar", "comunicar", "comunicarme", "chatear",
+    "atiendanme", "atiendeme", "tratar",
+)
+_PIDE_HUMANO = re.compile(
+    r"(\bpas(?:a|ame|en|arme|elo|enme|eme|ame(?:lo)?)\b[^.]{0,25}\b(?:human|person|"
+    r"emplead|alguien|encargad|due[ñn]|gerente|supervisor|vendedor|asesor|agente)|"
+    r"\b(?:quiero|quisiera|necesito|puedo|deseo|prefiero)\b[^.]{0,25}\b"
+    r"(?:hablar|comunicar(?:me)?|chatear|tratar|atend(?:er|erme))\b[^.]{0,20}"
+    r"\b(?:human|person|emplead|alguien|encargad|gerente|supervisor|real)|"
+    r"\b(?:hablar|comunicar(?:me)?)\s+con\s+(?:un|una|el|la)\s+"
+    r"(?:human|person|emplead|encargad|due[ñn]|gerente|supervisor)|"
+    r"\b(?:atien(?:de|dan)me|atiendanme)\s+(?:un|una)\s+(?:human|person)|"
+    r"\b(?:human|persona)\s+real\b|"
+    r"\bhay\s+(?:alguien|una\s+persona)\s+(?:ah[íi]|disponible)\b|"
+    r"\b(?:no\s+)?quiero\s+(?:un|una)\s+(?:human|person)|"
+    r"\bpasame\s+con\s+(?:alguien|el\s+encargad|el\s+due[ñn]))",
+    re.IGNORECASE,
+)
+
+
+def _pide_hablar_con_humano(texto: str) -> bool:
+    """¿El cliente pide EXPLÍCITAMENTE hablar con una persona del negocio?
+
+    Se aplica sobre el texto del cliente SIN marcadores del sistema, para que las
+    instrucciones internas ("pasa al lead a un humano si…") no lo disparen.
+
+    Dos capas: un patrón de frases completas y una red de seguridad por palabras
+    (verbo de petición + palabra de persona) que cubre los typos del cliente.
+    """
+    if not texto:
+        return False
+    t = texto.strip().lower()
+    if _PIDE_HUMANO.search(t):
+        return True
+    if any(p in t for p in _HANDOFF_PALABRAS_PERSONA) and any(
+        v in t for v in _HANDOFF_VERBOS
+    ):
+        # "te paso con un humano" / "voy a pasarte con alguien" es el AGENTE hablando
+        # (o el historial citado), no una petición del cliente: NO cuenta.
+        if re.search(r"\b(te|le)\s+paso\b|\bvoy\s+a\s+pasarte\b", t):
+            return False
+        return True
+    return False
 _PICKUP_PALABRAS = re.compile(
     r"\b(retirar|retiro|reto|buscar(?:lo)?|voy\s+a\s+buscar|paso\s+a\s+buscar|"
     r"paso\s+por|lo\s+recojo|recojo|recoger|en\s+la\s+farmacia|en\s+tienda|"
