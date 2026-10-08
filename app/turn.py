@@ -896,6 +896,28 @@ async def _fetch_context(
     return None
 
 
+async def _preguntar_metodo_entrega(
+    ctx: AppContext, runtime: ToolRuntime
+) -> None:
+    """Pregunta el MÉTODO DE ENTREGA y deja el estado pendiente. ÚNICO ESCRITOR.
+
+    Centraliza los tres sitios que enviaban el menú (el helper PRE-LLM y los dos
+    guards del despacho). Con una sola definición no pueden divergir ni duplicar el
+    envío: el cliente vio el menú DOS veces cuando había copias.
+
+    Idempotente dentro del turno (`delivery_pregunta_enviada`) y contra el estado
+    persistente (`delivery_pending`).
+    """
+    conv = runtime._conv
+    await ctx.store.update_conversation(conv.id, delivery_pending="method")
+    conv.delivery_pending = "method"
+    runtime.delivery_pendiente = "method"
+    runtime.delivery_pregunta_enviada = True
+    runtime.delivery_pregunta = True
+    logger.info("paso de entrega: pregunto delivery/retiro antes del resumen")
+    await _send(ctx, conv.id, runtime._crm_conv_id, MENSAJE_METODO_ENTREGA)
+
+
 async def _resolver_paso_entrega(
     ctx: AppContext,
     runtime: ToolRuntime,
@@ -994,12 +1016,7 @@ async def _resolver_paso_entrega(
                 return True, None
             result = await runtime.execute("ver_carrito", {})
             return True, runtime.cart_summary_text
-        await ctx.store.update_conversation(conv.id, delivery_pending="method")
-        conv.delivery_pending = "method"
-        runtime.delivery_pendiente = "method"
-        runtime.delivery_pregunta_enviada = True
-        logger.info("paso de entrega: pregunto delivery/retiro antes del resumen")
-        await _send(ctx, conv.id, runtime._crm_conv_id, MENSAJE_METODO_ENTREGA)
+        await _preguntar_metodo_entrega(ctx, runtime)
         return True, None
 
     return False, None
@@ -1060,14 +1077,11 @@ async def _tool_loop(
     # El pre-check vive aquí, ANTES de mi guard de entrega, así que hay que filtrarlo
     # en la fuente: mientras haya una pregunta de entrega en vuelo, ningún número
     # suelto puede ser una elección de opción.
-    if eleccion_prev and (
-        runtime._conv.delivery_pending or getattr(runtime, "delivery_pendiente", "")
-    ):
+    if eleccion_prev and _hay_pregunta_de_entrega(runtime):
         logger.info(
-            "backstop carrito: '%s' responde a la pregunta de ENTREGA (%s) — "
+            "backstop carrito: '%s' responde a la pregunta de ENTREGA — "
             "no es una elección de opción",
             user_text[:40],
-            runtime._conv.delivery_pending or runtime.delivery_pendiente,
         )
         eleccion_prev = None
     # Si el asistente acaba de preguntar "¿cuántas cajas/unidades?", un número
@@ -1154,10 +1168,7 @@ async def _tool_loop(
                 # y no elige una opción de la lista. Este es el segundo punto donde se
                 # resolvía el "1" del menú delivery/retiro como la opción 1.
                 elecciones = _extraer_eleccion_multiple(user_text)
-                if elecciones and (
-                    runtime._conv.delivery_pending
-                    or getattr(runtime, "delivery_pendiente", "")
-                ):
+                if elecciones and _hay_pregunta_de_entrega(runtime):
                     logger.info(
                         "backstop carrito: '%s' responde a la pregunta de ENTREGA — "
                         "no es una elección de opción (rama sin-tools)",
@@ -1236,45 +1247,15 @@ async def _tool_loop(
             #     2. Retirar en Farmacia
             # Solo después se muestra el Resumen, que incluye el MÉTODO DE ENTREGA.
             #
-            # Va aquí y no como backstop de la rama sin-tools porque el modelo puede
-            # llamar ver_carrito por su cuenta y saltarse la pregunta (ver la lección
-            # "los backstops dentro de if not tool_calls no corren").
+            # EL PASO DE ENTREGA SE RESUELVE EN `_resolver_paso_entrega`, AL INICIO DE
+            # `_tool_loop` Y ANTES DEL LLM. Aquí había una SEGUNDA copia que enviaba el
+            # menú: era código muerto (nunca se alcanzaba, porque cuando el cliente
+            # responde al menú el modelo llama una tool y esta rama no se evalúa) y a
+            # la vez un riesgo de DOBLE ENVÍO si algún día se alcanzaba. Un solo
+            # escritor del estado de entrega: el helper.
             carrito_activo = bool(await ctx.store.cart_items(
                 runtime._conv.id, session_hours=ctx.settings.cart_session_hours
             ))
-            if (
-                farmacia
-                and carrito_activo
-                and not runtime.delivery_pregunta_enviada
-                and not runtime._conv.cart_summary_shown
-                and _quiere_ver_resumen(user_text, tiene_carrito=carrito_activo)
-            ):
-                # ¿El cliente ya respondió con una elección? (p.ej. "delivery" directo)
-                eleccion_directa = _eleccion_entrega(user_text)
-                if eleccion_directa:
-                    await runtime.guardar_eleccion_entrega(eleccion_directa)
-                elif runtime._conv.delivery_method is None:
-                    runtime.delivery_pregunta_enviada = True
-                    runtime.delivery_pregunta = True
-                    runtime.delivery_pendiente = "method"
-                    await runtime._ctx.store.update_conversation(
-                        runtime._conv.id, delivery_pending="method"
-                    )
-                    logger.info(
-                        "paso de entrega: preguntando delivery/retiro antes del resumen"
-                    )
-                    await _send(
-                        ctx, runtime._conv.id, runtime._crm_conv_id,
-                        MENSAJE_METODO_ENTREGA,
-                    )
-                    return None  # turno atendido por la pregunta de entrega
-
-            # EL PASO DE ENTREGA YA SE RESOLVIÓ ARRIBA, ANTES DE LLAMAR AL LLM
-            # (`_resolver_paso_entrega`, al inicio de `_tool_loop`). Vivía aquí y no
-            # servía: cuando el cliente responde al menú, el modelo llama
-            # `finalizar_pedido`/`ver_carrito` directamente, así que esta rama NUNCA
-            # se evaluaba — el "2" del cliente se descartaba y el guard del despacho
-            # volvía a preguntar. No reintroducir lógica de entrega en este bloque.
 
             # Backstop de resumen: si el cliente quiere ver el resumen y el LLM
             # no llamó ver_carrito, lo forzamos (el modelo a veces no lo llama).
@@ -1735,21 +1716,12 @@ async def _tool_loop(
                     runtime._conv.id, session_hours=ctx.settings.cart_session_hours
                 )
                 if items_e:
-                    runtime.delivery_pregunta_enviada = True
-                    runtime.delivery_pendiente = "method"
-                    runtime._conv.delivery_pending = "method"
-                    await ctx.store.update_conversation(
-                        runtime._conv.id, delivery_pending="method"
-                    )
                     logger.info(
                         "guard entrega: el LLM iba a mostrar el resumen sin preguntar "
                         "la entrega (%d producto(s)) — pregunto delivery/retiro",
                         len(items_e),
                     )
-                    await _send(
-                        ctx, runtime._conv.id, runtime._crm_conv_id,
-                        MENSAJE_METODO_ENTREGA,
-                    )
+                    await _preguntar_metodo_entrega(ctx, runtime)
                     return None
             # GUARD: NO SE PUEDE FINALIZAR SIN HABER MOSTRADO EL RESUMEN.
             #
@@ -1785,19 +1757,11 @@ async def _tool_loop(
                     # entrega. Un pedido sin método de entrega deja al humano sin saber
                     # si despachar o preparar para retiro.
                     if runtime._conv.delivery_method is None:
-                        runtime.delivery_pregunta_enviada = True
-                        runtime.delivery_pendiente = "method"
-                        await ctx.store.update_conversation(
-                            runtime._conv.id, delivery_pending="method"
-                        )
                         logger.info(
                             "guard finalizar: sin método de entrega — pregunto "
                             "delivery/retiro antes de cerrar"
                         )
-                        await _send(
-                            ctx, runtime._conv.id, runtime._crm_conv_id,
-                            MENSAJE_METODO_ENTREGA,
-                        )
+                        await _preguntar_metodo_entrega(ctx, runtime)
                         return None
                     runtime.summary_forced = True
                     logger.info(
@@ -2358,6 +2322,22 @@ def _parece_direccion(texto: str) -> bool:
         re.IGNORECASE,
     )
     return bool(señales.search(t))
+
+
+def _hay_pregunta_de_entrega(runtime: Any) -> bool:
+    """¿El agente está esperando una respuesta del PASO DE ENTREGA?
+
+    Una sola definición para los DOS sitios que resuelven números contra
+    `last_options` (el pre-check antes del LLM y el backstop de la rama sin-tools).
+    Antes la guarda estaba copiada en ambos, con el riesgo de que uno divergiera.
+
+    Mientras haya una pregunta de entrega en vuelo, un "1"/"2" suelto contesta ESA
+    pregunta y NUNCA elige una opción de la lista de medicamentos. Sin esto:
+    "2" (LA SANTE), luego "1" (delivery) → el "1" se resolvía como la opción 1 del
+    catálogo y se agregaba otro medicamento que el cliente no pidió.
+    """
+    pendiente = getattr(getattr(runtime, "_conv", None), "delivery_pending", "") or ""
+    return bool(pendiente or getattr(runtime, "delivery_pendiente", ""))
 
 
 def _agente_pidio_precisar(messages: list[dict[str, Any]]) -> bool:
