@@ -17,6 +17,7 @@ from app.crm import CrmConflict, CrmError, SlotTaken
 from app.relevancia import (
     _norm,
     _token_cabeza_farmaco,
+    es_relevante_estricto,
     filtrar_relevantes,
     hay_senal_de_farmaco,
     parece_presentacion_personal,
@@ -2120,12 +2121,32 @@ class ToolRuntime:
                          if str(c.get("productId") or "").strip() == str(product_id).strip()),
                         None,
                     )
-                # 2) por NOMBRE exacto (normalizado): cubre el id inventado
-                if elegido is None and producto:
-                    objetivo = _norm(producto)
+                # 2) por NOMBRE EXACTO normalizado
+                objetivo = _norm(producto) if producto else ""
+                if elegido is None and objetivo:
                     elegido = next(
                         (c for c in candidatos
                          if _norm(str(c.get("producto") or c.get("nombre") or "")) == objetivo),
+                        None,
+                    )
+                # 3) por RELEVANCIA con coincidencia ESTRICTA (todos los tokens del
+                #    nombre del carrito presentes en el del catálogo).
+                #
+                #    Hace falta un tercer intento porque el CRM busca DIFUSO: al pedirle
+                #    un nombre del carrito devuelve productos PARECIDOS pero no idénticos,
+                #    y ninguno iguala exactamente. Caso real: para
+                #    'COLON VITAL LIFE X 60 CAP WALIFE' devolvió FATSLIM, CASTAÑA DE
+                #    INDIA, ALCACHOFA… (todos de la marca WALIFE), sin el COLON VITAL.
+                #
+                #    Se exige `es_relevante_estricto` (TODOS los tokens de fármaco), no
+                #    `es_relevante` (basta uno): con el permisivo, 'COLON VITAL LIFE'
+                #    colgaría el precio de un producto que solo comparte 'WALIFE'.
+                if elegido is None and producto:
+                    elegido = next(
+                        (c for c in candidatos
+                         if es_relevante_estricto(
+                             producto, str(c.get("producto") or c.get("nombre") or "")
+                         )),
                         None,
                     )
                 if elegido is not None:
