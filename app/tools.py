@@ -2088,6 +2088,40 @@ class ToolRuntime:
         laboratorio = str(args.get("laboratorio") or "")
         precio_usd = args.get("precioUsd")
         precio_bs = args.get("precioBs")
+        # EL Bs FALTANTE SE RECUPERA DEL CATÁLOGO. `precioBs` no es `required` en el
+        # schema de la tool, así que el LLM lo omite a menudo: medido en la BD, 7 de 32
+        # filas de `bot_cart` quedaron sin Bs (22%), y `ver_carrito` las mostraba como
+        # "Bs 0,00" con `(i.precio_bs or 0)`.
+        #
+        # El dato SÍ existe: el CRM devuelve `precioBs` en el 100% de los productos
+        # (verificado: 10/10). La lista `last_options` solo lo tenía si el productId
+        # estaba ahí — cuando el LLM pasa otro SKU (o ninguno), el Bs se perdía.
+        #
+        # Se busca el producto en el catálogo por su productId y, si aparece, se toma su
+        # `precioBs` REAL. Nunca se inventa: sin dato, se deja vacío y el formateador
+        # omite el monto (ver `_fmt_ve` en el resumen) en vez de mostrar "Bs 0,00".
+        if precio_bs is None and product_id and self._provider_id:
+            try:
+                data_bs = await self._ctx.crm.get_products(
+                    self._provider_id, q=producto or product_id, limit=8
+                )
+                for cand in data_bs.get("products") or []:
+                    if str(cand.get("productId") or "").strip() == str(product_id).strip():
+                        if cand.get("precioBs") is not None:
+                            precio_bs = cand.get("precioBs")
+                            if precio_usd is None and cand.get("precio") is not None:
+                                precio_usd = cand.get("precio")
+                            logger.info(
+                                "agregar_al_carrito: Bs recuperado del catálogo para "
+                                "'%s' (Bs %s)", producto or product_id, precio_bs,
+                            )
+                        break
+            except Exception as exc:
+                # Best-effort: sin Bs el resumen lo omite, pero el carrito funciona.
+                logger.warning(
+                    "agregar_al_carrito: no pude recuperar el Bs de '%s': %s",
+                    producto or product_id, exc,
+                )
         item = await self._ctx.store.cart_add(
             self._conv.id,
             product_id,
@@ -2190,6 +2224,11 @@ class ToolRuntime:
         )
         total_usd = sum((i.precio_usd or 0) * i.cantidad for i in items)
         total_bs = sum((i.precio_bs or 0) * i.cantidad for i in items)
+        # ¿Algún ítem SIN Bs? `bot_cart` puede tenerlo en None (el LLM omitió el dato
+        # al agregar). Mostrar "Bs 0,00" es un precio FALSO: el cliente creería que el
+        # medicamento es gratis en bolívares. Cuando falta, se OMITE el monto en Bs de
+        # esa línea (y del total) en vez de inventar un cero.
+        hay_bs = all(i.precio_bs is not None for i in items)
         # Resumen determinista: cada producto con cantidad y subtotal en USD y
         # Bs, y el total en ambos. El LLM lo cita literal; turn.py lo usa como
         # backstop para que el monto en Bs y el subtotal por medicamento SIEMPRE
@@ -2198,13 +2237,21 @@ class ToolRuntime:
         bloque.append("🛒 *Productos:*")
         for i in items:
             sub_usd = (i.precio_usd or 0) * i.cantidad
-            sub_bs = (i.precio_bs or 0) * i.cantidad
             bloque.append(f"•⁠  ⁠{i.producto}")
             bloque.append(f"  Cantidad: {i.cantidad}")
-            bloque.append(f"  Subtotal: ${_fmt_ve(sub_usd)} | Bs {_fmt_ve(sub_bs)}")
+            if i.precio_bs is not None:
+                sub_bs = i.precio_bs * i.cantidad
+                bloque.append(
+                    f"  Subtotal: ${_fmt_ve(sub_usd)} | Bs {_fmt_ve(sub_bs)}"
+                )
+            else:
+                bloque.append(f"  Subtotal: ${_fmt_ve(sub_usd)}")
         bloque.append("")
         bloque.append("*Total:*")
-        bloque.append(f"${_fmt_ve(total_usd)} | Bs {_fmt_ve(total_bs)}")
+        if hay_bs:
+            bloque.append(f"${_fmt_ve(total_usd)} | Bs {_fmt_ve(total_bs)}")
+        else:
+            bloque.append(f"${_fmt_ve(total_usd)}")
         bloque.append("")
         # Formas de pago del tenant (multitenant): OBLIGATORIO mostrarlas en el
         # resumen del pedido. Vienen del campo `paymenType` (markdown) de
