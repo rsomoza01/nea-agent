@@ -632,10 +632,17 @@ async def run_turn(
     # la lista canónica: mismo orden (precio asc), formato estándar de la
     # farmacia (💊 N. NOMBRE + $X,XX | Bs Y). El cliente SIEMPRE ve el mismo
     # formato, venga lo que venga del LLM.
+    #
+    # GUARD DEL CIERRE: si el cliente se está despidiendo, su respuesta es una cortesía y
+    # no se sustituye por el catálogo. Caso real (conv 2826): "Ok gracias pasaré por allá"
+    # → el backstop reemplazó el adiós con la lista de NAPROXENO que el cliente YA había
+    # visto. `_enumera_productos` (dentro del predicado) ya descarta las cortesías; este
+    # guard es la segunda capa para el caso de una despedida larga que cite un precio.
     if (
         farmacia
         and runtime.last_products
         and final_text
+        and not _lead_esta_cerrando(_texto_cliente_sin_marcadores(user_text))
         and _formato_no_canonico(final_text, runtime.last_products)
     ):
         logger.warning(
@@ -3691,8 +3698,21 @@ def _formato_no_canonico(texto: str, products: list[dict[str, Any]]) -> bool:
     correctos → ningún backstop previo actuó, pero el formato viola el estándar
     de presentación (precio venezolano coma decimal + Bs + emoji por opción) y
     el usuario lo espera fijo.
+
+    DEBE ENUMERAR ALGO. Este backstop SUSTITUYE el texto por la lista del catálogo,
+    así que solo tiene sentido si el texto ERA una enumeración mal formateada. Antes
+    bastaba con que hubiera 2+ productos y el texto no tuviera 💊: una CORTESÍA
+    ("¡Con gusto! Que te vaya bien 😊") cumplía ambas condiciones y era reemplazada
+    por el catálogo completo. Caso real (conv 2826): el cliente se despidió con "Ok
+    gracias pasaré por allá" y recibió NAPROXENO otra vez — la misma lista que ya
+    había visto, en lugar del adiós.
     """
     if not texto or len(products) < 2:
+        return False
+    # El texto tiene que estar ENUMERANDO: varias líneas, o referencias a los
+    # productos/precios. Un texto de una sola frase sin ninguna mención no es una
+    # enumeración mal formateada, es otra cosa (una cortesía, una pregunta).
+    if not _enumera_productos(texto, products):
         return False
     if "💊" not in texto:
         return True
@@ -3711,6 +3731,42 @@ def _formato_no_canonico(texto: str, products: list[dict[str, Any]]) -> bool:
         if re.search(r"\$.*\|.*Bs", siguiente):
             ok_formato += 1
     return ok_formato < len(lineas)
+
+
+def _enumera_productos(texto: str, products: list[dict[str, Any]]) -> bool:
+    """True si el texto parece estar LISTANDO los productos (no solo mencionarlos).
+
+    Un texto que enumera trae varias líneas o repite la estructura de la lista (números
+    de opción, precios, nombres de producto). Una cortesía de una línea, una pregunta, o
+    una respuesta conversacional NO enumeran — y por eso no deben ser reemplazadas por la
+    lista del catálogo.
+
+    Se usa en los backstops que SUSTITUYEN el texto: sin este filtro cualquier respuesta
+    corta con 2+ productos de la consulta anterior entra y el cliente recibe el catálogo
+    en vez de la frase que correspondía.
+    """
+    t = texto.strip()
+    if not t:
+        return False
+    # 3+ líneas con contenido: es una enumeración (la lista canónica o el intento del LLM).
+    lineas = [ln for ln in t.splitlines() if ln.strip()]
+    if len(lineas) >= 3:
+        return True
+    # 2 líneas ya es sospechoso de lista si alguna cita un precio.
+    if len(lineas) == 2 and re.search(r"\$\s*\d", t):
+        return True
+    # Una sola línea/parrafo: solo cuenta si enumera con números de opción o cita precios.
+    if re.search(r"(?:^|\n)\s*\d{1,2}\s*[.)-]\s+\S", t):
+        return True
+    if re.search(r"\$\s*\d", t):
+        return True
+    # O si nombra 2+ productos distintos de la consulta.
+    tl = t.lower()
+    nombrados = sum(
+        1 for p in products
+        if str(p.get("producto") or p.get("nombre") or "").lower()[:18] in tl
+    )
+    return nombrados >= 2
 
 
 def _cita_precio_inventado(
