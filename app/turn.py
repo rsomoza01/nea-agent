@@ -1252,6 +1252,65 @@ async def _tool_loop(
     if resuelto:
         return texto_entrega  # None = ya se atendió con _send; texto = el resumen
 
+    # GUARD DE ENVASE AGOTADO — ANTES DEL LLM, junto al paso de entrega.
+    #
+    # El cliente pide un TAMAÑO DE CAJA ('de 10 pastillas'). Si el catálogo no lo tiene,
+    # hay que DECÍRSELO con los tamaños que sí hay — no re-listar los de 30 como si fueran
+    # la respuesta.
+    #
+    # Caso real (conv 2714, provider 27, BRASARTAN): el cliente preguntó "No tienes de 10
+    # pastillas?" y el agente respondió re-listando los envases de 30, los MISMOS que ya
+    # había mostrado. El cliente se fue creyendo que sí había respuesta a su pregunta,
+    # cuando la había y era "no". Re-listar sin decir el NO es no responder: el cliente no
+    # puede distinguir "no tengo" de "no me entendió".
+    #
+    # POR QUÉ AQUÍ Y NO EN EL LOOP: en el loop el turno ya pasó por el LLM, que con
+    # 'brasartan 80 mg 10' consulta el catálogo y deja `consulted_catalog=True`. Un guard
+    # condicionado a esa bandera nunca dispararía. Es el mismo error que tuvo el paso de
+    # entrega. Los pasos obligatorios se resuelven ANTES del modelo.
+    if farmacia:
+        env_pedido = _pedido_de_envase(user_text)
+        if env_pedido and runtime.last_term:
+            # Se busca con el término LIMPIO: last_term puede traer el envase ya pegado
+            # ('brasartan 80 mg 10') y contaminaría la consulta.
+            term_busqueda = _termino_sin_envase(runtime.last_term, env_pedido)
+            data_env = await runtime.execute(
+                "buscar_medicamento", {"nombre": term_busqueda}
+            )
+            prods_env = (data_env or {}).get("products") or []
+            hay_env = [
+                p for p in prods_env
+                if _envase_de_nombre(p.get("producto") or p.get("nombre")) == env_pedido
+            ]
+            if not hay_env:
+                disponibles = sorted(
+                    {
+                        _envase_de_nombre(p.get("producto") or p.get("nombre"))
+                        for p in prods_env
+                        if _envase_de_nombre(p.get("producto") or p.get("nombre"))
+                    },
+                    key=int,
+                )
+                logger.info(
+                    "guard envase: '%s' pidió envase %s y NO hay — disponibles: %s",
+                    runtime.last_term, env_pedido, disponibles,
+                )
+                texto = _respuesta_envase_agotado(
+                    runtime.last_term, env_pedido, disponibles, prods_env
+                )
+                await _send(ctx, runtime._conv.id, runtime._crm_conv_id, texto)
+                return None  # turno atendido: no dejar que el LLM reescriba
+            # SÍ existe: se acota la lista a ese envase y sigue el flujo normal.
+            logger.info(
+                "guard envase: '%s' envase %s → %d de %d opciones",
+                runtime.last_term, env_pedido, len(hay_env), len(prods_env),
+            )
+            runtime.last_options = sorted(
+                hay_env,
+                key=lambda p: (p.get("precio") if isinstance(p.get("precio"), (int, float))
+                               else 0),
+            )
+
     schemas = active_tool_schemas(farmacia=farmacia)
     # Cuenta rondas consecutivas donde el LLM llamó tools con arguments vacíos
     # ({}): señal de bucle degenerado — cortamos con un texto de respaldo.
@@ -1486,8 +1545,6 @@ async def _tool_loop(
                 result = await runtime.execute("finalizar_pedido", {})
                 _append_forced_tool(messages, "finalizar_pedido", {}, result)
                 continue
-            # Backstop de refinamiento: si el cliente responde con un miligramo /
-            # presentación (p.ej. "30 mg") y ya consultamos un medicamento antes,
             # forzamos re-consultar el catálogo con ese refinamiento para que el
             # LLM cite los productos reales (no los invente de memoria).
             #
@@ -2783,6 +2840,40 @@ async def _fallback_farmacia(
     return lista + "\n\n" + MENSAJE_SUGERIDO_CARRITO
 
 
+def _respuesta_envase_agotado(
+    termino: str,
+    env_pedido: str,
+    disponibles: list[str],
+    productos: list[dict[str, Any]],
+) -> str:
+    """Respuesta determinista cuando el cliente pide un TAMAÑO DE CAJA que no hay.
+
+    POR QUÉ EXISTE: el cliente preguntó "No tienes de 10 pastillas?" y el agente
+    re-listó los envases de 30 — los MISMOS que ya había mostrado. El cliente se fue
+    creyendo que sí había respuesta a su pregunta, cuando la había y era "no". Re-listar
+    sin decir el NO es no responder: el cliente no puede distinguir "no tengo" de "no me
+    entendió".
+
+    Se responde en dos partes: (1) el NO explícito con los tamaños que SÍ hay — así el
+    cliente sabe con precisión qué pedir; (2) la lista de lo disponible, para que pueda
+    elegir sin volver a preguntar.
+    """
+    nombre = termino.strip().upper()
+    if disponibles:
+        tam = ", ".join(f"{n} unidades" for n in disponibles)
+        negativo = (
+            f"No tengo {nombre} en envase de {env_pedido} unidades. "
+            f"Lo tengo en: {tam}."
+        )
+    else:
+        negativo = f"No tengo {nombre} en envase de {env_pedido} unidades."
+    partes = [negativo]
+    if productos:
+        partes.append(_formatear_lista_productos(productos, termino))
+        partes.append(MENSAJE_SUGERIDO_CARRITO)
+    return "\n\n".join(partes)
+
+
 def _extraer_refinamiento(texto: str) -> str:
     """Extrae SOLO el refinamiento de presentación del texto: el número+unidad
     de dosis o la forma ('10 mg', '30 tabletas', 'gotas', 'ampolla').
@@ -2810,6 +2901,12 @@ def _extraer_refinamiento(texto: str) -> str:
     if not texto:
         return ""
     t = texto.strip().lower()
+    # ORDEN DE LOS CAMINOS: primero el ENVASE ('de 10 pastillas' → '10'), porque si
+    # cayera al camino de dosis, la forma se traduciría a 'mg' y buscaríamos la dosis
+    # '10 mg' (inexistente) en vez del envase de 10 unidades. Ver `_pedido_de_envase`.
+    env = _pedido_de_envase(t)
+    if env:
+        return env
     # Número + unidad explícita (la forma más fiable, en cualquier orden).
     # Las FORMAS líquidas (jarabe, gotas, ampolla...) entran aquí para que se
     # traduzcan a ml: si se dejan fuera, 'jarabe 120' cae al número suelto y se
@@ -2887,6 +2984,82 @@ _UNIDAD_DE_FORMA = {
 }
 
 
+# Formas CONTABLES de presentación: agrupan unidades dentro de una caja. El número que
+# las acompaña es el TAMAÑO del envase ("10 pastillas" = caja de 10 unidades), NO una
+# dosis. Deliberadamente NO incluye 'unidades', 'blisters', 'sobres', 'frascos': esas
+# palabras acompañan una CANTIDAD DE COMPRA ("quiero 3 unidades"), no una presentación.
+_FORMAS_CONTABLES = (
+    "pastillas", "pastilla", "tabletas", "tableta", "tabs", "tab",
+    "capsulas", "cápsulas", "caps", "cap", "comprimidos", "comprimido",
+    "grageas", "gragea",
+)
+
+# Tamaño de envase: 1-2 cifras (4..99: 7, 10, 14, 20, 28, 30, 60). El mismo umbral que ya
+# usa el camino de la dosis suelta: 3-4 cifras es una DOSIS plausible (160, 500, 650), no
+# un envase. Se empieza en 4 para no confundir una cantidad de compra ('2 pastillas').
+_RE_ENVASE_NUM_FORMA = re.compile(
+    rf"\b([4-9]|[1-9]\d)\s*(?:{'|'.join(_FORMAS_CONTABLES)})\b"
+)
+_RE_ENVASE_FORMA_NUM = re.compile(
+    rf"\b(?:{'|'.join(_FORMAS_CONTABLES)})\s*([4-9]|[1-9]\d)\b"
+)
+# Cantidad de COMPRA: no es un tamaño de envase, la resuelve el carrito.
+_RE_CANTIDAD_COMPRA = re.compile(r"\b\d+\s*(?:cajas?|unidades?|frascos?|paquetes?|blisters?)\b")
+
+# El "X N" del título del producto: 'BRASARTAN CTDN 80MG/12.5X10 FARMA' → '10'.
+_RE_X_ENVASE = re.compile(r"x\s*0*(\d{1,3})\b")
+
+
+def _pedido_de_envase(texto: str) -> str:
+    """Extrae el TAMAÑO DE ENVASE que pide el cliente: 'de 10 pastillas' → '10'.
+
+    POR QUÉ ES DISTINTO DE UNA DOSIS: son dos números con la misma forma pero
+    significados opuestos. '650 tabletas' / 'Tabletas 650' es una DOSIS (650 mg), pero
+    '10 pastillas' / 'de 10 tabletas' es CUÁNTAS unidades trae la caja. El agente
+    traducía ambos con `_UNIDAD_DE_FORMA` a 'mg', así que 'de 10 pastillas' se buscaba
+    como la dosis '10 mg' — que no existe — y el catálogo devolvía los envases de 30
+    como si fueran la respuesta (caso real BRASARTAN, conv 2714).
+
+    Desambigua por el RANGO, que es lo que ya hace el resto del módulo: una dosis tiene
+    3-4 cifras y un envase 1-2. Devuelve '' si no hay un pedido de envase claro.
+    """
+    if not texto:
+        return ""
+    t = texto.strip().lower()
+    # "quiero 3 unidades" es una CANTIDAD DE COMPRA, no la presentación.
+    if _RE_CANTIDAD_COMPRA.search(t):
+        return ""
+    m = _RE_ENVASE_NUM_FORMA.search(t) or _RE_ENVASE_FORMA_NUM.search(t)
+    if not m:
+        return ""
+    return m.group(1).lstrip("0") or m.group(1)
+
+
+def _envase_de_nombre(nombre: object) -> str:
+    """El tamaño de envase del título de un producto: '... X 30 CAP' → '30'."""
+    m = _RE_X_ENVASE.search(str(nombre or "").lower())
+    return (m.group(1).lstrip("0") or m.group(1)) if m else ""
+
+
+def _termino_sin_envase(termino: str, env: str) -> str:
+    """Quita del término el número de ENVASE que un refinamiento anterior le pegó.
+
+    POR QUÉ: `last_term` persiste el término de la búsqueda anterior, y el backstop de
+    refinamiento lo COMPONE ('brasartan' + '10' → 'brasartan 80 mg 10'). Si el guard
+    busca con ese término contaminado, el número de envase va camino del catálogo y puede
+    devolver 0 productos — y entonces la respuesta se quedaría sin la parte más útil: en
+    qué tamaños SÍ lo tenemos.
+
+    Solo se quita el número si es EXACTAMENTE el envase pedido y va SUELTO al final (sin
+    unidad): 'brasartan 80 mg 10' → 'brasartan 80 mg'. La dosis NO se toca: en
+    'acetaminofen 650 mg' el 650 va con unidad y es lo que identifica el producto.
+    """
+    if not termino or not env:
+        return termino
+    limpio = re.sub(rf"\s+0*{re.escape(env)}\s*$", "", termino.strip())
+    return limpio or termino
+
+
 def _es_refinamiento_presentacion(texto: str) -> bool:
     """True si el texto es un refinamiento de presentación ('30 mg', '50 mg',
     'gotas', 'jarabe', 'Tabletas 650') más que una nueva búsqueda de medicamento.
@@ -2909,6 +3082,10 @@ def _es_refinamiento_presentacion(texto: str) -> bool:
         r"\b(mg|ml|mcg|gotas|tabletas|tab|comprimidos|cápsulas|capsulas|cap)\s*\d+\b",
         t,
     ):
+        return True
+    # PEDIDO DE ENVASE ('de 10 pastillas', 'tabletas 20'): también es precisar la
+    # presentación, aunque el número sea un tamaño de caja y no una dosis.
+    if _pedido_de_envase(t):
         return True
     # Número de dosis suelto ('de 650', 'las de 650'): respuesta a "¿qué miligramo
     # necesitas?" sin repetir la unidad.
