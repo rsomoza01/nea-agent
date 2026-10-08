@@ -1561,13 +1561,25 @@ async def _tool_loop(
                     grupos: list[tuple[str, list[dict[str, Any]]]] = []
                     no_disponibles: list[str] = []
                     for med in medicamentos:
+                        runtime.corregido_desde = None
+                        runtime.corregido_a = None
                         result = await runtime.execute("buscar_medicamento", {"nombre": med})
                         prods = (result or {}).get("products") or []
+                        # EL TÍTULO LLEVA LA GRAFÍA DEL CATÁLOGO, no la que escribió el
+                        # cliente. Si hubo corrección por typo ('hidrocoticida' →
+                        # 'hidroclorotiazida'), encabezar con el typo repetiría el error en
+                        # la respuesta y el cliente no sabría qué producto se le está
+                        # ofreciendo. El encabezado identifica el grupo; debe ser el nombre
+                        # con el que el producto existe.
+                        titulo = (
+                            runtime.corregido_a.upper() if runtime.corregido_a
+                            else med.upper()
+                        )
                         if prods:
-                            grupos.append((med.upper(), prods))
+                            grupos.append((titulo, prods))
                         else:
                             logger.info("receta: %s no está en el catálogo", med)
-                            no_disponibles.append(med)
+                            no_disponibles.append(titulo)
                     if grupos:
                         # Guardar la lista GLOBAL de opciones (en el MISMO orden
                         # que ve el cliente: medicamento por medicamento, cada
