@@ -915,6 +915,29 @@ async def _tool_loop(
     # runtime.last_options con una búsqueda nueva y la opción Z quede fuera de
     # rango. (El cliente elige contra la lista que YA vio.)
     eleccion_prev = _extraer_eleccion_multiple(user_text)
+    # UN NÚMERO QUE RESPONDE A NUESTRA PREGUNTA NO ES UNA ELECCIÓN DE PRODUCTO.
+    # Si el agente está esperando la respuesta del paso de ENTREGA ("1. Delivery /
+    # 2. Retirar en Farmacia") o la DIRECCIÓN, un "1"/"2" contesta ESA pregunta.
+    #
+    # Caso real (provider 05, 2026-10): el cliente pidió ACETAMINOFEN 650 MG, vio la
+    # lista de 3 opciones, eligió "2" (LA SANTE, correcto). Luego se le preguntó
+    # delivery/retiro, contestó "1" (delivery) — y ese "1" se resolvió contra
+    # `last_options` como la OPCIÓN 1 de la lista: se agregó GENVEN ($0,52) además de
+    # LA SANTE ($0,65). El resumen mostró DOS acetaminofén que el cliente nunca pidió.
+    #
+    # El pre-check vive aquí, ANTES de mi guard de entrega, así que hay que filtrarlo
+    # en la fuente: mientras haya una pregunta de entrega en vuelo, ningún número
+    # suelto puede ser una elección de opción.
+    if eleccion_prev and (
+        runtime._conv.delivery_pending or getattr(runtime, "delivery_pendiente", "")
+    ):
+        logger.info(
+            "backstop carrito: '%s' responde a la pregunta de ENTREGA (%s) — "
+            "no es una elección de opción",
+            user_text[:40],
+            runtime._conv.delivery_pending or runtime.delivery_pendiente,
+        )
+        eleccion_prev = None
     # Si el asistente acaba de preguntar "¿cuántas cajas/unidades?", un número
     # suelto ("2") es la CANTIDAD del producto, NO la elección de una opción.
     # La pregunta de cantidad tiene prioridad sobre la lista de opciones.
@@ -993,7 +1016,22 @@ async def _tool_loop(
                 # Elección por número de opción ("quiero 2 cajas de la opción 3"
                 # o selección múltiple "1 caja de 1,4,7 y 8"): resolver contra la
                 # lista persistida del turno anterior.
+                #
+                # CON LA MISMA GUARDA que el pre-check de arriba: mientras haya una
+                # pregunta de ENTREGA en vuelo, un número suelto contesta ESA pregunta
+                # y no elige una opción de la lista. Este es el segundo punto donde se
+                # resolvía el "1" del menú delivery/retiro como la opción 1.
                 elecciones = _extraer_eleccion_multiple(user_text)
+                if elecciones and (
+                    runtime._conv.delivery_pending
+                    or getattr(runtime, "delivery_pendiente", "")
+                ):
+                    logger.info(
+                        "backstop carrito: '%s' responde a la pregunta de ENTREGA — "
+                        "no es una elección de opción (rama sin-tools)",
+                        user_text[:40],
+                    )
+                    elecciones = None
                 for cantidad, opcion in (elecciones or []):
                     idx = opcion - 1
                     if not (0 <= idx < len(runtime.last_options)):
