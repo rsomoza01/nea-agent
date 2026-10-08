@@ -35,7 +35,9 @@ from app.state import (
 from app.tools import (
     ToolRuntime,
     active_tool_schemas,
+    _dosis_sin_unidad,
     _es_solo_saludo,
+    _extraer_dosis,
     _formatear_lista_productos,
     _fmt_ve,
     _limpiar_termino_medicamento,
@@ -1752,6 +1754,19 @@ async def _tool_loop(
                         runtime.corregido_a = None
                         result = await runtime.execute("buscar_medicamento", {"nombre": med})
                         prods = (result or {}).get("products") or []
+                        # FILTRAR POR LA DOSIS QUE PIDIÓ EL CLIENTE. El motor del catálogo
+                        # matchea por el fármaco e IGNORA el número, así que devuelve las
+                        # concentraciones mezcladas (medido: 'carvedilol 6.25 mg' → 5 de
+                        # 25 mg). El cliente escribió la dosis de cada medicamento; hay que
+                        # mostrarle solo la que pidió.
+                        dosis_pedida = _extraer_dosis(med) or _dosis_sin_unidad(med)
+                        if dosis_pedida:
+                            antes = len(prods)
+                            prods = _filtrar_por_dosis(prods, dosis_pedida)
+                            logger.info(
+                                "receta: '%s' dosis %s → %d de %d productos",
+                                med, dosis_pedida, len(prods), antes,
+                            )
                         # EL TÍTULO LLEVA LA GRAFÍA DEL CATÁLOGO, no la que escribió el
                         # cliente. Si hubo corrección por typo ('hidrocoticida' →
                         # 'hidroclorotiazida'), encabezar con el typo repetiría el error en
@@ -4579,6 +4594,40 @@ def _medicamentos_enumerados(texto: str) -> list[str]:
     return out
 
 
+def _filtrar_por_dosis(
+    products: list[dict[str, Any]], dosis: str
+) -> list[dict[str, Any]]:
+    """Deja solo los productos cuya CONCENTRACIÓN coincide con la dosis pedida.
+
+    POR QUÉ HACE FALTA FILTRAR LOCALMENTE: buscar con la dosis en el término NO basta.
+    Medido contra el catálogo real del provider 05:
+        'carvedilol 6.25 mg'      → 5 productos, TODOS de 25 mg   (0 coincidencias)
+        'hidroclorotiazida 12.5 mg' → 9 productos, 5 de 12.5 y 4 de 25
+        'candesartan 16 mg'       → 2 productos, ambos de 16 mg   (el único que filtra)
+    El motor del catálogo cae al grupo difuso y matchea por el FÁRMACO ignorando el número,
+    así que devuelve concentraciones mezcladas. Caso real: el cliente pidió 3 medicamentos
+    con su dosis y recibió todas las concentraciones de cada uno.
+
+    Si el filtro deja 0 productos NO se descarta todo: se devuelve la lista completa, porque
+    es mejor ofrecer las concentraciones disponibles (el cliente elige) que negar el
+    medicamento por una dosis que este catálogo quizá no maneja.
+    """
+    if not dosis or not products:
+        return products
+    objetivo = dosis.replace(",", ".").strip()
+    out: list[dict[str, Any]] = []
+    for p in products:
+        nom = str(p.get("producto") or p.get("nombre") or p.get("title") or "")
+        # Concentraciones escritas en el título: '12.5MG', '6,25', '80/12,5', '80 MG'.
+        nums = {
+            n.replace(",", ".")
+            for n in re.findall(r"\d+(?:[.,]\d+)?", nom)
+        }
+        if objetivo in nums:
+            out.append(p)
+    return out or products
+
+
 def _parece_lista_medicamentos(texto: str) -> bool:
     """True si la consulta ENUMERA 2+ medicamentos (aunque pida el precio).
 
@@ -4812,6 +4861,18 @@ def _parsear_medicamentos_receta(texto: str) -> list[str]:
         # receta y el agente respondía con una lista de medicamentos.
         if term and not _termino_es_medicamento_plausible(term):
             continue
+        # LA DOSIS SIN UNIDAD SE CONSERVA. `_extraer_termino_medicamento` descarta todo
+        # número que no vaya seguido de unidad, así que "Cardesartan de 16" daba
+        # 'cardesartan' y el catálogo devolvía 8 y 16 mg MEZCLADOS. Caso real (provider 05):
+        # el cliente pidió 3 medicamentos con su dosis sin escribir 'mg' y recibió todas
+        # las concentraciones de cada uno. Se asume mg (es lo que pidió el usuario) con las
+        # guardas de `_dosis_sin_unidad` (un decimal es dosis; '2 cajas' / 'x 30 tab' no).
+        if term:
+            sin_unidad = _dosis_sin_unidad(linea)
+            if sin_unidad and not re.search(
+                rf"\b{re.escape(sin_unidad)}\s*(?:mg|mcg|g|ml)\b", term.lower()
+            ):
+                term = f"{term} {sin_unidad} mg"
         if term and term not in vistos:
             vistos.add(term)
             out.append(term)

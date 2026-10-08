@@ -947,6 +947,56 @@ def _extraer_dosis(texto: str) -> str:
     return f"{m.group(1).replace(',', '.')} {m.group(2).replace('.', '')}"
 
 
+def _dosis_sin_unidad(texto: str) -> str:
+    """Dosis del texto ASUMIENDO mg, cuando el cliente la escribe sin unidad.
+
+    Caso real (provider 05): el cliente pidió 3 medicamentos cada uno con su dosis, sin 'mg':
+        "Dame precio  de hidrocoticida de 12.5
+         Cardesartan de 16
+         Cardevidol 6.25"
+    El pipeline descartaba los números (van sueltos, sin unidad) y el catálogo devolvía TODAS
+    las concentraciones mezcladas: hidroclorotiazida 12.5 y 25; candesartán 8 y 16; carvedilol
+    6.25, 12.5 y 25. El cliente había dicho la dosis de cada uno.
+
+    DOS GUARDAS, ambas medidas:
+      1. Un DECIMAL es siempre una dosis: un envase no se escribe "12.5" ni "6.25".
+      2. Un ENTERO se acepta solo si NO es una cantidad de compra/envase. 'el de 30 tabletas'
+         o '2 cajas' describen el ENVASE, no la concentración — asumir mg ahí mostraría un
+         producto equivocado.
+
+    Devuelve '' si no hay una dosis reconocible. NUNCA la unidad: el llamador decide (aquí se
+    asume mg, que es lo que pide el caso).
+    """
+    if not texto:
+        return ""
+    t = texto.strip().lower()
+    # Guarda 2: cantidad de compra o envase explícito → no es dosis.
+    if _RE_CANTIDAD_COMPRA_DOSIS.search(t) or _RE_X_ENVASE_DOSIS.search(t):
+        return ""
+    # Guarda 1: decimal → dosis segura.
+    m = re.search(r"\b(\d+[.,]\d+)\b", t)
+    if m:
+        return m.group(1).replace(",", ".")
+    # Entero: solo precedido de 'de'/'del' ('de 16'), o suelto tras el fármaco.
+    m = re.search(r"\b(?:de|del)\s+(\d{1,4})\b", t)
+    if m:
+        return m.group(1)
+    m = re.search(r"\b(\d{1,4})\s*(?:mg|mcg|g|ml)?\s*$", t)
+    if m and m.group(1):
+        return m.group(1)
+    return ""
+
+
+# Cantidad de COMPRA o envase: nunca es una dosis. Se usa en `_dosis_sin_unidad`.
+_RE_CANTIDAD_COMPRA_DOSIS = re.compile(
+    r"\b\d+\s*(?:cajas?|unidades?|frascos?|paquetes?|blisters?|tabs?|tabletas?|"
+    r"caps?|cápsulas?|capsulas?|comprimidos?|sobres?|ampollas?)\b",
+    re.IGNORECASE,
+)
+# El "x N" del título ('x 30 tab') es envase, no dosis.
+_RE_X_ENVASE_DOSIS = re.compile(r"\bx\s*\d{1,3}\b", re.IGNORECASE)
+
+
 def _variantes_typo(term: str, max_variantes: int | None = None) -> list[str]:
     """Genera variantes plausibles de un término mal escrito, para reintentar.
 
