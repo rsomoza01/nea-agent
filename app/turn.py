@@ -35,8 +35,10 @@ from app.state import (
 from app.tools import (
     ToolRuntime,
     active_tool_schemas,
+    _es_solo_saludo,
     _formatear_lista_productos,
     _fmt_ve,
+    _limpiar_termino_medicamento,
     _normalizar_tildes,
     _normalizar_unidad,
     _termino_es_medicamento_plausible,
@@ -2190,6 +2192,13 @@ _FILLER = {
     "una", "un", "en", "y", "o", "a", "si", "no", "como", "cuanto", "es",
     "son", "tiene", "tienen", "hay", "está", "estan", "disponible",
     "disponibles", "precio", "cuesta", "cuestan", "venden", "necesito",
+    # Formas del verbo PODER y otras conjugaciones que faltaban: la lista tenía
+    # 'puede'/'pueden'/'podrias' pero NO 'puedes', así que encabezaba la respuesta.
+    # Caso real (provider 27): "Buenas tardes, puedes darme precio de las gotas
+    # oftalmicas Clarasol." → el título salía con el verbo delante.
+    "puedes", "podrian", "podríamos", "podriamos", "se podra", "se podría",
+    "tienes", "tiene", "tienen", "tengo", "quisieras", "quieres", "quiere",
+    "quisiera", "necesitas", "necesita", "buscas", "busca", "buscamos",
     "busco", "buscando", "buscar", "buscas", "quiero", "quisiera", "consigo",
     "pueden", "consigues", "conseguir", "tengo", "tambien", "algo", "otro",
     "otra", "mas", "más", "cual", "cuales", "donde", "cuando", "quien",
@@ -2216,6 +2225,17 @@ _FILLER = {
     "menciona", "mencioname", "mencione", "cotiza", "cotizame", "cotizacion",
     "averigua", "averiguame", "averiguar", "consultar", "consulta", "consulto",
     "sabes", "sabe", "dice", "decir", "decirme", "saberme", "confirmame",
+    # FORMAS VERBALES CON PRONOMBRE (enclítico). La lista tenía el infinitivo
+    # ('dar') y la forma imperativa ('dame') no, así que el verbo ENCABEZABA la
+    # respuesta: caso real (provider 27)
+    #     "Buenas tardes, puedes darme precio de las gotas oftalmicas Clarasol."
+    #     → título "DARME GOTAS OFTALMICAS CLARASOL"
+    # Medido contra el catálogo: ninguna de estas formas aparece dentro de un nombre
+    # de producto. OJO: 'da' NO se añade — aparece dentro de 'BOCADILLO DE GUAYABA'
+    # y el matcher del catálogo es SUBSTRING.
+    "darme", "darte", "darnos", "darme", "damelo", "damela", "damelos", "damelas",
+    "dame", "damele", "regalame", "regalamelo", "regalas", "regale", "manejas",
+    "maneja", "consigues", "consigue", "consigueme", "podrias", "podriame",
 }
 
 # Preposiciones y artículos que pueden QUEDAR AL PRINCIPIO del término cuando el cliente
@@ -4536,9 +4556,26 @@ def _medicamentos_enumerados(texto: str) -> list[str]:
         else:
             # Un trozo sin medicamento reconocido puede ser continuación del anterior
             # ('valsartan 80' + 'hidroclorotiazida 12.5' describen la MISMA combinación).
+            #
+            # PERO tiene que PARECER un medicamento. Antes bastaba una palabra de 5+
+            # letras, y con eso se colaba CUALQUIER frase: en
+            #     "Buenas tardes, puedes darme precio de las gotas oftalmicas Clarasol."
+            # el SALUDO 'Buenas tardes' pasaba el filtro y el cliente recibía
+            #     ⚠️ No disponibles en el catálogo: BUENAS TARDES
+            # o sea el saludo presentado como un medicamento que no tenemos.
             limpio = " ".join(_sin_motivo(trozo).split())
-            if limpio and re.search(r"[a-záéíóúüñ]{5,}", limpio):
-                out.append(limpio)
+            if not limpio or not re.search(r"[a-záéíóúüñ]{5,}", limpio):
+                continue
+            # El motivo se quita ANTES de decidir: en 'puedes darme precio de las gotas
+            # oftalmicas Clarasol' lo que sobra es el verbo, no el fármaco.
+            cand = _limpiar_termino_medicamento(limpio) or limpio
+            # Un saludo ('buenas tardes') NO es un medicamento.
+            if _es_solo_saludo(cand) or _es_solo_saludo(limpio):
+                continue
+            # Título = el fármaco, no la frase del cliente ('gotas oftalmicas clarasol').
+            cand = _extraer_termino_medicamento(cand) or cand
+            if _termino_es_medicamento_plausible(cand):
+                out.append(cand)
     return out
 
 
