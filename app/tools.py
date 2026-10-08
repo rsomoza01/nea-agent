@@ -15,6 +15,7 @@ from typing import Any
 
 from app.crm import CrmConflict, CrmError, SlotTaken
 from app.relevancia import (
+    _norm,
     _token_cabeza_farmaco,
     filtrar_relevantes,
     hay_senal_de_farmaco,
@@ -2094,28 +2095,58 @@ class ToolRuntime:
         # "Bs 0,00" con `(i.precio_bs or 0)`.
         #
         # El dato SÍ existe: el CRM devuelve `precioBs` en el 100% de los productos
-        # (verificado: 10/10). La lista `last_options` solo lo tenía si el productId
-        # estaba ahí — cuando el LLM pasa otro SKU (o ninguno), el Bs se perdía.
+        # (verificado: 10/10).
         #
-        # Se busca el producto en el catálogo por su productId y, si aparece, se toma su
-        # `precioBs` REAL. Nunca se inventa: sin dato, se deja vacío y el formateador
-        # omite el monto (ver `_fmt_ve` en el resumen) en vez de mostrar "Bs 0,00".
-        if precio_bs is None and product_id and self._provider_id:
+        # DOS INTENTOS, por orden de fiabilidad:
+        #   1) por productId — exacto, pero el LLM a veces INVENTA el id
+        #      ('COLON VITAL LIFE X 6', 'tilodron-jbe-120ml' en la BD real), así que
+        #      este camino puede no encontrar nada.
+        #   2) por NOMBRE — el `producto` sí viene del catálogo. Se exige coincidencia
+        #      exacta (normalizada) para no colgarle el precio de otro medicamento.
+        #
+        # Nunca se inventa: sin dato, se deja vacío y el formateador OMITE el monto en
+        # vez de mostrar "Bs 0,00".
+        if precio_bs is None and self._provider_id and (product_id or producto):
             try:
                 data_bs = await self._ctx.crm.get_products(
-                    self._provider_id, q=producto or product_id, limit=8
+                    self._provider_id, q=producto or product_id, limit=10
                 )
-                for cand in data_bs.get("products") or []:
-                    if str(cand.get("productId") or "").strip() == str(product_id).strip():
-                        if cand.get("precioBs") is not None:
-                            precio_bs = cand.get("precioBs")
-                            if precio_usd is None and cand.get("precio") is not None:
-                                precio_usd = cand.get("precio")
-                            logger.info(
-                                "agregar_al_carrito: Bs recuperado del catálogo para "
-                                "'%s' (Bs %s)", producto or product_id, precio_bs,
-                            )
-                        break
+                candidatos = data_bs.get("products") or []
+                elegido = None
+                # 1) por productId (SKU real del catálogo)
+                if product_id:
+                    elegido = next(
+                        (c for c in candidatos
+                         if str(c.get("productId") or "").strip() == str(product_id).strip()),
+                        None,
+                    )
+                # 2) por NOMBRE exacto (normalizado): cubre el id inventado
+                if elegido is None and producto:
+                    objetivo = _norm(producto)
+                    elegido = next(
+                        (c for c in candidatos
+                         if _norm(str(c.get("producto") or c.get("nombre") or "")) == objetivo),
+                        None,
+                    )
+                if elegido is not None:
+                    if elegido.get("precioBs") is not None:
+                        precio_bs = elegido.get("precioBs")
+                    if precio_usd is None and elegido.get("precio") is not None:
+                        precio_usd = elegido.get("precio")
+                    # Si el id del LLM era inventado, se guarda el SKU REAL del catálogo:
+                    # así el carrito deduplica por producto y no por id alucinado.
+                    sku_real = str(elegido.get("productId") or "").strip()
+                    if sku_real and sku_real != str(product_id).strip():
+                        logger.info(
+                            "agregar_al_carrito: productId '%s' (no era un SKU) → '%s'",
+                            product_id, sku_real,
+                        )
+                        product_id = sku_real
+                    if precio_bs is not None:
+                        logger.info(
+                            "agregar_al_carrito: Bs recuperado del catálogo para "
+                            "'%s' (Bs %s)", producto or product_id, precio_bs,
+                        )
             except Exception as exc:
                 # Best-effort: sin Bs el resumen lo omite, pero el carrito funciona.
                 logger.warning(
