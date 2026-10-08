@@ -61,38 +61,62 @@ def _termino_busqueda_plausible(term: str) -> bool:
 # amor... verdad?"), y el LLM las extrae como si fueran fármacos.
 #
 # NO se usa `_MULETILLAS_HABLA` de turn.py: tools.py no puede importarlo (import circular).
-# Y NO se rechazan palabras sueltas: 'sol' es token REAL en 11 productos del catálogo
-# ('ACETAMINOFEN SOL GOTAS') y 'dias' aparece en 'DYMAZOL 6 DIAS'. El criterio es rechazar
-# solo cuando TODOS los tokens del término son muletillas — así 'venda sol' y
+#
+# LISTA MEDIDA CONTRA EL CATÁLOGO REAL: contiene solo las palabras que NO son token de
+# ningún producto del catálogo (33 de 35 verificadas). Se EXCLUYERON deliberadamente:
+#   'mi'   → token real de 'PAÑAL MI BEBE'
+#   'dias' → token real de 'DYMAZOL 6 DIAS'
+#   'sol'  → token real de 11 productos ('ACETAMINOFEN SOL GOTAS')
+# Un cliente que busque 'dias' o 'sol' solo no debe perder su producto.
+#
+# El gate exige que TODOS los tokens del término sean muletillas, así que 'venda sol' y
 # 'dymazol 6 dias' siguen pasando (tienen un token con cuerpo de fármaco).
 _MULETILLAS_HABLA_GATE = {
-    "amor", "verdad", "cierto", "buenas", "buenos", "tardes", "dias", "noches",
-    "saludos", "hola", "mi", "mijo", "mija", "linda", "lindo", "corazon",
+    "amor", "verdad", "cierto", "buenas", "buenos", "tardes", "noches",
+    "saludos", "hola", "mijo", "mija", "linda", "lindo", "corazon",
     "disculpe", "disculpa", "permiso", "mire", "mira", "vea", "oiga",
     "favor", "porfa", "gracias", "agradezco", "amable", "regalame", "deme",
     "entonces", "pues", "bueno", "okey", "okay",
 }
 
+# Muletillas que TAMBIÉN son token de algún producto real ('mi' en 'PAÑAL MI BEBE', 'dias'
+# en 'DYMAZOL 6 DIAS'). Cuentan para rechazar un término MULTIPALABRA ('buenos dias', 'mi
+# amor' — el saludo completo), pero NUNCA por sí solas: si el cliente escribe 'dias' o 'mi'
+# a secas, su producto existe y hay que buscarlo.
+_MULETILLAS_DEBILES = {"mi", "dias"}
+
 
 def _es_solo_muletilla_habla(term: str) -> bool:
-    """True si TODOS los tokens del término son muletillas del habla.
+    """True si el término es SOLO cortesía/coletilla del habla, no un medicamento.
 
     Caso real (conv 2834, provider 27): el cliente mandó una nota de voz —
     "Buenos días mi amor, en qué precio tienen la venda sol? La caja trae dos, verdad?" —
-    y el LLM extrajo dos "medicamentos" que son el saludo y la coletilla. Se consultaron
-    y el cliente recibió:
+    y el LLM extrajo dos "medicamentos" que son el saludo y la coletilla. Se consultaron y
+    el cliente recibió:
         ⚠️ No disponibles en el catálogo: DÍAS AMOR, VERDAD
-    Ni 'amor' ni 'verdad' son productos: medido contra el catálogo, no aparecen como token
-    en NINGÚN nombre de producto.
+    Ni 'amor' ni 'verdad' son productos: medido contra el catálogo, no son token de NINGÚN
+    nombre de producto.
 
-    Se exige que TODOS los tokens sean muletillas, nunca uno solo: 'sol' ES un token real
-    del catálogo, así que el rechazo solo es seguro cuando no queda ninguna palabra con
-    cuerpo de fármaco.
+    REGLA: todos los tokens son muletillas, con DOS salvedades medidas:
+      - un token FUERTE solo ('amor', 'gracias') → rechaza;
+      - un token DÉBIL solo ('dias', 'mi') → NO rechaza, porque 'DYMAZOL 6 DIAS' y
+        'PAÑAL MI BEBE' existen y el cliente escribiría eso literal;
+      - varios tokens, todos muletillas ('buenos dias', 'mi amor') → rechaza (es el saludo
+        completo; ninguno de sus tokens identifica un fármaco por separado).
+
+    Se exige que TODOS sean muletillas: 'venda sol' y 'dymazol 6 dias' siguen pasando
+    porque tienen un token con cuerpo de fármaco.
     """
     palabras = re.findall(r"[a-z0-9]+", _normalizar_tildes((term or "").lower()))
     if not palabras:
         return False
-    return all(w in _MULETILLAS_HABLA_GATE for w in palabras)
+    todas = _MULETILLAS_HABLA_GATE | _MULETILLAS_DEBILES
+    if not all(w in todas for w in palabras):
+        return False
+    # Un token DÉBIL solo no basta para rechazar: su producto existe en el catálogo.
+    if len(palabras) == 1 and palabras[0] in _MULETILLAS_DEBILES:
+        return False
+    return True
 
 
 # Saludos y cortesía que NUNCA son un medicamento. Si el LLM llama
