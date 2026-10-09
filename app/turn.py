@@ -1944,7 +1944,9 @@ async def _tool_loop(
                 trans_term_2 = _extraer_termino_transcripcion(user_text)
                 if trans_term_2:
                     term = trans_term_2
-                elif _parece_consulta_medicamento(user_text):
+                elif _parece_consulta_medicamento(user_text) and not _lead_esta_cerrando(
+                    _texto_cliente_sin_marcadores(user_text)
+                ):
                     term = _extraer_termino_medicamento(user_text)
                 # EL TÍTULO TIENE QUE SER EL FÁRMACO, NO LA FRASE. `_extraer_termino_medicamento`
                 # quita verbos de consulta y relleno, pero NO el ruido del HABLA (muletillas,
@@ -2295,6 +2297,17 @@ _FILLER = {
     # (La nota vieja del proyecto decía que 'dar' ya estaba filtrado; era falsa: solo estaba
     # en _PALABRAS_FUNCIONALES, que usa otro guard y no limpia el título.)
     "dar", "darme", "darte", "darnos", "darle", "denme", "den", "daria", "darias",
+    # VERBOS DE ENTREGA/RESPUESTA: el cliente que CIERRA dice "ya me diste el precio".
+    # Caso real (conv 2109, provider 19): "Ya me diste el precio, gracias" →
+    #     _extraer_termino_medicamento = 'diste'   ← ¡un verbo como término de búsqueda!
+    #     y el catálogo devolvió 1 producto por búsqueda DIFUSA; el agente inventó
+    #     "Asumí que buscas DISCOLAYTE" y le mostró COLAYTE SOBRE X 69,7 GR DISCOLAYTE.
+    # Sin estos verbos, el mensaje se queda sin término y NO se fuerza ninguna búsqueda.
+    # MEDIDO: ninguno aparece como token en un nombre de producto del catálogo.
+    "diste", "distes", "dio", "dieron", "entregaste", "entrego", "entregaron",
+    "mandaste", "mando", "mandaron", "enviaste", "envio", "enviaron",
+    "respondiste", "respondio", "contestaste", "contesto",
+    "indicaste", "indico", "dijiste", "dijo", "dijeron", "comentaste", "comento",
     # FUTURO/CONDICIONAL con que el cliente PREGUNTA ('¿Será que tienen X?',
     # '¿Podrá darme X?', '¿Habrá X?'). Caso real (conv 2287, provider 19):
     #     'Será que tienen vitamina e  de vivas' → el término salía 'será vitamina vivas',
