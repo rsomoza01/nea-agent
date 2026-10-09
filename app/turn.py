@@ -4647,6 +4647,65 @@ def _filtrar_por_dosis(
     return out or products
 
 
+# --- RECLAMO: el cliente corrige lo que YA recibió; no pide nada nuevo ---
+# Caso real (conv cv_5xcp1rqrsxiegmd4evcz):
+#     cliente: "Buenos días, eso no es lo que pedi"
+#     agente : "⚠️ No disponibles en el catálogo: DÍAS" + "PEDI" + 20 PEDIATRICOS
+# El mensaje es un RECLAMO. `_parece_lista_medicamentos` no lo cubría porque solo excluye
+# negativa y despedida, y un reclamo no es ninguna de las dos. Al trocearlo por la coma, las
+# piezas ('días', 'pedi') se consultaban como medicamentos.
+_RE_RECLAMO = re.compile(
+    r"(?:eso|esto|ese|esa)\s+no\s+(?:es|era|fue)\s+lo\s+que"
+    r"(?:\s+(?:pedi|pedí|queria|quería|quiero|solicite|solicité|pedia|pedir|mande|envie))?"
+    r"|no\s+es\s+lo\s+que\s+(?:pedi|pedí|queria|quería|quiero|solicite|solicité)"
+    r"|no\s+(?:era|es)\s+(?:eso|esto|lo\s+que)"
+    r"|yo\s+(?:pedi|pedí|queria|quería)\s+(?:otra|otro|esto|eso)"
+    r"|me\s+(?:diste|mando|enviaste|dieron)\s+otra\s+cosa"
+    r"|(?:otra|otro)\s+vez\s+(?:mal|equivocado)"
+    r"|(?:esta|está)\s+mal\s+(?:la\s+)?(?:respuesta|opción|busqueda|búsqueda)"
+    r"|no\s+era\s+(?:eso|ese|esta|este)",
+    re.IGNORECASE,
+)
+
+# --- CORTESÍA EXPLICATIVA: bendiciones y buenos deseos, sin datos de producto ---
+# Caso real (misma conversación, 02-Oct), cliente:
+#     "Buen día, y dios le bendiga su día, si puedes por favor verificar el nombre se
+#      escribe así somazina, es del grupo leti"
+# el agente buscó 'DEL GRUPO LETI' y 'DÍA' y respondió con 20 PEDIATRICOS. La consulta real
+# (SOMAZINA) ya se había atendido; esto es conversación.
+#
+# NO se filtra 'día'/'dias' como palabra: medido, es token de 'LINOFEME COMPRIMIDOS 21 DIAS'.
+# Se detecta la FRASE de bendición.
+_RE_BENDICION = re.compile(
+    r"(?:dios\s+le\s+bendiga|que\s+dios|bendiciones|dios\s+te\s+bendiga"
+    r"|que\s+(?:tengas?|pases?)\s+(?:un\s+)?(?:buen|feliz|lindo))",
+    re.IGNORECASE,
+)
+
+
+def _es_reclamo_o_cortesia(texto: str) -> bool:
+    """True si el mensaje es un RECLAMO o CORTESÍA, no una consulta de medicamento.
+
+    POR QUÉ: estos mensajes son conversación y el troceo por comas convierte sus pedazos en
+    "medicamentos" que se consultan y se presentan como no disponibles, con una lista de
+    productos que nadie pidió. Dos casos reales (conv cv_5xcp1rqrsxiegmd4evcz):
+        "Buenos días, eso no es lo que pedi"          → buscó 'días', 'pedi'
+        "Buen día, y dios le bendiga su día, ... es del grupo leti" → buscó 'del grupo leti', 'día'
+    en ambos el cliente recibió 20 productos PEDIATRICOS.
+
+    NO basta con filtrar las palabras: medido contra el catálogo, 'pedi' es token de
+    'APETININ JBE PEDI' y 'dias' de 'LINOFEME COMPRIMIDOS 21 DIAS'. Hay que reconocer el
+    MENSAJE, no la palabra.
+
+    Un reclamo o una bendición no piden un producto NUEVO. Si además trae un fármaco real
+    ('Buenos días, necesito atamel forte'), el término se busca por el camino normal.
+    """
+    if not texto:
+        return False
+    t = texto.strip()
+    return bool(_RE_RECLAMO.search(t) or _RE_BENDICION.search(t))
+
+
 def _medicamentos_con_dosis(texto: str) -> list[tuple[str, str]]:
     """Medicamentos de una consulta enumerada, cada uno con la dosis que el cliente pidió.
 
@@ -4697,6 +4756,27 @@ def _parece_lista_medicamentos(texto: str) -> bool:
     # respondía "No disponibles: DISCULPE VOY COMPRAR" más una lista de chocolates.
     if _es_negativa_o_despedida(texto):
         return False
+    # UN RECLAMO O UNA CORTESÍA TAMPOCO ES UNA LISTA. Casos reales (conv
+    # cv_5xcp1rqrsxiegmd4evcz): "Buenos días, eso no es lo que pedi" buscó 'días' y 'pedi', y
+    # "y dios le bendiga su día ... es del grupo leti" buscó 'del grupo leti' y 'día'. En
+    # ambos el cliente recibió 20 productos PEDIATRICOS que no pidió. Es conversación, y sus
+    # pedazos parecen medicamentos solo por el troceo.
+    #
+    # OJO: si el mensaje trae TAMBIÉN un fármaco real, sigue siendo consulta. Se exige que
+    # no haya un término de medicamento plausible en el texto.
+    if _es_reclamo_o_cortesia(texto):
+        # Se QUITAN los tramos que son reclamo/bendición y se mira si queda algún fármaco.
+        # Sin quitarlos, 'Buenos días, eso no es lo que pedi' dejaba el resto
+        # 'buenos dias pedi', que pasa el filtro de plausibilidad (3 palabras, ninguna
+        # funcional) aunque no sea un medicamento. Al quitar el reclamo queda 'Buenos días,'
+        # y ahí sí se ve que no pide nada.
+        #
+        # Así "no es lo que pedí, necesito atamel forte" SIGUE siendo consulta: al quitar el
+        # reclamo queda 'necesito atamel forte', con un fármaco real.
+        resto = _RE_BENDICION.sub(" ", _RE_RECLAMO.sub(" ", texto))
+        resto = _limpiar_termino_medicamento(_sin_motivo(resto)) or ""
+        if not _termino_es_medicamento_plausible(resto):
+            return False
 
     # Con separadores de enumeración: contar los medicamentos de cada trozo.
     if _RE_SEP_LISTA.search(texto):
