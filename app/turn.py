@@ -4562,8 +4562,21 @@ _VERBOS_MOTIVO = re.compile(
     re.IGNORECASE,
 )
 # Separadores de ENUMERACIÓN de medicamentos.
-_RE_SEP_LISTA = re.compile(r"[,;]|(?:\s+y\s+)|(?:\s+e\s+)|(?:ademas|además)",
-                            re.IGNORECASE)
+_RE_SEP_LISTA = re.compile(
+    r"[,;]"
+    r"|(?:\s+y\s+)"
+    # ' e ' es conjunción, PERO NO cuando es la VITAMINA E. Caso real (conv 2287,
+    # provider 19): "Será que tienen vitamina e  de vivas" se partía en
+    #     ['Será que tienen vitamina', 'de vivas']
+    # y cada trozo se buscaba como un medicamento distinto: 'será vitamina' → 0 (y el
+    # cliente recibía "⚠️ No disponibles: SERÁ VITAMINA") y 'vivas' → 5 productos VIVAX
+    # encabezados por 'VIVAS'. El cliente pedía VITAMINA E de la marca VIVAX, que ESTÁ en
+    # el catálogo ('VIT E 400 MG X 15 CAPS BLANDAS VIVAX').
+    # Se excluye con LOOKBEHIND ('vitamina' 8 letras, 'vit' 3: longitudes fijas, válidas).
+    r"|(?:(?<!vitamina)(?<!vit)\s+e\s+)"
+    r"|(?:ademas|además)",
+    re.IGNORECASE,
+)
 
 
 def _sin_motivo(texto: str) -> str:
