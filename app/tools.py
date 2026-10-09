@@ -226,6 +226,32 @@ _PALABRAS_FUNCIONALES = {
     "interesada", "interesado", "interes", "indicar", "indica", "indicame",
     "saber", "sabes", "conocer", "conozco", "averiguar", "consultar", "preguntar",
     "pregunta", "quiero", "quisiera", "necesito", "buscar", "buscando",
+    # FORMAS VERBALES CON LAS QUE EL CLIENTE PREGUNTA, no filtradas antes.
+    #
+    # MEDIDO contra el catálogo real (provider 19): NINGUNA de estas 48 formas aparece como
+    # palabra completa dentro de un nombre de producto, así que rechazarlas no borra ningún
+    # término legítimo. (Mismo método que con las muletillas: 'sol', 'pedi', 'dias', 'mi' se
+    # quedaron FUERA del gate precisamente por ser tokens reales.)
+    #
+    # Caso real (conv 2109, provider 19, 17:24:38):
+    #     cliente: "Ya me diste el precio, gracias"     (una CORTESÍA: ya tenía el precio)
+    #     LLM    : buscar_medicamento('diste')  -> 1 resultado
+    #     agente : "Asumí que buscas DISCOLAYTE 👍" + COLAYTE SOBRE X 69,7 GR DISCOLAYTE
+    # 'diste' pasó el gate porque NO estaba aquí, así que contaba como palabra "sustantiva";
+    # el matcher difuso lo llevó a DISCOLAYTE (la marca dentro de 'COLAYTE ... DISCOLAYTE'),
+    # una marca que el CLIENTE NUNCA ESCRIBIÓ. Otro tanto con 'sale' (11:11:03, 3 resultados).
+    #
+    # dar
+    "diste", "distes", "dio", "dieron", "das", "dan", "denme", "darme", "darte",
+    # salir / costar / valer
+    "sale", "salen", "salio", "salió", "costaba", "cuesta", "cuestan",
+    "valia", "valía", "valen", "costaria", "costaría",
+    # tener / haber / poder
+    "tenia", "tenía", "tuviera", "habia", "había", "podría",
+    # decir / querer / necesitar
+    "dice", "dijo", "dame", "queria", "quería", "necesitaba",
+    # cortesía
+    "porfa", "cuánto",
 }
 
 # Palabras que delatan un ACCESORIO/insumo médico, NO un medicamento. El
