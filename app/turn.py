@@ -2270,6 +2270,18 @@ _FILLER = {
     "darme", "darte", "darnos", "darme", "damelo", "damela", "damelos", "damelas",
     "dame", "damele", "regalame", "regalamelo", "regalas", "regale", "manejas",
     "maneja", "consigues", "consigue", "consigueme", "podrias", "podriame",
+    # FUTURO/CONDICIONAL con que el cliente PREGUNTA ('¿Será que tienen X?',
+    # '¿Podrá darme X?', '¿Habrá X?'). Caso real (conv 2287, provider 19):
+    #     'Será que tienen vitamina e  de vivas' → el término salía 'será vitamina vivas',
+    #     que da 0 resultados; sin el 'será' es 'vitamina vivas', que SÍ resuelve a
+    #     'VIT E 400 MG X 15 CAPS BLANDAS VIVAX' (el producto que pedía).
+    # Medido contra el catálogo real: NINGUNA de estas formas aparece como token en un nombre
+    # de producto, así que filtrarlas no borra ningún término legítimo.
+    "sera", "será", "seran", "serán", "seria", "sería", "serian", "serían",
+    "podra", "podrá", "podran", "podrán", "podria", "podría", "podrian", "podrían",
+    "habra", "habrá", "habran", "habrán", "tendra", "tendrá", "tendran", "tendrán",
+    "estara", "estará", "estaran", "estarán", "abran", "abrÁ", "abrá",
+    "quisiera", "querría", "quiza", "quizá", "quizas", "quizás", "acaso",
 }
 
 # Preposiciones y artículos que pueden QUEDAR AL PRINCIPIO del término cuando el cliente
