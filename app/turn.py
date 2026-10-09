@@ -1417,6 +1417,19 @@ async def _tool_loop(
                 and runtime.last_term
                 and _es_refinamiento_presentacion(user_text)
                 and not runtime.consulted_catalog
+                # EL MENSAJE NO DEBE TRAER SU PROPIO MEDICAMENTO. Si lo trae, es una
+                # CONSULTA NUEVA, no un refinamiento de la anterior.
+                #
+                # Caso real (conv 2287, provider 19): el cliente pidió la vitamina E y el
+                # título quedó 'VIVAS' (last_term='vivas'). 22 h después escribió
+                #     "Precio de airfen gotas ped"
+                # y el backstop compuso term = 'vivas' + 'gotas' = 'VIVAS GOTAS', devolviendo
+                # los 5 productos VIVAX otra vez. El cliente pedía AIRFEN, que estaba en su
+                # propio mensaje y el catálogo resuelve ('airfen' → 2 productos).
+                #
+                # 'gotas' es una FORMA, así que el mensaje pasaba por refinamiento; pero
+                # 'airfen' es un fármaco nuevo y manda.
+                and not _trae_medicamento_propio(user_text, runtime.last_term)
             ):
                 # Solo el refinamiento (mg/presentación), NO el user_text completo:
                 # "tienes acido folico de 10 mg" → "10 mg" (sin verbos ni duplicar
@@ -3049,6 +3062,62 @@ def _termino_sin_envase(termino: str, env: str) -> str:
         return termino
     limpio = re.sub(rf"\s+0*{re.escape(env)}\s*$", "", termino.strip())
     return limpio or termino
+
+
+def _trae_medicamento_propio(user_text: str, last_term: str) -> bool:
+    """True si el mensaje del cliente trae un MEDICAMENTO PROPIO (no solo una forma).
+
+    POR QUÉ EXISTE: el backstop de refinamiento compone `term = last_term + refinamiento`
+    para responder a "¿qué miligramo necesitas?". Eso es correcto cuando el cliente solo
+    precisa la presentación ("de 20 mg", "tabletas 650", "el de calox"). Pero si el mensaje
+    trae un fármaco NUEVO, es una CONSULTA NUEVA y usar el término viejo devuelve el producto
+    equivocado.
+
+    Caso real (conv 2287, provider 19):
+        last_term = 'vivas'   (del turno anterior, donde el título fue 'VIVAS')
+        cliente   = "Precio de airfen gotas ped"
+        compuesto = 'vivas' + 'gotas' = 'VIVAS GOTAS'  → 5 productos VIVAX
+    El cliente pedía AIRFEN (2 productos en el catálogo), que estaba en su propio mensaje.
+
+    CÓMO: se extrae el término del mensaje, se le quitan las FORMAS de presentación y las
+    palabras que YA están en `last_term`; si queda alguna palabra con cuerpo de fármaco, es
+    un medicamento nuevo.
+    """
+    if not user_text:
+        return False
+    propio = _extraer_termino_medicamento(user_text) or ""
+    if not propio.strip():
+        return False
+    # Palabras del mensaje que NO aportan un fármaco nuevo.
+    # OJO: aquí van TODAS las formas y TODOS los tamaños de envase, porque el cliente que
+    # solo precisa la presentación ("de 10 pastillas", "jarabe 120") está REFINANDO, no
+    # consultando. Cobertura medida con el caso real de BRASARTAN (conv 2714): si 'pastillas'
+    # no estuviera aquí, "No tienes de 10 pastillas?" quedaría bloqueado y el cliente con
+    # envase de 30 volvería a recibir el de 30.
+    formas = {
+        # formas farmacéuticas
+        "gotas", "jarabe", "jbe", "suspension", "susp", "crema", "gel", "spray",
+        "tabletas", "tableta", "tab", "tabs", "comprimidos", "comprimido", "pastillas",
+        "pastilla", "capsulas", "capsula", "cap", "caps", "cápsulas", "grageas", "perlas",
+        "ampolla", "ampollas", "inyectable", "supositorio", "supositorios", "solucion",
+        "pomada", "unguento", "sobres", "sobre", "polvo", "ovulos", "ovulo", "parche",
+        "locion", "shampoo", "enema", "jalea", "colirio", "gotero", "spray nasal",
+        # unidades de medida
+        "mg", "ml", "mcg", "gr", "gramos", "gramo", "unidades", "unidad", "cajas",
+        "caja", "tabletas.", "cc", "ui", "meq", "pct", "por",
+        # audiencia / presentación comercial
+        "pediatrica", "pediatrico", "pediatricas", "pediatricos", "ped", "pedi",
+        "adulto", "adulta", "adultos", "adultas", "junior", "infantil", "nino", "nina",
+        "forte", "plus", "duo", "retard", "grageas",
+        # palabras funcionales
+        "de", "del", "la", "el", "los", "las", "x", "para", "con", "sin",
+    }
+    previas = set(re.findall(r"[a-záéíóúüñ0-9]+", _normalizar_tildes((last_term or "").lower())))
+    nuevas = [
+        w for w in re.findall(r"[a-záéíóúüñ]{4,}", _normalizar_tildes(propio.lower()))
+        if w not in formas and w not in previas
+    ]
+    return bool(nuevas)
 
 
 def _es_refinamiento_presentacion(texto: str) -> bool:
