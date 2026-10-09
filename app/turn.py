@@ -361,7 +361,11 @@ async def run_turn(
         logger.info("turno %s: nada procesable en la ráfaga — silencio", identity)
         return
 
-    user_text = "\n".join(parts)
+    # El VOCATIVO inicial ('Robi, ...') se quita ANTES de todo: con la coma dentro se parte
+    # en dos trozos y el nombre acaba presentado como un medicamento no disponible. Caso real
+    # (conv 2109, provider 19): "Robi, me puedes dar el precio del beprospem" → el cliente
+    # veía "⚠️ No disponibles en el catálogo: ROBI".
+    user_text = "\n".join(_sin_vocativo(p) for p in parts)
     await ctx.store.add_message(
         conv.id, "user", user_text, wa_message_id=inbound[0].wa_message_id
     )
@@ -2127,6 +2131,14 @@ _FILLER = {
     "darme", "darte", "darnos", "darme", "damelo", "damela", "damelos", "damelas",
     "dame", "damele", "regalame", "regalamelo", "regalas", "regale", "manejas",
     "maneja", "consigues", "consigue", "consigueme", "podrias", "podriame",
+    # 'dar' y sus formas: MEDIDO — no estaban en _FILLER, _FILLER_INICIAL ni
+    # _VERBOS_MEDICAMENTO, así que encabezaban el título del medicamento. Caso real (conv 2109,
+    # provider 19): "me puedes dar el precio del beprospem" →
+    #     _extraer_termino_medicamento = 'dar del beprospem'  → el cliente veía
+    #     "DAR DEL BEPROSPEM" sobre los productos BEPROSPEN. Sin 'dar' queda 'beprospem'.
+    # (La nota vieja del proyecto decía que 'dar' ya estaba filtrado; era falsa: solo estaba
+    # en _PALABRAS_FUNCIONALES, que usa otro guard y no limpia el título.)
+    "dar", "darme", "darte", "darnos", "darle", "denme", "den", "daria", "darias",
     # FUTURO/CONDICIONAL con que el cliente PREGUNTA ('¿Será que tienen X?',
     # '¿Podrá darme X?', '¿Habrá X?'). Caso real (conv 2287, provider 19):
     #     'Será que tienen vitamina e  de vivas' → el término salía 'será vitamina vivas',
@@ -4507,6 +4519,58 @@ _RE_SEP_LISTA = re.compile(
 def _sin_motivo(texto: str) -> str:
     """Quita el vocabulario del MOTIVO (precio, cuánto cuesta, tienes...)."""
     return _VERBOS_MOTIVO.sub(" ", texto or "")
+
+
+def _sin_vocativo(texto: str) -> str:
+    """Quita un VOCATIVO inicial: el nombre de la persona a la que se habla.
+
+    Caso real (conv 2109, provider 19):
+        cliente: "Robi, me puedes dar el precio del beprospem"
+        agente : ⚠️ No disponibles en el catálogo: ROBI
+                 DAR DEL BEPROSPEM
+                 💊 1. BEPROSPEN 7 MG AMPOLLA X 1 ML C0N JER
+    El producto se encontró, pero el cliente veía 'ROBI' presentado como un medicamento que
+    no tenemos. 'Robi' no es un fármaco: es a quien el cliente le habla.
+
+    POR QUÉ: la COMA parte el mensaje en ['Robi', 'me puedes dar...'] y el camino de LISTA
+    busca cada trozo como un medicamento distinto. `_parsear_medicamentos_receta('Robi')`
+    devuelve ['robi'], así que el trozo no se descarta.
+
+    CUÁNDO: solo si (a) lo que precede a la coma son UNA O DOS palabras y (b) el resto es una
+    consulta COMPLETA (trae un verbo de consulta). Así las listas reales no se tocan:
+        'esoz, leprit y evigax'      → el resto no trae verbo  → NO se toca (sigue lista)
+        'atamel, ibuprofeno'         → el resto no trae verbo  → NO se toca
+        'Robi, me puedes dar ...'    → el resto trae 'dar'     → se quita el vocativo
+
+    DOS palabras, no una: el vocativo real casi nunca es un solo token. MEDIDO:
+        'mi amor, me das el omeprazol'  → con 1 palabra NO se tocaba y quedaba
+                                          ⚠️ No disponibles: AMOR (el mismo bug que 'ROBI')
+        'Buenas tardes, puedes darme precio de las gotas oftalmicas Clarasol'
+                                        → con 2 palabras se quita el saludo y el término sigue
+                                          siendo 'gotas oftalmicas clarasol' (verificado)
+    """
+    m = re.match(
+        r"^\s*((?:[A-Za-zÁÉÍÓÚÑÜáéíóúñü]+\s+){0,1}[A-Za-zÁÉÍÓÚÑÜáéíóúñü]{2,20})"
+        r"\s*,\s*(.+)$",
+        texto or "",
+        re.DOTALL,
+    )
+    if not m:
+        return texto
+    resto = m.group(2).strip()
+    if not resto:
+        return texto
+    tiene_verbo = bool(
+        re.search(_VERBOS_MEDICAMENTO.pattern, resto, re.IGNORECASE)
+        or re.search(_VERBOS_MOTIVO.pattern, resto, re.IGNORECASE)
+        or re.search(
+            r"\b(?:dar|dame|darme|darte|darnos|denme|puedes|podrias|podria|quiero|"
+            r"quisiera|necesito|busco|tienes|hay)\b",
+            resto,
+            re.IGNORECASE,
+        )
+    )
+    return resto if tiene_verbo else texto
 
 
 def _medicamentos_enumerados(texto: str) -> list[str]:
