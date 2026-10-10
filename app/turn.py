@@ -3932,6 +3932,20 @@ def _formato_no_canonico(texto: str, products: list[dict[str, Any]]) -> bool:
     lineas = [ln for ln in texto.splitlines() if "💊" in ln]
     if len(lineas) < 2:
         return True
+    # EL NÚMERO DE OPCIÓN. El formato canónico es '💊 N. NOMBRE', y el número no es
+    # decorativo: es lo que el cliente cita para pedir ("quiero 2 cajas de la opción 3").
+    #
+    # Caso real (FarmaUnion, provider 19): la respuesta traía
+    #     💊 GOTAS NASAL (AIRFEN) PEDIATRICA X 15 ML
+    #        $6,64  |  Bs 5.820,86
+    #     💊 GOTAS NASALES (AIRFEN) X 15 ML ADULT
+    #        $7,99  |  Bs 7.009,07
+    # El PRECIO estaba bien formado, así que el chequeo de abajo daba 'canónico' y este
+    # backstop no actuaba: el cliente recibía opciones SIN numerar y sin el bloque de cierre
+    # ('👉 Para agregar al carrito…', '🛒 ¿Otro medicamento?', '✅ LISTO'), imposible de citar.
+    sin_numero = [ln for ln in lineas if not re.search(r"💊\s*\d+\s*[.)]", ln)]
+    if sin_numero:
+        return True
     # Verificar que al menos la mayoría de las opciones tienen la línea de
     # precio en el formato 'USD | Bs' inmediatamente después.
     ok_formato = 0
