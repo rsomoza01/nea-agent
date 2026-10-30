@@ -1594,6 +1594,15 @@ _FORMA_CANONICA: dict[str, str] = {
     # SOLUCIÓN BUCAL. Caso real (provider 32, 2026-10-29): el cliente pidió "solución bucal",
     # el pedido se resolvía como "solución oral" y el aviso decía "No tengo SOLUNOVAL BUCAL en
     # solución oral" MIENTRAS listaba un SOL BUCAL. La forma bucal no estaba.
+    # 'SOL OFT' es como el catálogo escribe las gotas oftálmicas ('QUINOMAX 0,50% X 5ML
+    # SOL OFT OFTALMI'). Sin esto la forma pedida ('gotas oftálmicas', que la receta imprime
+    # en el paréntesis) no casaba y el agente avisaba "No tengo QUINOMAX en gotas oftálmicas"
+    # sobre un producto que ES solución oftálmica (provider 32, 2026-10-30).
+    "sol oft": "gotas oftálmicas", "sol oftalmica": "gotas oftálmicas",
+    "solucion oftalmica": "gotas oftálmicas", "solucion oftalmologica": "gotas oftálmicas",
+    "oftalmica": "gotas oftálmicas", "oftalmico": "gotas oftálmicas",
+    "gotas oftalmicas": "gotas oftálmicas", "gotas oftalmológicas": "gotas oftálmicas",
+    "colirio": "gotas oftálmicas", "colirios": "gotas oftálmicas",
     "bucal": "solución bucal", "bucales": "solución bucal",
     "solucion bucal": "solución bucal", "solución bucal": "solución bucal",
     "sol bucal": "solución bucal",
@@ -1667,6 +1676,13 @@ def _etiqueta_de_forma(titulo: str) -> str | None:
     if re.search(r"\b(gotas|gtas|gts)\b", t) and re.search(
         r"\b(oftalmic\w*|ocular\w*|colirio)\b", t
     ):
+        return "gotas oftálmicas"
+    # 'SOL OFT' / 'SOLUCION OFTALMICA': la forma oftálmica que el catálogo abrevia. Se exige
+    # la palabra de vehículo (sol/gotas/colirio) delante para NO leer el laboratorio
+    # 'OFTALMI' de las tabletas ('DICLOFENAC POTASICO 50MG X 10TAB OFTALMI').
+    if re.search(r"(?:^|[^a-z])(?:sol|solucion|gotas|gtas|colirio)\s*\.?\s*oft", t):
+        return "gotas oftálmicas"
+    if re.search(r"\bcolirios?\b", t):
         return "gotas oftálmicas"
     pruebas = (
         (r"\bsusp", "suspensión"),
