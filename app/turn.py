@@ -5734,8 +5734,62 @@ def _termino_de_un_envase(termino: str) -> str:
         limpio,
     )
     limpio = _RE_ADJ_ENVASE.sub(" ", limpio)
+    # Un CONTEO huérfano al final ('metformina 500 mg 30'): el número quedó separado de su
+    # 'tabletas' al limpiar el término.
+    limpio = re.sub(r"\s+\d{1,3}\s*$", "", limpio)
     limpio = re.sub(r"\s{2,}", " ", limpio).strip(" ,-")
     return limpio or termino
+
+
+def _todas_las_lineas(ocr: str) -> list[str]:
+    return [ln.strip() for ln in (ocr or "").splitlines() if ln.strip()]
+
+
+def _terminos_por_envase(raw: list[str]) -> list[str]:
+    """Un término por ENVASE cuando la foto trae varias cajas.
+
+    Soporta los dos formatos que devuelve el OCR con la misma foto:
+
+        Metformina 500 mg 30 tabletas recubiertas          ← todo en una línea
+        Metformina / 500 mg / 30 tabletas recubiertas      ← en tres líneas
+
+    El nombre pendiente se cierra con la dosis de su bloque y se limpia el conteo del envase.
+    """
+    out: list[str] = []
+    pendiente = ""
+    dosis_pend = ""
+    for ln in raw:
+        # La DOSIS va ANTES que la presentación: '500 mg' es una línea de presentación por
+        # vocabulario ('mg') y quedaba descartada, así que el nombre se cerraba sin dosis.
+        if _es_solo_dosis_y_forma(ln):
+            # Solo la DOSIS ('500 mg') se guarda. '30 tabletas recubiertas' también es
+            # "solo dosis y forma" y, si se guardaba, pisaba la dosis y el término quedaba
+            # en 'metformina' a secas.
+            if _linea_trae_dosis(ln) and pendiente and not _linea_trae_dosis(pendiente):
+                dosis_pend = ln
+            continue
+        if _es_linea_descriptiva(ln) or _es_linea_de_presentacion(ln):
+            continue
+        term = _limpiar_termino_medicamento(ln) or ln.lower()
+        if not term:
+            continue
+        if _linea_trae_dosis(ln):
+            out.append(_termino_de_un_envase(term))
+            pendiente, dosis_pend = "", ""
+        else:
+            if pendiente:
+                out.append(_termino_de_un_envase(f"{pendiente} {dosis_pend}".strip()))
+            pendiente, dosis_pend = term, ""
+    if pendiente:
+        out.append(_termino_de_un_envase(f"{pendiente} {dosis_pend}".strip()))
+    vistos: set[str] = set()
+    unicos: list[str] = []
+    for m in out:
+        nucleo = (m.split() or [""])[0].lower()
+        if nucleo and nucleo not in vistos:
+            vistos.add(nucleo)
+            unicos.append(m)
+    return unicos
 
 
 def _son_varios_envases(lineas: list[str]) -> bool:
@@ -5979,20 +6033,13 @@ async def _medicamentos_de_ocr(
     # veces; una caja de combinación la declara una sola vez. Sin esto, la regla de
     # "un producto cubre los componentes" se cumplía por palabras genéricas ('tabletas',
     # 'recubiertas') y las cuatro cajas se cotizaban como UNA.
-    if componentes and _son_varios_envases(lineas):
-        meds_multi = _parsear_medicamentos_receta("\n".join(lineas))
-        meds_multi = [
-            _termino_de_un_envase(m) for m in meds_multi if not _es_solo_dosis_y_forma(m)
-        ]
-        # Sin duplicados por núcleo: el mismo envase no puede salir dos veces.
-        _vistos: set[str] = set()
-        _unicos: list[str] = []
-        for m in meds_multi:
-            nucleo = (m.split() or [""])[0].lower()
-            if nucleo and nucleo not in _vistos:
-                _vistos.add(nucleo)
-                _unicos.append(m)
-        meds_multi = _unicos
+    # OJO: la señal se cuenta sobre el OCR CRUDO. Con la misma foto, el OCR puede devolver
+    # cada caja en UNA línea o en TRES ('Metformina' / '500 mg' / '30 tabletas recubiertas');
+    # en el formato de tres líneas, `_lineas_candidatas_medicamento` se queda solo con los
+    # nombres y la presentación desaparece, así que contar sobre las candidatas volvía a
+    # colapsar las cuatro cajas en una (medido en producción, 2026-10-30).
+    if componentes and _son_varios_envases(_todas_las_lineas(ocr)):
+        meds_multi = _terminos_por_envase(_todas_las_lineas(ocr))
         if len(meds_multi) >= 2:
             meds_multi = await _resolver_alternativas_de_receta(lineas, meds_multi, buscar)
             return meds_multi, "varios envases (cada uno declara su presentación)"
