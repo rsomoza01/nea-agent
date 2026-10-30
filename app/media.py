@@ -282,6 +282,10 @@ async def _image(ctx: AppContext, msg: InboundMessage) -> MediaPart:
     # (medido: FREEGELLS EXTRA FUERTE, JABON ANITA PEARL) ante un cliente que solo
     # mandó su pago. Se trata como OCR vacío: el marcador queda honesto y el agente
     # responde al TEXTO del cliente ("este es el pago"), no a la frase.
+    if ocr_text:
+        # Traza del OCR: sin esto, un fallo de clasificación obliga a adivinar qué leyó
+        # el modelo (las "4 cajas" se cotizaron como una y no había forma de ver el texto).
+        logger.info("media image: OCR = %r", ocr_text[:400])
     if ocr_text and parece_ocr_sin_medicamento(ocr_text):
         logger.info(
             "media image: el OCR no describe un medicamento (%r) — lo descarto",
