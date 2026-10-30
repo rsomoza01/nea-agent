@@ -3594,10 +3594,11 @@ class ToolRuntime:
                 + " El usuario pidió un PRINCIPIO ACTIVO que existe en varias "
                 "presentaciones con distinto miligramo: "
                 + opciones
-                + ". NO sueltes el grupo grande todavía. Primero pregúntale en "
-                "una línea amigable qué miligramos necesita. Cuando te responda, "
-                "consulta de nuevo filtrando ese miligremo. Si ya dio el miligrema, "
-                "no preguntes: muestra directamente lo que encaje."
+                + ". Abre con UNA línea amigable preguntando qué miligramo "
+                "necesita y, DEBAJO, copia el bloque obligatorio completo (el cliente "
+                "tiene que ver los precios; no lo sustituyas por la pregunta ni por un "
+                "resumen). Cuando te responda, consulta de nuevo filtrando ese miligramo. "
+                "Si ya dio el miligramo, no preguntes: muestra directamente lo que encaje."
             )
         # Distinto caso: varias marcas del mismo mg → sugerir elegir marca.
         if len(marcas) >= 2:
