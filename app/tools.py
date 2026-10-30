@@ -3529,7 +3529,23 @@ class ToolRuntime:
         # Lista ya formateada (ordenada por precio, con 💊) para que el LLM la
         # cite literalmente en vez de inventar formato o datos.
         lista = _formatear_lista_productos(products, termino or "Resultados")
-        base += f" Lista formateada (cítala tal cual, sin cambiar nombres ni precios):\n{lista}"
+        # FORMATO OBLIGATORIO, con el cierre incluido. El agente corre con modelos
+        # distintos (gpt-4o-mini, DeepSeek v4.1 Flash…): los más "creativos" reescribían la
+        # lista —numerada con guiones, sin 💊, sin bloque de cierre— y el backstop tenía que
+        # reemplazarla (medido: 'backstop formato: el LLM enumeró 5 productos sin el formato
+        # canónico'). Se pide el bloque exacto y se prohíbe tocarlo; la frase suelta, si
+        # hace falta, va ANTES.
+        base += (
+            " FORMATO OBLIGATORIO — devuelve este bloque TAL CUAL, sin reescribirlo:\n"
+            f"{lista}\n"
+            "👉 Para agregar al carrito: quiero X cajas de la opción Z\n"
+            "   Ejemplo: quiero 2 cajas de la opción 3\n"
+            "🛒 ¿Otro medicamento? Escríbeme el nombre y lo busco.\n"
+            "✅ Cuando termines, escribe LISTO y te muestro el resumen de tu pedido.\n"
+            "PROHIBIDO: cambiar 💊 por guiones o por '1)', unir el nombre y el precio en una "
+            "línea, quitar el bloque de cierre, traducir, resumir o renumerar. Si necesitas "
+            "decir algo (una corrección, un aviso), va en UNA línea ANTES del bloque."
+        )
         # Extraer miligramos (mg) de cada producto para detectar presentaciones distintas.
         miligramos = _extraer_miligramos(products)
         marcas = _extraer_marcas(products)
