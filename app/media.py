@@ -192,6 +192,24 @@ async def _audio(ctx: AppContext, msg: InboundMessage) -> MediaPart:
     )
 
 
+_RE_PALABRA_LECTURA = re.compile(r"[a-záéíóúüñ]{5,}")
+def _palabras_de_lectura(texto: str) -> set[str]:
+    return {
+        w
+        for w in _RE_PALABRA_LECTURA.findall((texto or "").lower())
+        if w not in {"tableta", "tabletas", "capsula", "capsulas", "gotas", "oftalmicas",
+                     "suspension", "solucion", "recubiertas", "recubierta", "por", "para"}
+    }
+
+
+def _lecturas_coinciden(a: str, b: str) -> bool:
+    """¿Las dos lecturas hablan de los MISMOS medicamentos? (Jaccard de palabras)"""
+    pa, pb = _palabras_de_lectura(a), _palabras_de_lectura(b)
+    if not pa or not pb:
+        return False
+    return len(pa & pb) / len(pa | pb) >= 0.5
+
+
 async def _image(ctx: AppContext, msg: InboundMessage) -> MediaPart:
     caption = _caption_line(msg, "la imagen")
     # Canal Evolution: el puente del CRM ya descargó la imagen y la inyecta
@@ -288,6 +306,29 @@ async def _image(ctx: AppContext, msg: InboundMessage) -> MediaPart:
                 ocr_text[:60], enfocado[:60],
             )
             ocr_text = enfocado
+
+    # DOBLE LECTURA DE LAS RECETAS IMPRESAS. Medido en provider 32 (2026-10-30): la MISMA
+    # foto de una lista de 5 medicamentos se leyó, en una llamada, como
+    #     'ciprofloxacina 500 / diclofenac 50 / quinomax / ocupred / lacrifort'
+    # y, en la siguiente, como
+    #     'probiotico 1cp / famotidina 40 mg / desobstruir crema / jabon neutro'
+    # (el agente cotizó FAMOTIDINA y JABON NEUTRO a un cliente que llevaba una receta de
+    # antibiótico y gotas oftálmicas). Si las dos lecturas no coinciden, NO se transcribe:
+    # es preferible pedir los nombres a inventar fármacos.
+    if ocr_text and not dudosa and parece_receta(ocr_text) and ocr is not None:
+        try:
+            segunda = (await ocr(data, mime_clean)).strip()
+        except Exception:
+            segunda = ""
+        if segunda and not parece_ocr_sin_medicamento(segunda):
+            if not _lecturas_coinciden(ocr_text, segunda):
+                logger.warning(
+                    "media image: dos lecturas NO coinciden (%r vs %r) — no se transcribe",
+                    ocr_text[:60], segunda[:60],
+                )
+                dudosa = True  # entra por el camino de "no se transcribe"
+                manuscrita = False
+                ocr_text = ""
 
     extra = ""
     if dudosa:
