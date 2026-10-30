@@ -61,6 +61,9 @@ class OpenAiLlm:
         base_url: str | None = None,
         transcribe_api_key: str | None = None,
         transcribe_base_url: str | None = None,
+        vision_model: str | None = None,
+        vision_api_key: str | None = None,
+        vision_base_url: str | None = None,
     ) -> None:
         # base_url ≠ None → proveedor OpenAI-compatible (p. ej. OpenRouter,
         # para el bench de modelos del 002). La transcripción de audio es una
@@ -77,6 +80,17 @@ class OpenAiLlm:
             )
         else:
             self._transcribe_client = self._client
+        # VISIÓN (OCR de fotos) puede vivir en OTRO proveedor que el chat: el modelo del
+        # chat puede no ver imágenes (DeepSeek v4.1 Flash). Sin configurar, se comporta
+        # como antes (mismo cliente y modelo).
+        self._vision_model = vision_model or model
+        if vision_api_key:
+            self._vision_client = AsyncOpenAI(
+                api_key=vision_api_key,
+                base_url=vision_base_url or "https://api.openai.com/v1",
+            )
+        else:
+            self._vision_client = self._client
         # Contadores de uso (para el bench de costos del 002): tokens reales
         # reportados por el proveedor, acumulados por instancia.
         self.usage = {"prompt": 0, "cached": 0, "completion": 0, "llamadas": 0}
@@ -191,8 +205,8 @@ class OpenAiLlm:
 
         uri = f"data:{mime};base64,{base64.b64encode(data).decode()}"
         try:
-            resp = await self._client.chat.completions.create(
-                model=self._model,
+            resp = await self._vision_client.chat.completions.create(
+                model=self._vision_model,
                 temperature=0.0,
                 messages=[
                     {
@@ -253,8 +267,8 @@ class OpenAiLlm:
         last_error: Exception | None = None
         for attempt in range(2):
             try:
-                resp = await self._client.chat.completions.create(
-                    model=self._model,
+                resp = await self._vision_client.chat.completions.create(
+                    model=self._vision_model,
                     # DETERMINISMO EN EL OCR. Sin fijar la temperatura el proveedor usa su
                     # valor por defecto (~1.0) y la MISMA foto devuelve lecturas distintas:
                     # medido con la caja de FEXOFENADINA CLORHIDRATO CALOX, dos pasadas

@@ -55,6 +55,13 @@ class Settings(BaseSettings):
     # no expone /audio/transcriptions (403). Vacío = usa el mismo cliente del chat.
     transcribe_api_key: str = ""
     transcribe_base_url: str = ""  # p.ej. https://api.groq.com/openai/v1
+    # Pro veedor SEPARADO para VISIÓN (OCR de fotos). El chat puede ir en un modelo de
+    # razonamiento SIN visión (DeepSeek v4.1 Flash en Ollama Cloud) y las fotos tienen que
+    # seguir leyéndose: sin esto, cambiar el modelo del chat deja ciego al agente para las
+    # recetas. Vacío = usa el mismo cliente/modelo del chat.
+    vision_model: str = ""
+    vision_api_key: str = ""
+    vision_base_url: str = ""
     history_window: int = 10
 
     # Guardarraíles y tiempos
