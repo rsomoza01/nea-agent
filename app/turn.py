@@ -5710,6 +5710,34 @@ def _linea_trae_dosis(linea: str) -> bool:
     return bool(_RE_DOSIS_EN_LINEA.search(linea or ""))
 
 
+_RE_CONTEO_ENVASE = re.compile(
+    r"(?i)\s*\b\d+\s*(tab|tabs|tabletas?|caps?|c[aá]psulas?|comp|comprimidos?|grageas?|"
+    r"sobres?|ampollas?|viales?|und|unidades?)\b"
+)
+_RE_ADJ_ENVASE = re.compile(r"(?i)\s*\b(recubiert[oa]s?|masticables?|efervescentes?)\b")
+
+
+def _termino_de_un_envase(termino: str) -> str:
+    """'metformina 500 mg 30 tabletas recubiertas' → 'metformina 500 mg'.
+
+    El conteo y el adjetivo del envase no son parte del nombre: dejarlos en el término
+    producía avisos absurdos del tipo '⚠️ No tengo RECUBIERTAS. De METFORMINA 500 MG 30
+    TABLETAS hay esto:' (provider 32, 2026-10-30).
+    """
+    limpio = _RE_CONTEO_ENVASE.sub(" ", termino or "")
+    # 'dapagliflozina 10 mg tabletas recubiertas' no trae conteo: la palabra del envase va
+    # sola y también sobra.
+    limpio = re.sub(
+        r"(?i)\s*\b(tabletas?|c[aá]psulas?|comprimidos?|grageas?|sobres?|ampollas?|"
+        r"viales?)\b",
+        " ",
+        limpio,
+    )
+    limpio = _RE_ADJ_ENVASE.sub(" ", limpio)
+    limpio = re.sub(r"\s{2,}", " ", limpio).strip(" ,-")
+    return limpio or termino
+
+
 def _son_varios_envases(lineas: list[str]) -> bool:
     """¿La foto tiene VARIOS envases (una caja por renglón) o UNA caja de combinación?
 
@@ -5953,7 +5981,18 @@ async def _medicamentos_de_ocr(
     # 'recubiertas') y las cuatro cajas se cotizaban como UNA.
     if componentes and _son_varios_envases(lineas):
         meds_multi = _parsear_medicamentos_receta("\n".join(lineas))
-        meds_multi = [m for m in meds_multi if not _es_solo_dosis_y_forma(m)]
+        meds_multi = [
+            _termino_de_un_envase(m) for m in meds_multi if not _es_solo_dosis_y_forma(m)
+        ]
+        # Sin duplicados por núcleo: el mismo envase no puede salir dos veces.
+        _vistos: set[str] = set()
+        _unicos: list[str] = []
+        for m in meds_multi:
+            nucleo = (m.split() or [""])[0].lower()
+            if nucleo and nucleo not in _vistos:
+                _vistos.add(nucleo)
+                _unicos.append(m)
+        meds_multi = _unicos
         if len(meds_multi) >= 2:
             meds_multi = await _resolver_alternativas_de_receta(lineas, meds_multi, buscar)
             return meds_multi, "varios envases (cada uno declara su presentación)"
