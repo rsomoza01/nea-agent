@@ -40,6 +40,7 @@ from app.state import (
 )
 from app.tools import (
     _es_letra_de_vitamina,
+    _tokens_con_decimal,
     ToolRuntime,
     active_tool_schemas,
     _dosis_sin_unidad,
@@ -7739,7 +7740,7 @@ def _extraer_termino_medicamento(texto: str) -> str | None:
     # 'de la opción 9' es una REFERENCIA A LA LISTA, no una dosis: el '9' no puede entrar
     # en el término (el catálogo recibía 'macrodantina vitamina c 9').
     texto = re.sub(r"\b(?:opci[oó]n|opciones|n[uú]mero)\s+\d+", " ", texto)
-    palabras = re.findall(r"[a-záéíóúüñ0-9]+", texto)
+    palabras = _tokens_con_decimal(texto)
     # La unidad HABLADA se normaliza ANTES de decidir ("nifedipina 30 miligramos"
     # → "nifedipina 30 mg"). Sin esto el 30 se descarta por ir seguido de una
     # palabra que no está en la lista de unidades y la dosis se pierde.
