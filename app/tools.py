@@ -437,7 +437,7 @@ def _termino_es_medicamento_plausible(term: str) -> bool:
         return False
     # Quitar tildes para comparar contra las funcionales (sin tildes).
     t_sin = t.replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u")
-    palabras = re.findall(r"[a-z0-9]+", t_sin)
+    palabras = _tokens_con_decimal(t_sin)
     if not palabras:
         return False
     # Una VÍA DE ADMINISTRACIÓN no es un medicamento: 'intraarticular' describe cómo se usa
@@ -705,6 +705,16 @@ _VIAS_ADMINISTRACION = {
 }
 
 
+# TOKEN CON DECIMAL: '12,5' y '12.5' son UNA concentración. Con `[a-z0-9]+` se partían en
+# '12' y '5', la dosis se leía como '5 mg' y el mensaje avisaba "No tengo de 5 mg. Lo tengo en:
+# 12.5 mg" sobre un producto de 12,5 mg (provider 32, 2026-10-30).
+_RE_TOKEN_CON_DECIMAL = re.compile(r"[a-záéíóúüñ0-9]+(?:[.,]\d+)?")
+
+
+def _tokens_con_decimal(texto: str) -> list[str]:
+    return [w.replace(",", ".") for w in _RE_TOKEN_CON_DECIMAL.findall((texto or "").lower())]
+
+
 def _limpiar_termino_medicamento(term: str) -> str:
     """Deja SOLO las palabras "sustantivas" (posible fármaco) del término.
 
@@ -731,7 +741,7 @@ def _limpiar_termino_medicamento(term: str) -> str:
     # 'de la opción 9' / 'la número 3' son una REFERENCIA A LA LISTA, no una dosis: si el
     # '9' sobrevive, el catálogo recibe 'macrodantina vitamina c 9' y no encuentra nada.
     t_sin = re.sub(r"\b(?:opci[oó]n|opciones|n[uú]mero)\s+\d+", " ", t_sin)
-    palabras = re.findall(r"[a-z0-9]+", t_sin)
+    palabras = _tokens_con_decimal(t_sin)
     # La forma HABLADA de la unidad ("miligramos") se traduce a su abreviatura
     # ("mg") ANTES de decidir. Sin esto el número que la precede se descarta por
     # corto (len < 3) y la dosis se pierde: 'nifedipina 30 miligramos' →
@@ -1292,6 +1302,102 @@ def _dedupe_por_nombre(products: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if prev is None or (isinstance(precio, (int, float)) and precio < (prev.get("precio") or 0)):
             mejores[n] = p
     return list(mejores.values())
+
+
+_RE_UNIDADES_NOMBRE = {
+    "mg", "mcg", "gr", "g", "ml", "cc", "ui", "kg", "meq",
+    "tab", "tabs", "tableta", "tabletas", "cap", "caps", "capsula", "capsulas",
+    "comp", "comprimido", "comprimidos", "gragea", "grageas", "sobre", "sobres",
+    "amp", "ampolla", "ampollas", "vial", "viales", "und", "unid", "unidad", "unidades",
+    "recubierta", "recubiertas", "recubierto", "recubiertos", "masticable", "masticables",
+    "efervescente", "efervescentes", "x", "de", "con", "lp",  # 'lp' se re-añade abajo
+}
+_RE_CANTIDAD_ENVASE = re.compile(
+    r"(?:x\s*)?(\d{1,4})\s*"
+    r"(tab|tabs|tabletas?|caps?|c[aá]psulas?|comp|comprimidos?|grageas?|sobres?|"
+    r"ampollas?|viales?|und|unidades?)\b",
+    re.IGNORECASE,
+)
+
+
+def _separa_pegados(nombre: str) -> str:
+    """'25MGX20COMP' → '25 MG X 20 COMP'; '12.5MG' → '12.5 MG'.
+
+    El catálogo pega número y unidad, y sin separarlos el tokenizador devuelve '12.5mg' como
+    si fuera una palabra: la dosis no se reconoce y la clave de presentación no agrupa.
+    OJO: no se usa `_norm` porque colapsa el punto decimal ('12.5' → '12 5') y entonces la
+    dosis se lee como '5 mg'.
+    """
+    n = (nombre or "").lower()
+    n = n.replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u")
+    n = re.sub(r"(?<=\d)([a-z])", r" \1", n)
+    n = re.sub(r"([a-z])(?=\d)", r"\1 ", n)
+    n = re.sub(r"\b(mg|ml|mcg|gr|g|ui|meq|cc)\s*x\b", r"\1 x", n)
+    n = re.sub(r"\s{2,}", " ", n)
+    return n.strip()
+
+
+_CALIFICADORES_DE_NOMBRE = {
+    "lp", "forte", "plus", "duo", "retard", "jr", "ped", "pediatrico", "adulto",
+    "infantil", "susp", "sol", "gel", "crema", "mr", "od", "sr", "xr",
+}
+
+
+def _clave_de_presentacion(
+    p: dict[str, Any], universo: list[dict[str, Any]] | None = None
+) -> tuple:
+    """(fármaco sin marca, dosis, cantidad de envase).
+
+    El nombre se reduce a sus DOS primeras palabras útiles (molécula + sal, o 'metformina lp'):
+    el resto del título es laboratorio o adorno ('DROTAFARMA', 'NEO QUIMICA', 'ANGELUS'). Así
+    'HIDROCLOROTIAZIDA 12.5MG X 10 TABLETAS DROTAFARMA' y 'HIDROCLOROTIAZIDA 12.5 MG X 10 COMP
+    (SPEFAR)' son la MISMA presentación para el cliente (provider 32, 2026-10-30).
+    """
+    nombre = _separa_pegados(p.get("producto") or "")
+    tokens = _tokens_con_decimal(nombre)
+    utiles = [
+        w for w in tokens
+        if w not in _RE_UNIDADES_NOMBRE
+        and not re.fullmatch(r"[\d.,]+", w)
+    ]
+    # El núcleo es la MOLÉCULA y, si la segunda palabra la califica de verdad (sal o
+    # cualificador), también esa: 'LOSARTAN POTASICO' ≠ 'LOSARTAN'; 'METFORMINA LP' ≠
+    # 'METFORMINA'. Cualquier otra segunda palabra es el LABORATORIO ('... DROTAFARMA',
+    # '... ANGELUS', '... SPEFAR') y se descarta.
+    nucleo = utiles[:1]
+    if len(utiles) >= 2 and (
+        utiles[1] in _SALES_FARMACEUTICAS or utiles[1] in _CALIFICADORES_DE_NOMBRE
+    ):
+        nucleo = utiles[:2]
+    dosis = _extraer_dosis(nombre)
+    m = _RE_CANTIDAD_ENVASE.search(nombre)
+    cantidad = m.group(1) if m else ""
+    return (tuple(nucleo), dosis, cantidad)
+
+
+def _dedupe_por_presentacion(
+    products: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Una sola opción por (fármaco, dosis, cantidad), la MÁS BARATA.
+
+    El catálogo lista la misma presentación de cinco laboratorios con precios distintos; al
+    cliente le sirve ver la más barata, no cinco renglones idénticos.
+    """
+    mejores: dict[tuple, dict[str, Any]] = {}
+    orden: list[tuple] = []
+    for p in products:
+        try:
+            clave = _clave_de_presentacion(p, products)
+        except Exception:  # noqa: BLE001
+            clave = (str(p.get("producto")), "", "")
+        precio = p.get("precio")
+        prev = mejores.get(clave)
+        if prev is None:
+            mejores[clave] = p
+            orden.append(clave)
+        elif isinstance(precio, (int, float)) and precio < (prev.get("precio") or 0):
+            mejores[clave] = p
+    return [mejores[k] for k in orden]
 
 
 def _es_accesorio_medico(p: dict[str, Any]) -> bool:
@@ -2966,6 +3072,16 @@ class ToolRuntime:
         # farmacia/precio). Quedarse con el de MENOR precio evita listas de 20
         # con 14 duplicados idénticos.
         products = _dedupe_por_nombre(products)
+        # Y una sola vez por (fármaco, dosis, cantidad): la misma presentación de cinco
+        # laboratorios distintos es UN renglón (el más barato). Pedido del usuario,
+        # 2026-10-30: "filtrar de todas las opciones con el mismo nombre y mismo mg, la marca".
+        _antes = len(products)
+        products = _dedupe_por_presentacion(products)
+        if len(products) != _antes:
+            logger.info(
+                "buscar_medicamento: %d presentaciones repetidas por laboratorio descartadas "
+                "(%d → %d)", _antes - len(products), _antes, len(products),
+            )
         # FAIL-SAFE del alias (F14.4): si la grafía canónica no dio NADA en este
         # catálogo, se reintenta con la grafía ORIGINAL del cliente y tolerancia
         # a typos. Un alias solo puede ayudar: nunca puede esconder un resultado
