@@ -2860,6 +2860,26 @@ SALUDO_TIEMPO_T = {
     "nochecita", "medio dia", "medio dia",
 }
 
+# BENDICIONES_T AL SALUDAR: "Hola buen día, Dios le bendiga" no es una línea de productos
+# (provider 32, 2026-10-30: el agente cotizó COLLAR DIOS / COLLAR PERLA FE CORAZON DIOS
+# para una receta de 5 medicamentos que venía en la foto).
+BENDICIONES_T = {
+    "dios", "diosito", "bendiga", "bendice", "bendecir", "bendecida", "bendecido",
+    "bendecidos", "jesus", "jesús", "cristo", "virgen", "amen", "amén", "salmo",
+    "oracion", "oración", "bendicion", "bendiciones",
+}
+
+# «ME DAN EL PRESUPUESTO DE ESTOS MEDICAMENTOS»: el verbo de la petición y el
+# demostrativo no son el nombre de nada. Sin esto quedaba 'dad estos' como término
+# (provider 32, 2026-10-30).
+DEMOSTRATIVOS_T = {
+    "dad", "dan", "dame", "danos", "da", "den", "denme", "deme", "darme", "darnos",
+    "estos", "estas", "este", "esta", "esto", "esos", "esas", "eso", "aquel",
+    "aquellos", "aquellas", "aquella", "dichos", "dichas", "mencionados",
+    "mencionadas", "indicados", "indicadas", "referidos", "referidas", "antelacion",
+    "antelación", "sus", "mis",
+}
+
 _FILLER = {
     "hola", "buenas", "buen", "buenos", "buena", "dia", "dias", "tardes",
     "noches", "gracias", "por", "favor", "quisiera", "podria", "puede",
@@ -2877,6 +2897,8 @@ _FILLER = {
     *COMPRENSION_T,
     *FELICITACION_T,
     *SALUDO_TIEMPO_T,
+    *BENDICIONES_T,
+    *DEMOSTRATIVOS_T,
     "siguiente", "siguientes", "medicamento", "medicamentos", "presupuesto",
     # RÓTULOS DEL CAMPO: el OCR devuelve '**Nombre del medicamento:** Fexofenadina
     # Clorhidrato CALOX' y el término quedaba 'nombre del fexofenadina clorhidrato calox'.
@@ -5786,6 +5808,58 @@ def _dosis_unica_del_envase(lineas: list[str]) -> str:
     return vistas[0] if len(vistas) == 1 else ""
 
 
+_RE_ALTERNATIVAS = re.compile(r"\s/\s|\s+o\s+", re.IGNORECASE)
+
+
+async def _resolver_alternativas_de_receta(
+    lineas: list[str], meds: list[str], buscar: Any
+) -> list[str]:
+    """Cambia cada línea con alternativas ('A / B o C') por la PRIMERA marca que exista.
+
+    No se inventan marcas: si ninguna está en el catálogo, se deja el primer candidato para
+    que el mensaje pueda decir honestamente que no está.
+    """
+    con_alternativas = [ln for ln in lineas if _RE_ALTERNATIVAS.search(ln or "")]
+    if not con_alternativas:
+        return meds
+    nuevos: list[str] = []
+    for ln in lineas:
+        if not _RE_ALTERNATIVAS.search(ln or ""):
+            continue
+        sin_par = re.sub(r"\([^)]*\)", " ", ln)
+        candidatos = [
+            c.strip(" .-,;")
+            for c in _RE_ALTERNATIVAS.split(sin_par)
+            if c and c.strip(" .-,;")
+        ]
+        elegido = ""
+        for cand in candidatos:
+            term = _limpiar_termino_medicamento(cand) or cand.lower()
+            if not term or _es_solo_dosis_y_forma(term):
+                continue
+            try:
+                prods = await buscar(term)
+            except Exception:  # noqa: BLE001
+                prods = []
+            if prods:
+                elegido = term
+                logger.info("receta: alternativa '%s' → '%s' (está en el catálogo)", cand, term)
+                break
+        if not elegido and candidatos:
+            elegido = _limpiar_termino_medicamento(candidatos[0]) or candidatos[0].lower()
+            logger.info("receta: ninguna alternativa de '%s' está — aviso con la primera", ln[:40])
+        if not elegido:
+            continue
+        # Sustituye el término que salió de ESTA línea (si salió) y no lo duplica.
+        ya = [m for m in meds if elegido.split()[0] in m.lower()]
+        if ya:
+            for m in ya:
+                meds[meds.index(m)] = elegido
+            continue
+        nuevos.append(elegido)
+    return meds + nuevos
+
+
 async def _medicamentos_de_ocr(
     ocr: str, buscar: Any
 ) -> tuple[list[str], str]:
@@ -5962,6 +6036,11 @@ async def _medicamentos_de_ocr(
         meds = _parsear_medicamentos_receta(
             "\n".join(_lineas_lista_medicamentos(ocr))
         )
+    # ALTERNATIVAS EN UNA LÍNEA: "LACRIFORT / HUMED / TOPTEAR / LAGRIOTOL (gotas
+    # oftálmicas)" u "OCUPRED O PREDNISONA (gotas oftálmicas)". El cliente ofrece VARIAS
+    # marcas para lo mismo y espera el precio de la que haya; buscar la línea entera como
+    # un nombre (o descartarla) pierde el renglón. Caso real (provider 32, 2026-10-30).
+    meds = await _resolver_alternativas_de_receta(lineas, meds, buscar)
     # UNA DOSIS Y UNA FORMA NO SON UN MEDICAMENTO. Provider 32, 2026-10-29 (foto del
     # UROCIT): el OCR se partió en cuatro y se buscó '1080 mg tableta' (0 productos →
     # "No disponibles en el catálogo: 1080 MG TABLETA") y '10 meq tableta', que el matcher
