@@ -5697,6 +5697,37 @@ def _ES_FORMA_FARMACEUTICA(w: str) -> bool:
     ))
 
 
+_RE_DECLARA_ENVASE = re.compile(
+    r"(?i)\b(tabletas?|tabs?|c[aá]psulas?|caps?|comprimidos?|comp|grageas?|sobres?|"
+    r"ampollas?|viales?|vial)\b"
+)
+
+
+def _declaraciones_de_envase(lineas: list[str]) -> int:
+    """¿Cuántas líneas declaran el contenido de UN envase ('30 tabletas recubiertas')?
+
+    Una CAJA lo declara UNA vez. Cuatro cajas en la misma foto lo declaran CUATRO veces
+    (caso real, provider 32, 2026-10-30: metformina + dapagliflozina + losartán +
+    hidroclorotiazida en una sola imagen se cotizaron como UN producto y el cliente solo
+    vio la metformina).
+    """
+    total = 0
+    for ln in lineas:
+        l = ln or ""
+        if not _RE_DECLARA_ENVASE.search(l):
+            continue
+        # '"(10 mEq por tableta)"' describe la DOSIS POR UNIDAD, no el contenido del envase:
+        # contarla hacía que la caja del UROCIT pareciera dos envases.
+        if re.search(r"\(\s*\d", l) or re.search(
+            r"(?i)\b(por|per)\s+(tabletas?|c[aá]psulas?|comprimidos?)", l
+        ):
+            continue
+        if not re.search(r"\d", l):
+            continue
+        total += 1
+    return total
+
+
 def _es_solo_dosis_y_forma(termino: str) -> bool:
     """¿El término NO nomtra fármaco: es solo números, unidades y formas?
 
@@ -5886,6 +5917,17 @@ async def _medicamentos_de_ocr(
     term = " ".join(re.findall(r"[a-záéíóúüñ0-9]+", nombre.lower()))
     componentes = lineas[1:]
 
+    # VARIOS ENVASES EN LA MISMA FOTO. Cuatro cajas apiladas declaran su presentación cuatro
+    # veces; una caja de combinación la declara una sola vez. Sin esto, la regla de
+    # "un producto cubre los componentes" se cumplía por palabras genéricas ('tabletas',
+    # 'recubiertas') y las cuatro cajas se cotizaban como UNA.
+    if componentes and _declaraciones_de_envase(lineas) >= 2:
+        meds_multi = _parsear_medicamentos_receta("\n".join(lineas))
+        meds_multi = [m for m in meds_multi if not _es_solo_dosis_y_forma(m)]
+        if len(meds_multi) >= 2:
+            meds_multi = await _resolver_alternativas_de_receta(lineas, meds_multi, buscar)
+            return meds_multi, "varios envases (cada uno declara su presentación)"
+
     if term:
         try:
             productos = await buscar(term)
@@ -5935,10 +5977,19 @@ async def _medicamentos_de_ocr(
                 comp for comp in componentes
                 if not _es_linea_descriptiva(comp) and _comp_es_otro_farmaco(comp)
             ]
+            def _palabras_de_farmaco(comp: str) -> list[str]:
+                # Las palabras de presentación ('tabletas', 'recubiertas', 'cápsulas') NO
+                # identifican a otro fármaco: con ellas la cobertura se cumplía sola y
+                # cuatro cajas distintas pasaban por una. Ver `_declaraciones_de_envase`.
+                return [
+                    w for w in re.findall(r"[a-záéíóúüñ]{5,}", comp.lower())
+                    if w not in _PALABRAS_PRESENTACION_ENVASE
+                ]
+
             for prod in productos:
                 if all(
-                    any(es_relevante(w, prod)
-                        for w in re.findall(r"[a-záéíóúüñ]{5,}", comp.lower()))
+                    (not _palabras_de_farmaco(comp))
+                    or any(es_relevante(w, prod) for w in _palabras_de_farmaco(comp))
                     for comp in utiles_componentes
                 ):
                     # El término lleva también los componentes que el producto cubre
