@@ -5703,6 +5703,36 @@ _RE_DECLARA_ENVASE = re.compile(
 )
 
 
+_RE_DOSIS_EN_LINEA = re.compile(r"\d+(?:[.,]\d+)?\s*(?:mg|mcg|gr|g|ml|ui|meq)\b", re.I)
+
+
+def _linea_trae_dosis(linea: str) -> bool:
+    return bool(_RE_DOSIS_EN_LINEA.search(linea or ""))
+
+
+def _son_varios_envases(lineas: list[str]) -> bool:
+    """¿La foto tiene VARIOS envases (una caja por renglón) o UNA caja de combinación?
+
+    Dos señales, y basta con una:
+
+    1. La presentación declarada más de una vez ('30 tabletas recubiertas').
+    2. La PRIMERA línea ya trae dosis y hay 2+ líneas con dosis. En una caja de combinación
+       el primer renglón es la MARCA a secas ('Fin-Al-Grip FORTE', 'UROCIT', 'RIVAROXABAN')
+       y las dosis vienen en los componentes de abajo; en una foto de varias cajas cada
+       renglón es un producto completo ('Metformina 500 mg', 'Dapagliflozina 10 mg'…).
+
+    La señal 2 existe porque el OCR a veces omite la presentación: medido con la foto de 4
+    cajas, una de cada cuatro pasadas devolvía solo 'Metformina 500 mg / Dapagliflozina
+    10 mg / …' y el agente volvía a cotizar una sola.
+    """
+    if not lineas:
+        return False
+    if _declaraciones_de_envase(lineas) >= 2:
+        return True
+    con_dosis = sum(1 for ln in lineas if _linea_trae_dosis(ln))
+    return con_dosis >= 2 and _linea_trae_dosis(lineas[0])
+
+
 def _declaraciones_de_envase(lineas: list[str]) -> int:
     """¿Cuántas líneas declaran el contenido de UN envase ('30 tabletas recubiertas')?
 
@@ -5921,7 +5951,7 @@ async def _medicamentos_de_ocr(
     # veces; una caja de combinación la declara una sola vez. Sin esto, la regla de
     # "un producto cubre los componentes" se cumplía por palabras genéricas ('tabletas',
     # 'recubiertas') y las cuatro cajas se cotizaban como UNA.
-    if componentes and _declaraciones_de_envase(lineas) >= 2:
+    if componentes and _son_varios_envases(lineas):
         meds_multi = _parsear_medicamentos_receta("\n".join(lineas))
         meds_multi = [m for m in meds_multi if not _es_solo_dosis_y_forma(m)]
         if len(meds_multi) >= 2:
