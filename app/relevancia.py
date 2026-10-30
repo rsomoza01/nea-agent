@@ -88,6 +88,26 @@ SALUDO_TIEMPO_R = {
     "nochecita", "medio dia", "medio dia",
 }
 
+# BENDICIONES_R AL SALUDAR: "Hola buen día, Dios le bendiga" no es una línea de productos
+# (provider 32, 2026-10-30: el agente cotizó COLLAR DIOS / COLLAR PERLA FE CORAZON DIOS
+# para una receta de 5 medicamentos que venía en la foto).
+BENDICIONES_R = {
+    "dios", "diosito", "bendiga", "bendice", "bendecir", "bendecida", "bendecido",
+    "bendecidos", "jesus", "jesús", "cristo", "virgen", "amen", "amén", "salmo",
+    "oracion", "oración", "bendicion", "bendiciones",
+}
+
+# «ME DAN EL PRESUPUESTO DE ESTOS MEDICAMENTOS»: el verbo de la petición y el
+# demostrativo no son el nombre de nada. Sin esto quedaba 'dad estos' como término
+# (provider 32, 2026-10-30).
+DEMOSTRATIVOS_R = {
+    "dad", "dan", "dame", "danos", "da", "den", "denme", "deme", "darme", "darnos",
+    "estos", "estas", "este", "esta", "esto", "esos", "esas", "eso", "aquel",
+    "aquellos", "aquellas", "aquella", "dichos", "dichas", "mencionados",
+    "mencionadas", "indicados", "indicadas", "referidos", "referidas", "antelacion",
+    "antelación", "sus", "mis",
+}
+
 _FUNCIONALES = {
     # RÓTULOS DEL CAMPO que el OCR devuelve pegados al contenido
     # ('nombre del medicamento fexofenadina clorhidrato calox'). Sin esto se cuelan como
@@ -100,6 +120,8 @@ _FUNCIONALES = {
     *COMPRENSION_R,
     *FELICITACION_R,
     *SALUDO_TIEMPO_R,
+    *BENDICIONES_R,
+    *DEMOSTRATIVOS_R,
     "medicamento", "medicamentos",
 
     # ACCESORIOS Y CONSUMIBLES DE UN EQUIPO, NO MEDICAMENTOS. Caso real (provider 32,
