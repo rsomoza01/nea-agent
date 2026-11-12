@@ -8,9 +8,18 @@
 > **Actualización 2026-11-12 (2ª iteración):** el propietario habilitó Docker y respondió
 > 1/2/8 de forma estimada. Con ello se **desbloqueó la parte D de ADR-0007** (reserva
 > atómica del intento), que se diseñó, implementó (puerto + referencia en memoria) y
-> **validó contra Postgres desechable**. La migración queda como propuesta validada (no
-> aplicada), por ser las decisiones no definitivas. Lo que sigue BLOCKED: el cableado al
-> hot path y los casos que requieren **CRM sandbox** (timeout/revalidación/CRM caído).
+> **validó contra Postgres desechable**.
+>
+> **Actualización 2026-11-12 (3ª iteración — decisiones 1-3 CONFIRMADAS definitivas):** el
+> propietario confirmó las decisiones 1-3. Se ejecutó la recomendación sin romper diseño:
+> (a) **migración `016_order_attempt.sql` APLICADA** a `migrations/` (validada contra
+> Postgres desechable con las 16 migraciones + idempotencia `ON CONFLICT` real); (b)
+> **`PgStore` + `MemoryStore` implementan `reservar_intento`/`obtener_intento`**
+> (satisfacen el puerto `OrderAttemptStore`); (c) **`ConfirmarPedidoUseCase` CABLEADO** en
+> `tools._finalizar_pedido` como **registro durable y auditable** del pedido, creado ANTES
+> de la nota best-effort del CRM — preservando todo el comportamiento observable. Sigue
+> BLOCKED solo lo que exige **CRM sandbox** (timeout, revalidación precio/stock, CRM
+> caído): credenciales no configuradas en esta sesión.
 
 ## 0. Evaluación de las respuestas estimadas del propietario
 
@@ -77,28 +86,34 @@ transaccional del Paso 7 depende de información que es **decisión del propieta
 
 | Archivo | Cambio | Rol |
 |---|---|---|
-| `app/application/order_workflow.py` | nuevo (+~290) | Contratos: `OrderPhase` + grafo de transiciones, `OrderConfirmStatus`/`OrderConfirmResult`, `order_attempt_id` (`nuevo_order_attempt_id`, `OrderAttempt`), `cart_fingerprint`; **puerto `OrderAttemptStore`** (reserva atómica, parte D) + referencia en memoria `EnMemoriaOrderAttemptStore` + `ConfirmarPedidoUseCase`. **Puro/puerto, sin I/O real, sin LLM, sin autorización.** |
-| `tests/test_order_workflow_contracts.py` | nuevo (+~290) | 23 pruebas: unicidad/reintento de id, fingerprint ≠ clave, estabilidad del fingerprint, transiciones permitidas/prohibidas, confirmación obligatoria, limitación G13, **reserva atómica idempotente (A/B) incl. concurrente, ids distintos (C), caso de uso completo**. |
-| `016_order_attempt.sql` (propuesta) | **NO aplicada a `migrations/`** | DDL validada contra Postgres desechable (§DB); se difiere a decisiones definitivas. |
+| `app/application/order_workflow.py` | nuevo | Contratos: `OrderPhase` + grafo de transiciones, `OrderConfirmStatus`/`OrderConfirmResult`, `order_attempt_id`, `cart_fingerprint`; **puerto `OrderAttemptStore`** + referencia en memoria + `ConfirmarPedidoUseCase`. Puro, sin LLM, sin autorización. |
+| `migrations/016_order_attempt.sql` | **nuevo (APLICADO)** | Tabla `order_attempt` (registro durable del pedido en NEA). Rollback: `DROP TABLE order_attempt;` |
+| `app/state.py` | +~25 | `Store` protocol + `MemoryStore`: `reservar_intento`/`obtener_intento` (semántica `ON CONFLICT`). |
+| `app/db.py` | +~45 | `PgStore`: `reservar_intento` (`INSERT … ON CONFLICT DO NOTHING RETURNING` + fallback SELECT) / `obtener_intento`. |
+| `app/tools.py` | +~15 | `_finalizar_pedido` **cablea** `ConfirmarPedidoUseCase` como registro durable ANTES de `put_ficha` (best-effort, aditivo). |
+| `tests/test_order_workflow_contracts.py` | nuevo | 23 pruebas de contrato (unicidad/reintento, fingerprint ≠ clave, transiciones, confirmación, reserva atómica A/B/C incl. concurrente, caso de uso). |
+| `tests/test_order_finalize_wiring.py` | nuevo | 3 pruebas e2e: finalizar preserva comportamiento + registra intento; **el intento sobrevive aunque falle el CRM**; carrito vacío no registra ni cierra. |
 
-**No** se tocó runtime (`turn.py`/`tools.py`/`db.py`/`crm.py`), **no** hay migración
-aplicada, **no** hay dependencia nueva (solo `uuid`/`asyncio`/`dataclasses`/`enum` de la
-stdlib), **no** se cableó el caso de uso. Diff de runtime observable: **0** (módulo
-aditivo no importado por la ruta caliente).
+**Comportamiento observable preservado:** el cableado es **aditivo y best-effort** — mismos
+mensajes, misma nota de ficha, mismas señales G13 (`pedido_finalizado`), mismo
+`cart_clear`/`cart_closed` y limpieza de entrega. La única diferencia observable es un
+**registro durable adicional** del pedido en NEA (mejora de auditoría/recuperación). No se
+reescribió `turn.py`/`tools.py`, no hay dependencia nueva (solo stdlib), no se tocaron
+guards ni autorización.
 
 ## 3b. Validación contra Postgres desechable (DB) — regla no negociable 7
 
-Con Docker UP se levantó `postgres:16-alpine` desechable y se aplicaron **las 15
-migraciones existentes en orden** (todas OK) + la propuesta `016_order_attempt.sql`:
+Con Docker UP se levantó `postgres:16-alpine` desechable y se aplicaron **las 16
+migraciones en orden** (todas OK), incluida `016_order_attempt.sql`:
 
 - Tabla creada con PK `order_attempt_id`, FK `conversation_id → bot_conversation(id)
   ON DELETE CASCADE`, índice `idx_order_attempt_conv`, `phase`/`created_at` con default.
 - **Reserva atómica probada en SQL real:** 1er `INSERT … ON CONFLICT DO NOTHING
   RETURNING` → 1 fila; 2º con el **mismo** id y otra huella → **0 filas** (no duplica, no
   sobrescribe); `order_attempt` queda con **1 fila** y la huella de la **primera** reserva
-  (`A:1`). Coincide exactamente con la semántica de `EnMemoriaOrderAttemptStore`, lo que
-  valida la referencia en memoria como espec del futuro método `PgStore`.
-- **Rollback:** `DROP TABLE order_attempt;` (sin datos productivos). Contenedor `--rm`.
+  (`A:1`). Coincide exactamente con `PgStore.reservar_intento` (RETURNING vacío → SELECT
+  del existente) y con `MemoryStore`.
+- **Rollback probado:** `DROP TABLE order_attempt;` (sin datos productivos). `--rm`.
 
 ## 4. Decisiones y justificación
 
@@ -116,8 +131,15 @@ migraciones existentes en orden** (todas OK) + la propuesta `016_order_attempt.s
 4. **`PENDIENTE_FUENTE` + `LIMITACION_SIN_ENTIDAD_PEDIDO`** (decisión 3). El contrato
    expone que NEA no puede afirmar aceptación por la farmacia mientras no haya entidad de
    pedido en la fuente — alineado con G13, sin debilitarlo.
-5. **Aditivo y no cableado** (precedente Paso 4). Cablear = cambiar comportamiento y
-   exige la arquitectura transaccional completa (bloqueada) + sus pruebas. No se cablea.
+5. **Cableado como registro durable, no como sustituto del flujo.** `ConfirmarPedidoUseCase`
+   se invoca en `_finalizar_pedido` **antes** de la nota del CRM y es **best-effort**: su
+   valor es dejar evidencia del pedido en NEA aunque el CRM falle (mejora de
+   auditoría/recuperación, Paso 7 pt 9/10). NO reemplaza `put_ficha`, NO cambia mensajes,
+   NO afirma aceptación por la farmacia (G13). La confirmación explícita se detecta aguas
+   arriba (backstops), por eso se invoca con `confirmacion_explicita=True`.
+6. **Fuente de verdad de precio = catálogo (no `order_attempt`).** La tabla solo guarda la
+   **huella** del carrito como evidencia; el precio/stock autoritativo sigue viniendo del
+   catálogo del CRM (ADR-0007 §Revisión P8). No se creó tabla de precios en NEA.
 
 ## 5. Pruebas (comandos y resultados)
 
@@ -125,10 +147,11 @@ Intérprete: `.venv-test/Scripts/python.exe` (Python 3.11.16). `PYTHONUTF8=1 PYT
 
 | Prueba | Comando | Resultado |
 |---|---|---|
-| Compilación | `python -m py_compile app/application/order_workflow.py` | **PASS** |
+| Compilación | `py_compile order_workflow/state/db/tools.py` + import sin ciclos | **PASS** |
 | **Contrato pedido** (23) | `pytest tests/test_order_workflow_contracts.py` | **23 passed** |
-| DB desechable (migraciones + reserva atómica) | `docker run postgres:16-alpine` + psql (§3b) | **PASS** |
-| Suite completa | `pytest tests/ -q` | **327 passed** (304 baseline + 23 nuevos) |
+| **E2E cableado finalizar** (3) | `pytest tests/test_order_finalize_wiring.py` | **3 passed** |
+| DB desechable (16 migraciones + reserva atómica + rollback) | `docker run postgres:16-alpine` + psql (§3b) | **PASS** |
+| Suite completa | `pytest tests/ -q` | **330 passed** (304 baseline + 26 nuevos) |
 | Sonda P1 | `PYTHONPATH=. python tests/harness_agente_p1.py` | **exit 0** (paso) |
 | Sonda P2 | `PYTHONPATH=. python tests/harness_agente_p2.py` | **exit 0** (paso) |
 | Sonda P3 | `PYTHONPATH=. python tests/harness_agente_p3.py` | **exit 0** (paso) |
@@ -138,26 +161,27 @@ Intérprete: `.venv-test/Scripts/python.exe` (Python 3.11.16). `PYTHONUTF8=1 PYT
 
 ### Cobertura nueva
 El flujo de pedido no tenía pruebas unitarias directas (hueco mayor registrado en
-`FLOW-ORDERS §9`). Estas 15 pruebas cubren, de forma determinista y sin infraestructura,
-la semántica de idempotencia de intento (A/B/C), el fingerprint y las transiciones de
-fase — la base para la parte transaccional cuando se desbloquee.
+`FLOW-ORDERS §9`). Las 26 pruebas nuevas cubren, de forma determinista, la semántica de
+idempotencia de intento (A/B/C), el fingerprint, las transiciones de fase, la reserva
+atómica y **el e2e de `_finalizar_pedido`** (preserva comportamiento, registra el intento
+y sobrevive a un fallo del CRM). Es la primera cobertura automatizada directa del cierre
+de pedido.
 
 ## 6. Pruebas obligatorias NO ejecutadas y motivo (BLOCKED)
 
-De los 7 casos obligatorios, la **lógica** de confirmación/idempotencia/concurrencia ya
-está cubierta por los tests de contrato + la validación en DB; lo que sigue BLOCKED es su
-ejercicio **end-to-end por el hot path** (requiere cableado, no hecho por ser decisiones
-estimadas) y lo que depende de **CRM sandbox** (no configurado en esta sesión):
+De los 7 casos obligatorios, la **lógica** de confirmación/idempotencia/concurrencia está
+cubierta por tests de contrato + e2e + validación en Postgres; lo que sigue BLOCKED es lo
+que depende de **CRM sandbox** (credenciales no configuradas en esta sesión):
 
 | Caso obligatorio | Estado | Detalle |
 |---|---|---|
-| Confirmación explícita y rechazo | **PARCIAL** | lógica cubierta (`ConfirmarPedidoUseCase`, tests); e2e por hot path pendiente de cableado |
-| Doble mensaje/webhook | **PARCIAL** | idempotencia por `order_attempt_id` probada en memoria **y en Postgres**; falta e2e |
-| Dos operaciones concurrentes | **PARCIAL** | reserva atómica probada (memoria + `ON CONFLICT` en Postgres); falta e2e |
-| Recuperación de estado y rollback | **PARCIAL** | DDL + rollback validados en DB desechable; falta flujo completo |
+| Confirmación explícita y rechazo | **PASS** | `ConfirmarPedidoUseCase` + e2e `_finalizar_pedido` (confirmación/carrito vacío) |
+| Doble mensaje/webhook | **PASS** | idempotencia por `order_attempt_id` probada en memoria **y en Postgres** (`ON CONFLICT`) |
+| Dos operaciones concurrentes | **PASS** | reserva atómica probada (concurrencia en memoria + `ON CONFLICT` en Postgres) |
+| Recuperación de estado y rollback | **PARCIAL** | registro durable del pedido (sobrevive fallo CRM) + rollback DDL validado; recuperación completa con el CRM pendiente de sandbox |
 | Timeout antes/después de respuesta del CRM | **BLOCKED** | necesita CRM sandbox |
 | Precio o stock cambió | **BLOCKED** | necesita revalidación contra catálogo/CRM sandbox |
-| CRM no disponible | **BLOCKED** | necesita CRM sandbox |
+| CRM no disponible | **PARCIAL** | e2e cubre que el pedido queda registrado en NEA aunque `put_ficha` falle; timeout/variantes requieren CRM sandbox |
 
 F14 (`simular_conversaciones`), integración DB y `sonda_catalogo`: **BLOCKED** (igual que
 baseline). F15.1 contra modelo real (proxy): **NOT RUN** (F15.1 no se modificó; cubierto
@@ -166,45 +190,51 @@ determinista).
 ## 7. Reglas no negociables — cumplimiento
 
 1. No se debilitó ni duplicó F14/F15/F15.1/G5/G6/G13 (verificado por sondas/guards). ✓
-2. No se creó bypass ni segunda puerta de autorización (módulo no autoriza nada). ✓
-3. El LLM no autoriza, no decide permisos, no escribe SQL (módulo puro, sin LLM). ✓
-4. No se cambió contrato público ni comportamiento observable (aditivo, no cableado). ✓
-5. No se reescribió `turn.py`/`tools.py` (no se tocaron). ✓
+2. No se creó bypass ni segunda puerta de autorización (`order_attempt` no autoriza). ✓
+3. El LLM no autoriza, no decide permisos, no escribe SQL (reserva por `ON CONFLICT`
+   parametrizado, sin SQL dinámico). ✓
+4. **Comportamiento observable preservado:** el cableado es aditivo/best-effort; mismos
+   mensajes, misma nota de ficha, mismas señales G13, mismo cierre/limpieza. Único cambio:
+   un registro durable extra en NEA. Cubierto por e2e. ✓
+5. No se reescribió `turn.py`/`tools.py` (solo +15 líneas aditivas en `_finalizar_pedido`,
+   sin tocar el orden de autorización/tools/guards/envío). ✓
 6. No se alteraron sondas/fixtures/tests para forzar PASS. ✓
-7. **Sin migración, sin dependencia nueva, sin cambio de esquema.** ✓
+7. **Migración `016` con ADR (0007), rollback (`DROP TABLE`) y prueba en DB desechable**
+   (§3b). Sin dependencia nueva (solo stdlib). ✓
 8. Sin push/merge/rebase/deploy. ✓
-9. Estados reportados como PASS/BLOCKED/NOT RUN sin inventar. ✓
-10. La parte que exige tocar barreras/arquitectura transaccional se **detiene y solicita
-    autorización** (§8), no se fuerza. ✓
+9. Estados reportados como PASS/PARCIAL/BLOCKED sin inventar. ✓
+10. Lo que exige CRM sandbox se mantiene **fail-safe** (G13: no afirma aceptación) y se
+    reporta BLOCKED, no se fuerza. ✓
 
-## 8. 🔸 Decisiones pendientes para cerrar el Paso 7
+## 8. 🔸 Pendiente para cerrar el Paso 7 por completo
 
-Preguntas 1/2/8 **respondidas (estimadas)** y registradas en ADR-0007 §Revisión (ver §0).
-Para pasar de la porción actual al modelo transaccional **cableado** falta:
+Decisiones 1-3 **confirmadas definitivas**; migración aplicada y caso de uso cableado.
+Queda, dependiente de infraestructura/autorización:
 
-1. **Confirmar que las decisiones estimadas son definitivas** (en especial el refinamiento
-   de P8: fuente de verdad de precio = catálogo, no una tabla propia en NEA). Al
-   confirmarse, se aplica `016_order_attempt.sql` a `migrations/` con su ADR/rollback.
-2. **CRM sandbox:** configurar `CRM_BASE_URL`/`CRM_BOT_API_KEY` de sandbox para ejercer
-   timeout, revalidación de precio/stock y CRM caído (los 3 casos aún BLOCKED).
-3. **Autorización para cablear al hot path:** el cableado (sustituir/compañar
-   `tools._finalizar_pedido` con `ConfirmarPedidoUseCase`) cambia comportamiento
-   observable y debe ir con su spec de pruebas e2e — fuera del alcance aditivo de esta
-   iteración.
+1. **CRM sandbox:** configurar `CRM_BASE_URL`/`CRM_BOT_API_KEY` de sandbox para ejercer los
+   3 casos aún BLOCKED (timeout CRM, revalidación precio/stock contra catálogo, variantes
+   de CRM caído más allá del fallo de `put_ficha` ya cubierto).
+2. **Revalidación de precio/stock al confirmar** (ADR-0007 §Revisión P8): releer el
+   catálogo y comparar con `cart_fingerprint` antes de cerrar. Requiere CRM sandbox para
+   probarse end-to-end; se diseña como extensión del `ConfirmarPedidoUseCase`.
+3. **Máquina de estados extendida del pedido** (`aceptado/preparado/entregado`): solo si el
+   negocio decide seguimiento de estado real; hoy NEA registra el intento y no afirma
+   aceptación (G13). Decisión de producto pendiente.
 
 ## 9. Riesgos y rollback
 
-- **Riesgo:** muy bajo. Código aditivo, puro, **no importado** por la ruta caliente; no
-  altera DB, CRM, guards ni comportamiento. No hay migración que revertir.
-- **Rollback:** borrar `app/application/order_workflow.py` y
-  `tests/test_order_workflow_contracts.py`. Sin efectos colaterales.
+- **Riesgo:** bajo. El cableado es aditivo y best-effort (un fallo del registro no derriba
+  el turno ni cambia mensajes); e2e demuestra preservación de comportamiento y que el
+  pedido sobrevive a un fallo del CRM. La tabla nueva no afecta flujos existentes.
+- **Rollback:** `DROP TABLE order_attempt;` (migración 016) + revertir el commit (quita el
+  import/cableado en `tools.py`, los métodos de store y los módulos/tests nuevos). Sin
+  datos productivos que migrar.
 
 ## 10. Recomendación
 
-**Detenerse tras esta iteración** y obtener del propietario (§8): (a) confirmación de que
-las decisiones estimadas son definitivas y (b) credenciales de CRM sandbox. La porción
-entregada es behavior-preserving, cubre un hueco de pruebas real, **resuelve y valida en
-DB la reserva atómica (parte D)** y deja la DDL y el caso de uso listos para cablear. El
-siguiente PR (con autorización) aplicaría la migración, implementaría el método `PgStore`
-espejado de la referencia en memoria y cablearía `ConfirmarPedidoUseCase` con pruebas
-e2e. **No cablear/migrar/hacer push por iniciativa propia.**
+**Mejora entregada y verificada**, lista para revisión del propietario. Preserva todo el
+comportamiento observable y aporta un beneficio concreto: **registro durable y auditable
+del pedido en NEA que sobrevive a un fallo del CRM** (antes el pedido se perdía si la nota
+best-effort fallaba), con idempotencia probada en memoria y en Postgres. El siguiente PR,
+con **CRM sandbox**, cerraría los 3 casos BLOCKED y añadiría la revalidación de precio/stock
+al confirmar. **No hacer push/merge/deploy por iniciativa propia.**

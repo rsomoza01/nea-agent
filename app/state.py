@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Protocol
 
+from app.application.order_workflow import OrderAttempt, OrderPhase
+
 if TYPE_CHECKING:
     from app.config import Settings
 
@@ -264,6 +266,16 @@ class Store(Protocol):
         cantidad: int,
     ) -> CartItem | None: ...
 
+    # intento de pedido (Paso 7, ADR-0007): reserva atómica e idempotente por
+    # `order_attempt_id`. Satisface el puerto `OrderAttemptStore` de la capa de
+    # aplicación, de modo que `ConfirmarPedidoUseCase` corre sobre Postgres o memoria.
+    async def reservar_intento(
+        self, *, order_attempt_id: str, conversation_id: int, cart_fingerprint: str
+    ) -> OrderAttempt:
+        """Persiste el intento; si el id ya existía, devuelve el guardado (no duplica)."""
+        ...
+    async def obtener_intento(self, order_attempt_id: str) -> OrderAttempt | None: ...
+
     # analytics (Fase 1: dashboard de medicamentos más buscados)
     async def log_med_query(
         self,
@@ -343,6 +355,7 @@ class MemoryStore:
         self.offered: dict[int, list[OfferedSlot]] = {}
         self.pending_sends: dict[int, PendingSend] = {}
         self.cart: dict[int, list[CartItem]] = {}
+        self.order_attempts: dict[str, OrderAttempt] = {}
         self.med_queries: list[dict[str, Any]] = []
         # F15 — decisiones de la capa de comprensión (incluidas las que NO buscan).
         self.intent_decisions: list[dict[str, Any]] = []
@@ -523,6 +536,25 @@ class MemoryStore:
 
     async def cart_clear(self, conversation_id: int) -> None:
         self.cart.pop(conversation_id, None)
+
+    async def reservar_intento(
+        self, *, order_attempt_id: str, conversation_id: int, cart_fingerprint: str
+    ) -> OrderAttempt:
+        # ON CONFLICT DO NOTHING: si el id ya existe, no se crea otro ni se
+        # sobrescribe la huella de la primera reserva (escenarios A/B de ADR-0007).
+        existente = self.order_attempts.get(order_attempt_id)
+        if existente is not None:
+            return existente
+        intento = OrderAttempt(
+            order_attempt_id=order_attempt_id,
+            cart_fingerprint=cart_fingerprint,
+            phase=OrderPhase.CONFIRMADO_POR_CLIENTE,
+        )
+        self.order_attempts[order_attempt_id] = intento
+        return intento
+
+    async def obtener_intento(self, order_attempt_id: str) -> OrderAttempt | None:
+        return self.order_attempts.get(order_attempt_id)
 
     async def log_med_query(
         self,

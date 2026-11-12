@@ -12,6 +12,7 @@ from typing import Any
 
 import asyncpg
 
+from app.application.order_workflow import OrderAttempt, OrderPhase
 from app.state import (
     BotMessage,
     CartItem,
@@ -455,6 +456,51 @@ class PgStore:
             cantidad=row["cantidad"], precio_usd=row["precio_usd"], precio_bs=row["precio_bs"],
             created_at=row["created_at"], updated_at=row["updated_at"],
         )
+
+    # intento de pedido (Paso 7, ADR-0007) — reserva atómica e idempotente.
+    @staticmethod
+    def _fila_a_intento(row: asyncpg.Record) -> OrderAttempt:
+        return OrderAttempt(
+            order_attempt_id=row["order_attempt_id"],
+            cart_fingerprint=row["cart_fingerprint"],
+            phase=OrderPhase(row["phase"]),
+        )
+
+    async def reservar_intento(
+        self, *, order_attempt_id: str, conversation_id: int, cart_fingerprint: str
+    ) -> OrderAttempt:
+        # Mismo idioma que mark_processed: el INSERT … ON CONFLICT DO NOTHING es
+        # atómico; si gana, RETURNING trae la fila; si otro ya reservó ese id, viene
+        # vacío y se recupera el intento existente (no se duplica ni se sobrescribe).
+        row = await self.pool.fetchrow(
+            """
+            INSERT INTO order_attempt (order_attempt_id, conversation_id, cart_fingerprint)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (order_attempt_id) DO NOTHING
+            RETURNING order_attempt_id, conversation_id, cart_fingerprint, phase
+            """,
+            order_attempt_id, conversation_id, cart_fingerprint,
+        )
+        if row is None:
+            row = await self.pool.fetchrow(
+                """
+                SELECT order_attempt_id, conversation_id, cart_fingerprint, phase
+                FROM order_attempt WHERE order_attempt_id = $1
+                """,
+                order_attempt_id,
+            )
+        assert row is not None
+        return self._fila_a_intento(row)
+
+    async def obtener_intento(self, order_attempt_id: str) -> OrderAttempt | None:
+        row = await self.pool.fetchrow(
+            """
+            SELECT order_attempt_id, conversation_id, cart_fingerprint, phase
+            FROM order_attempt WHERE order_attempt_id = $1
+            """,
+            order_attempt_id,
+        )
+        return self._fila_a_intento(row) if row is not None else None
 
     # analytics (Fase 1: dashboard de medicamentos más buscados)
     @staticmethod

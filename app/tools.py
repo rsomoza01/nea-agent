@@ -33,6 +33,10 @@ from app.aliases import reescribir as _reescribir_alias
 from app.application.adapters import ToolRuntimeEngineCatalogAdapter
 from app.application.catalog_search import BuscarCatalogoUseCase
 from app.application.contracts import CatalogSearchRequest
+from app.application.order_workflow import (
+    ConfirmarPedidoUseCase,
+    nuevo_order_attempt_id,
+)
 
 # Palabras que revelan que el LLM alucinó una frase como término de búsqueda
 # (backstops del prompt, mensajes de "unsupported", instrucciones, etc.).
@@ -4712,6 +4716,23 @@ class ToolRuntime:
                 "error": "carrito_vacio",
                 "detalle": "no hay productos en el pedido; no puedes finalizar sin nada",
             }
+        # Paso 7 (ADR-0007): registra el INTENTO de pedido en NEA ANTES de la nota del
+        # CRM. Es el registro durable y auditable del pedido — así existe evidencia del
+        # pedido aunque la nota best-effort del CRM falle. La confirmación explícita ya
+        # ocurrió aguas arriba (backstop `_quiere_finalizar`/`_es_confirmacion_resumen`),
+        # por eso el caso de uso se invoca con `confirmacion_explicita=True`. El id es
+        # nuevo por cada finalización intencional (escenario C); la reserva es idempotente
+        # por si el mismo intento se reintentara. NO afirma aceptación por la farmacia
+        # (sostiene G13). Best-effort: no derriba el turno si el store falla.
+        try:
+            await ConfirmarPedidoUseCase(self._ctx.store).ejecutar(
+                conversation_id=self._conv.id,
+                items=items,
+                order_attempt_id=nuevo_order_attempt_id(),
+                confirmacion_explicita=True,
+            )
+        except Exception as exc:
+            logger.warning("tools: no pude registrar el intento de pedido en NEA: %s", exc)
         # Registra el pedido como nota de la conversación en el CRM (FR-9) y
         # notifica a un humano para que lo procese.
         lineas = []
