@@ -7,11 +7,15 @@ las preguntas abiertas 1/2/8 del PLAN; ver PR-feat-pharmacy-order-workflow.md.
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 
 from app.application.order_workflow import (
     LIMITACION_SIN_ENTIDAD_PEDIDO,
+    ConfirmarPedidoUseCase,
+    EnMemoriaOrderAttemptStore,
     OrderAttempt,
+    OrderAttemptStore,
     OrderConfirmResult,
     OrderConfirmStatus,
     OrderPhase,
@@ -152,3 +156,115 @@ def test_resultado_pendiente_fuente_expone_limitacion_g13():
     )
     assert r.status is OrderConfirmStatus.PENDIENTE_FUENTE
     assert LIMITACION_SIN_ENTIDAD_PEDIDO in r.limitaciones
+
+
+# ------------------------------------------------- reserva atómica del intento (D) ---
+
+def test_store_de_referencia_satisface_el_puerto():
+    assert isinstance(EnMemoriaOrderAttemptStore(), OrderAttemptStore)
+
+
+def test_reserva_repetida_mismo_id_no_crea_otro():
+    # Escenario A/B: reintento/doble-webhook con MISMO id → mismo intento, sin duplicar.
+    store = EnMemoriaOrderAttemptStore()
+    oid = nuevo_order_attempt_id()
+
+    async def run():
+        a = await store.reservar_intento(
+            order_attempt_id=oid, conversation_id=1, cart_fingerprint="A:1:1.0:7.0"
+        )
+        # Segunda reserva del mismo id, incluso con otra huella: NO sobrescribe.
+        b = await store.reservar_intento(
+            order_attempt_id=oid, conversation_id=1, cart_fingerprint="OTRA"
+        )
+        return a, b
+
+    a, b = asyncio.run(run())
+    assert a.order_attempt_id == b.order_attempt_id
+    assert b.cart_fingerprint == "A:1:1.0:7.0"  # queda la huella de la PRIMERA reserva
+
+
+def test_reserva_concurrente_mismo_id_converge():
+    # Escenario B: dos solicitudes concurrentes con el mismo id → UN intento.
+    store = EnMemoriaOrderAttemptStore()
+    oid = nuevo_order_attempt_id()
+
+    async def run():
+        res = await asyncio.gather(
+            store.reservar_intento(
+                order_attempt_id=oid, conversation_id=1, cart_fingerprint="X"
+            ),
+            store.reservar_intento(
+                order_attempt_id=oid, conversation_id=1, cart_fingerprint="Y"
+            ),
+        )
+        return res
+
+    r1, r2 = asyncio.run(run())
+    assert r1.order_attempt_id == r2.order_attempt_id
+    assert r1.cart_fingerprint == r2.cart_fingerprint  # convergen en una sola huella
+
+
+def test_ids_distintos_crean_intentos_distintos():
+    # Escenario C: confirmación intencional distinta (otro id) → otro intento.
+    store = EnMemoriaOrderAttemptStore()
+
+    async def run():
+        a = await store.reservar_intento(
+            order_attempt_id=nuevo_order_attempt_id(), conversation_id=1,
+            cart_fingerprint="A:1:1.0:7.0",
+        )
+        b = await store.reservar_intento(
+            order_attempt_id=nuevo_order_attempt_id(), conversation_id=1,
+            cart_fingerprint="A:1:1.0:7.0",  # mismo carrito
+        )
+        return a, b
+
+    a, b = asyncio.run(run())
+    assert a.order_attempt_id != b.order_attempt_id
+
+
+# --------------------------------------------------------- ConfirmarPedidoUseCase ---
+
+def _uc_result(items, *, confirmado, oid, store=None):
+    store = store or EnMemoriaOrderAttemptStore()
+    uc = ConfirmarPedidoUseCase(store)
+    return asyncio.run(
+        uc.ejecutar(
+            conversation_id=1,
+            items=items,
+            order_attempt_id=oid,
+            confirmacion_explicita=confirmado,
+        )
+    ), store
+
+
+def test_uc_carrito_vacio():
+    r, _ = _uc_result([], confirmado=True, oid=nuevo_order_attempt_id())
+    assert r.status is OrderConfirmStatus.CARRITO_VACIO
+
+
+def test_uc_exige_confirmacion_explicita():
+    r, _ = _uc_result(
+        [_Item("A", 1, 1.0, 7.0)], confirmado=False, oid=nuevo_order_attempt_id()
+    )
+    assert r.status is OrderConfirmStatus.REQUIERE_CONFIRMACION
+
+
+def test_uc_confirmado_reserva_y_no_afirma_aceptacion():
+    oid = nuevo_order_attempt_id()
+    r, store = _uc_result([_Item("A", 1, 1.0, 7.0)], confirmado=True, oid=oid)
+    assert r.status is OrderConfirmStatus.PENDIENTE_FUENTE
+    assert r.order_attempt_id == oid
+    assert LIMITACION_SIN_ENTIDAD_PEDIDO in r.limitaciones
+    assert asyncio.run(store.obtener_intento(oid)) is not None
+
+
+def test_uc_es_idempotente_por_order_attempt_id():
+    # Doble confirmación del MISMO intento lógico → un solo intento reservado.
+    oid = nuevo_order_attempt_id()
+    store = EnMemoriaOrderAttemptStore()
+    items = [_Item("A", 1, 1.0, 7.0)]
+    r1, _ = _uc_result(items, confirmado=True, oid=oid, store=store)
+    r2, _ = _uc_result(items, confirmado=True, oid=oid, store=store)
+    assert r1.order_attempt_id == r2.order_attempt_id == oid

@@ -30,10 +30,11 @@ un registro que no pueda demostrar. La máquina de estados **extendida** del ped
 """
 from __future__ import annotations
 
+import asyncio
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Iterable
+from typing import Any, Iterable, Protocol, runtime_checkable
 
 
 class OrderPhase(str, Enum):
@@ -180,3 +181,112 @@ def resultado_requiere_confirmacion(items_no_vacio: bool) -> OrderConfirmResult:
     if not items_no_vacio:
         return OrderConfirmResult(status=OrderConfirmStatus.CARRITO_VACIO)
     return OrderConfirmResult(status=OrderConfirmStatus.REQUIERE_CONFIRMACION)
+
+
+# --------------------------------------------------------- reserva atómica (parte D) ---
+# Con la decisión del propietario "persistir el pedido en NEA" (ADR-0007, revisión
+# 2026-11-12), la parte D (reserva atómica/correlación de concurrencia) deja de estar
+# bloqueada por falta de fuente. El mecanismo es el MISMO idioma ya probado en
+# `Store.mark_processed` (`db.py:99`): `INSERT … ON CONFLICT (order_attempt_id) DO
+# NOTHING RETURNING`, que es atómico e idempotente por id. El puerto describe esa
+# capacidad al nivel de almacenamiento, sin acoplar la aplicación a Postgres.
+
+
+@runtime_checkable
+class OrderAttemptStore(Protocol):
+    """Capacidad de **reservar atómicamente** un intento lógico de pedido.
+
+    Contrato de `reservar_intento` (idempotente por `order_attempt_id`):
+      - Primera reserva de un id: persiste y devuelve el intento nuevo.
+      - Reserva repetida del MISMO id (reintento, doble webhook, doble tap que comparten
+        id): devuelve el intento YA guardado **sin crear otro y sin sobrescribir** su
+        huella (escenarios A/B de ADR-0007). El `cart_fingerprint` de la primera reserva
+        es el que queda (base para revalidar si el carrito cambió después).
+      - Dos solicitudes concurrentes con el mismo id convergen en UN intento (atómico).
+    Un `order_attempt_id` nuevo (confirmación intencional distinta) crea otro intento
+    aunque el carrito sea idéntico (escenario C): esa unicidad la decide quien genera el
+    id, no el store.
+    """
+
+    async def reservar_intento(
+        self, *, order_attempt_id: str, conversation_id: int, cart_fingerprint: str
+    ) -> OrderAttempt:
+        ...
+
+    async def obtener_intento(self, order_attempt_id: str) -> OrderAttempt | None:
+        ...
+
+
+class EnMemoriaOrderAttemptStore:
+    """Implementación de referencia en memoria del `OrderAttemptStore`.
+
+    Especifica la semántica exacta que deberá replicar el método de `PgStore` con
+    `INSERT … ON CONFLICT DO NOTHING RETURNING` (ver DDL propuesta en
+    `PR-feat-pharmacy-order-workflow.md`). Sirve para probar los escenarios A/B/C sin DB.
+    El `asyncio.Lock` emula la atomicidad del upsert ante corrutinas concurrentes.
+    """
+
+    def __init__(self) -> None:
+        self._intentos: dict[str, OrderAttempt] = {}
+        self._lock = asyncio.Lock()
+
+    async def reservar_intento(
+        self, *, order_attempt_id: str, conversation_id: int, cart_fingerprint: str
+    ) -> OrderAttempt:
+        async with self._lock:
+            existente = self._intentos.get(order_attempt_id)
+            if existente is not None:
+                # ON CONFLICT DO NOTHING: no se crea otro ni se sobrescribe la huella.
+                return existente
+            intento = OrderAttempt(
+                order_attempt_id=order_attempt_id,
+                cart_fingerprint=cart_fingerprint,
+                phase=OrderPhase.CONFIRMADO_POR_CLIENTE,
+            )
+            self._intentos[order_attempt_id] = intento
+            return intento
+
+    async def obtener_intento(self, order_attempt_id: str) -> OrderAttempt | None:
+        return self._intentos.get(order_attempt_id)
+
+
+class ConfirmarPedidoUseCase:
+    """UC-Pedido: confirma un intento de pedido de forma idempotente (porción no bloqueada).
+
+    Hace cumplir, sin tocar el CRM: (1) carrito no vacío, (2) confirmación explícita
+    obligatoria antes de reservar, (3) reserva atómica del intento por `order_attempt_id`
+    estable, (4) NO afirmar aceptación por la farmacia mientras no exista entidad de
+    pedido en la fuente → `PENDIENTE_FUENTE` + limitación G13.
+
+    `order_attempt_id` debe ser **estable por intento lógico**: el llamador lo persiste al
+    detectar la confirmación y lo reutiliza en reintentos/doble-webhook; genera uno nuevo
+    solo ante una confirmación intencional distinta (escenario C). Este caso de uso NO
+    llama al LLM, NO autoriza y NO está cableado en la ruta caliente.
+    """
+
+    def __init__(self, store: OrderAttemptStore) -> None:
+        self._store = store
+
+    async def ejecutar(
+        self,
+        *,
+        conversation_id: int,
+        items: Iterable[Any],
+        order_attempt_id: str,
+        confirmacion_explicita: bool,
+    ) -> OrderConfirmResult:
+        items = list(items)
+        if not items:
+            return OrderConfirmResult(status=OrderConfirmStatus.CARRITO_VACIO)
+        if not confirmacion_explicita:
+            return OrderConfirmResult(status=OrderConfirmStatus.REQUIERE_CONFIRMACION)
+        intento = await self._store.reservar_intento(
+            order_attempt_id=order_attempt_id,
+            conversation_id=conversation_id,
+            cart_fingerprint=cart_fingerprint(items),
+        )
+        return OrderConfirmResult(
+            status=OrderConfirmStatus.PENDIENTE_FUENTE,
+            order_attempt_id=intento.order_attempt_id,
+            limitaciones=(LIMITACION_SIN_ENTIDAD_PEDIDO,),
+        )

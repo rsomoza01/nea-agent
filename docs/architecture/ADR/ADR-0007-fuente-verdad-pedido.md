@@ -1,9 +1,45 @@
 # ADR-0007 — Fuente de verdad del pedido y separación preparar/confirmar
 
-- **Estado:** Propuesta (diseño; una parte DEPENDE de decisión abierta)
-- **Fecha:** 2026-11-10
-- **Paso del plan:** 3 (prepara Paso 7)
+- **Estado:** Aceptada en diseño preliminar (revisión 2026-11-12; decisiones del
+  propietario ESTIMADAS, no definitivas — ver §Revisión). Parte D desbloqueada.
+- **Fecha:** 2026-11-10 · **Revisión:** 2026-11-12 (Paso 7)
+- **Paso del plan:** 3 (prepara Paso 7) / 7 (ejecución incremental)
 - **Relacionada con:** [`../TO-BE.md`](../TO-BE.md) §5; [`../DOMAIN-MODEL.md`](../DOMAIN-MODEL.md) §4; [`../FLOW-ORDERS.md`](../FLOW-ORDERS.md); PLAN §7 "Pedidos", §8 preguntas 1, 2, 8
+
+## Revisión 2026-11-12 (decisiones ESTIMADAS del propietario, Paso 7)
+
+El propietario respondió las preguntas abiertas 1/2/8 de forma **estimada (no
+definitiva)**. Se registran como base de diseño; cualquiera puede cambiar sin reabrir
+el núcleo ya probado:
+
+1. **(P1) API de pedidos en el CRM:** no se asume que exista; **NEA aporta la entidad de
+   pedido** como mejora propia.
+2. **(P2) Persistencia:** si NEA la construye, **vive en NEA** (nueva tabla
+   `order_attempt`, no en el CRM).
+3. **(P8) Fuente de verdad de precio/disponibilidad — con refinamiento del arquitecto:**
+   el propietario indicó "la base de datos disponible / la DB real de producción". Se
+   **refina**: la DB de NEA (Postgres) **no** contiene el catálogo de productos; el
+   precio/stock provienen del **catálogo del CRM** (`crm.get_products`,
+   DOMAIN-MODEL §4.1), del que `bot_cart` guarda una **instantánea** al agregar. Mantener
+   una tabla de precios propia en NEA crearía una **segunda fuente que se desincroniza**
+   y rompería "precio siempre del catálogo". Decisión: la **entidad de pedido** se
+   persiste en NEA (P2), pero la **fuente de verdad de precio/disponibilidad sigue siendo
+   el catálogo**, **revalidado al confirmar** releyéndolo y comparándolo con la
+   instantánea del carrito (vía `cart_fingerprint`). En producción ese catálogo puede
+   estar respaldado por la DB real detrás del CRM — consistente con la intención del
+   propietario, pero accedido por la ruta de catálogo existente, no por una consulta
+   paralela.
+
+**Parte D (reserva atómica/concurrencia) — DESBLOQUEADA.** Con P2 ("persistir en NEA")
+el mecanismo definitivo queda decidido: **mismo idioma que `Store.mark_processed`**
+(`db.py:99`) — `INSERT … ON CONFLICT (order_attempt_id) DO NOTHING RETURNING`, atómico e
+idempotente por id; si `RETURNING` viene vacío, el intento ya existía y se devuelve el
+guardado. Validado contra Postgres desechable (ver
+[`../PR-feat-pharmacy-order-workflow.md`](../PR-feat-pharmacy-order-workflow.md) §DB).
+Implementado como puerto `OrderAttemptStore` + referencia en memoria
+(`app/application/order_workflow.py`), aún **no cableado** al hot path (decisiones
+estimadas). La migración `016_order_attempt.sql` queda como **propuesta validada**, no
+aplicada a `migrations/`, hasta que las decisiones sean definitivas.
 
 ## Contexto
 

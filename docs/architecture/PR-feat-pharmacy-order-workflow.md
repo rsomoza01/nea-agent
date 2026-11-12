@@ -2,8 +2,24 @@
 
 > **Rama:** `feat/pharmacy-order-workflow` · **Base / HEAD inicial:** `cf2dde6`
 > (`refactor/turn-orchestrator`) · **Fecha:** 2026-11-12 · **Modo:** implementación de
-> dominio incremental; **parcialmente BLOCKED** por entorno (Docker/CRM caídos) y por
-> decisiones abiertas del propietario (PLAN §8, preguntas 1/2/8).
+> dominio incremental; **parcialmente BLOCKED** por CRM sandbox no configurado y por
+> decisiones del propietario ESTIMADAS (PLAN §8, preguntas 1/2/8).
+>
+> **Actualización 2026-11-12 (2ª iteración):** el propietario habilitó Docker y respondió
+> 1/2/8 de forma estimada. Con ello se **desbloqueó la parte D de ADR-0007** (reserva
+> atómica del intento), que se diseñó, implementó (puerto + referencia en memoria) y
+> **validó contra Postgres desechable**. La migración queda como propuesta validada (no
+> aplicada), por ser las decisiones no definitivas. Lo que sigue BLOCKED: el cableado al
+> hot path y los casos que requieren **CRM sandbox** (timeout/revalidación/CRM caído).
+
+## 0. Evaluación de las respuestas estimadas del propietario
+
+| # | Respuesta | Evaluación del arquitecto | Resolución |
+|---|---|---|---|
+| 1 | CRM quizá no ofrece API de pedidos; NEA puede aportarla | Correcta; el CRM no la tiene (auditado §2) | Entidad de pedido **en NEA** |
+| 2 | Si se construye en NEA, mantenerla en NEA | Correcta y consistente | Tabla `order_attempt` en NEA |
+| 3 | Fuente de verdad = la DB disponible/real de producción | **Refinada:** la DB de NEA no tiene el catálogo; precio/stock = catálogo CRM (`get_products`), instantánea en `bot_cart`. Una tabla de precios en NEA sería 2ª fuente que deriva | Entidad **en NEA**; **precio/stock = catálogo**, revalidado al confirmar (ADR-0007 §Revisión P8) |
+| 4 | Docker/DB desechable + CRM sandbox disponibles | Docker **confirmado UP**; CRM sandbox **no** configurado en esta sesión | DB validada; CRM-tests siguen BLOCKED |
 
 ## 1. Resumen ejecutivo
 
@@ -61,13 +77,28 @@ transaccional del Paso 7 depende de información que es **decisión del propieta
 
 | Archivo | Cambio | Rol |
 |---|---|---|
-| `app/application/order_workflow.py` | nuevo (+~190) | Contratos: `OrderPhase` + grafo de transiciones, `OrderConfirmStatus`/`OrderConfirmResult`, `order_attempt_id` (`nuevo_order_attempt_id`, `OrderAttempt`), `cart_fingerprint`. **Puro, sin I/O, sin LLM, sin autorización.** |
-| `tests/test_order_workflow_contracts.py` | nuevo (+~160) | 15 pruebas: unicidad/reintento de id, fingerprint ≠ clave, estabilidad del fingerprint, transiciones permitidas/prohibidas, confirmación obligatoria, limitación G13. |
+| `app/application/order_workflow.py` | nuevo (+~290) | Contratos: `OrderPhase` + grafo de transiciones, `OrderConfirmStatus`/`OrderConfirmResult`, `order_attempt_id` (`nuevo_order_attempt_id`, `OrderAttempt`), `cart_fingerprint`; **puerto `OrderAttemptStore`** (reserva atómica, parte D) + referencia en memoria `EnMemoriaOrderAttemptStore` + `ConfirmarPedidoUseCase`. **Puro/puerto, sin I/O real, sin LLM, sin autorización.** |
+| `tests/test_order_workflow_contracts.py` | nuevo (+~290) | 23 pruebas: unicidad/reintento de id, fingerprint ≠ clave, estabilidad del fingerprint, transiciones permitidas/prohibidas, confirmación obligatoria, limitación G13, **reserva atómica idempotente (A/B) incl. concurrente, ids distintos (C), caso de uso completo**. |
+| `016_order_attempt.sql` (propuesta) | **NO aplicada a `migrations/`** | DDL validada contra Postgres desechable (§DB); se difiere a decisiones definitivas. |
 
-**No** se tocó runtime (`turn.py`/`tools.py`/`db.py`/`crm.py`), **no** hay migración,
-**no** hay dependencia nueva (solo `uuid`/`dataclasses`/`enum` de la stdlib), **no** se
-cableó el caso de uso. Diff de runtime observable: **0** (módulo aditivo no importado por
-la ruta caliente).
+**No** se tocó runtime (`turn.py`/`tools.py`/`db.py`/`crm.py`), **no** hay migración
+aplicada, **no** hay dependencia nueva (solo `uuid`/`asyncio`/`dataclasses`/`enum` de la
+stdlib), **no** se cableó el caso de uso. Diff de runtime observable: **0** (módulo
+aditivo no importado por la ruta caliente).
+
+## 3b. Validación contra Postgres desechable (DB) — regla no negociable 7
+
+Con Docker UP se levantó `postgres:16-alpine` desechable y se aplicaron **las 15
+migraciones existentes en orden** (todas OK) + la propuesta `016_order_attempt.sql`:
+
+- Tabla creada con PK `order_attempt_id`, FK `conversation_id → bot_conversation(id)
+  ON DELETE CASCADE`, índice `idx_order_attempt_conv`, `phase`/`created_at` con default.
+- **Reserva atómica probada en SQL real:** 1er `INSERT … ON CONFLICT DO NOTHING
+  RETURNING` → 1 fila; 2º con el **mismo** id y otra huella → **0 filas** (no duplica, no
+  sobrescribe); `order_attempt` queda con **1 fila** y la huella de la **primera** reserva
+  (`A:1`). Coincide exactamente con la semántica de `EnMemoriaOrderAttemptStore`, lo que
+  valida la referencia en memoria como espec del futuro método `PgStore`.
+- **Rollback:** `DROP TABLE order_attempt;` (sin datos productivos). Contenedor `--rm`.
 
 ## 4. Decisiones y justificación
 
@@ -95,8 +126,9 @@ Intérprete: `.venv-test/Scripts/python.exe` (Python 3.11.16). `PYTHONUTF8=1 PYT
 | Prueba | Comando | Resultado |
 |---|---|---|
 | Compilación | `python -m py_compile app/application/order_workflow.py` | **PASS** |
-| **Contrato pedido** (15) | `pytest tests/test_order_workflow_contracts.py` | **15 passed** |
-| Suite completa | `pytest tests/ -q` | **319 passed** (304 baseline + 15 nuevos) |
+| **Contrato pedido** (23) | `pytest tests/test_order_workflow_contracts.py` | **23 passed** |
+| DB desechable (migraciones + reserva atómica) | `docker run postgres:16-alpine` + psql (§3b) | **PASS** |
+| Suite completa | `pytest tests/ -q` | **327 passed** (304 baseline + 23 nuevos) |
 | Sonda P1 | `PYTHONPATH=. python tests/harness_agente_p1.py` | **exit 0** (paso) |
 | Sonda P2 | `PYTHONPATH=. python tests/harness_agente_p2.py` | **exit 0** (paso) |
 | Sonda P3 | `PYTHONPATH=. python tests/harness_agente_p3.py` | **exit 0** (paso) |
@@ -112,18 +144,20 @@ fase — la base para la parte transaccional cuando se desbloquee.
 
 ## 6. Pruebas obligatorias NO ejecutadas y motivo (BLOCKED)
 
-Los 7 casos de integración exigidos por el Paso 7 **requieren DB desechable + CRM
-sandbox**, ambos no disponibles (Docker caído, credenciales CRM sin configurar):
+De los 7 casos obligatorios, la **lógica** de confirmación/idempotencia/concurrencia ya
+está cubierta por los tests de contrato + la validación en DB; lo que sigue BLOCKED es su
+ejercicio **end-to-end por el hot path** (requiere cableado, no hecho por ser decisiones
+estimadas) y lo que depende de **CRM sandbox** (no configurado en esta sesión):
 
-| Caso obligatorio | Estado | Bloqueo |
+| Caso obligatorio | Estado | Detalle |
 |---|---|---|
-| Confirmación explícita y rechazo | **BLOCKED** | necesita flujo transaccional + DB/CRM |
-| Doble mensaje/webhook | **BLOCKED** | necesita persistencia de `order_attempt_id` + DB |
+| Confirmación explícita y rechazo | **PARCIAL** | lógica cubierta (`ConfirmarPedidoUseCase`, tests); e2e por hot path pendiente de cableado |
+| Doble mensaje/webhook | **PARCIAL** | idempotencia por `order_attempt_id` probada en memoria **y en Postgres**; falta e2e |
+| Dos operaciones concurrentes | **PARCIAL** | reserva atómica probada (memoria + `ON CONFLICT` en Postgres); falta e2e |
+| Recuperación de estado y rollback | **PARCIAL** | DDL + rollback validados en DB desechable; falta flujo completo |
 | Timeout antes/después de respuesta del CRM | **BLOCKED** | necesita CRM sandbox |
-| Dos operaciones concurrentes | **BLOCKED** | necesita DB real + reserva atómica (parte D) |
-| Precio o stock cambió | **BLOCKED** | necesita revalidación contra CRM |
+| Precio o stock cambió | **BLOCKED** | necesita revalidación contra catálogo/CRM sandbox |
 | CRM no disponible | **BLOCKED** | necesita CRM sandbox |
-| Recuperación de estado y rollback | **BLOCKED** | necesita migración + DB desechable |
 
 F14 (`simular_conversaciones`), integración DB y `sonda_catalogo`: **BLOCKED** (igual que
 baseline). F15.1 contra modelo real (proxy): **NOT RUN** (F15.1 no se modificó; cubierto
@@ -143,19 +177,20 @@ determinista).
 10. La parte que exige tocar barreras/arquitectura transaccional se **detiene y solicita
     autorización** (§8), no se fuerza. ✓
 
-## 8. 🔸 Decisiones pendientes del propietario (desbloquean el resto del Paso 7)
+## 8. 🔸 Decisiones pendientes para cerrar el Paso 7
 
-Antes de poder diseñar e implementar el modelo transaccional completo necesito respuesta
-a las preguntas abiertas del PLAN §8 (no se pueden inferir del código ni inventar):
+Preguntas 1/2/8 **respondidas (estimadas)** y registradas en ADR-0007 §Revisión (ver §0).
+Para pasar de la porción actual al modelo transaccional **cableado** falta:
 
-1. **¿El CRM ofrece (o puede ofrecer) una API de pedidos**, o el pedido seguirá siendo
-   una nota de ficha? Hoy no existe (auditado en §2).
-2. **¿Debe persistirse una entidad de pedido** con estados
-   `confirmado/aceptado/preparado/entregado/cancelado`, y dónde (CRM vs. tabla NEA)?
-3. **¿Cuál es la fuente de verdad de precio/disponibilidad al confirmar?** (¿se revalida
-   contra el catálogo/CRM en el momento de cerrar?)
-4. **Entorno de pruebas:** ¿puedo levantar Docker/DB desechable y apuntar a un CRM
-   sandbox? Sin eso, los 7 casos obligatorios seguirán BLOCKED.
+1. **Confirmar que las decisiones estimadas son definitivas** (en especial el refinamiento
+   de P8: fuente de verdad de precio = catálogo, no una tabla propia en NEA). Al
+   confirmarse, se aplica `016_order_attempt.sql` a `migrations/` con su ADR/rollback.
+2. **CRM sandbox:** configurar `CRM_BASE_URL`/`CRM_BOT_API_KEY` de sandbox para ejercer
+   timeout, revalidación de precio/stock y CRM caído (los 3 casos aún BLOCKED).
+3. **Autorización para cablear al hot path:** el cableado (sustituir/compañar
+   `tools._finalizar_pedido` con `ConfirmarPedidoUseCase`) cambia comportamiento
+   observable y debe ir con su spec de pruebas e2e — fuera del alcance aditivo de esta
+   iteración.
 
 ## 9. Riesgos y rollback
 
@@ -166,8 +201,10 @@ a las preguntas abiertas del PLAN §8 (no se pueden inferir del código ni inven
 
 ## 10. Recomendación
 
-**Detenerse y esperar decisión del propietario** sobre §8 antes de continuar con el
-modelo transaccional del Paso 7. La porción entregada es behavior-preserving, cubre un
-hueco de pruebas real y deja listos los contratos de idempotencia/confirmación para
-cuando el entorno (Docker/CRM) y las decisiones 1/2/8 estén disponibles. **No cablear ni
-migrar por iniciativa propia; no hacer push.**
+**Detenerse tras esta iteración** y obtener del propietario (§8): (a) confirmación de que
+las decisiones estimadas son definitivas y (b) credenciales de CRM sandbox. La porción
+entregada es behavior-preserving, cubre un hueco de pruebas real, **resuelve y valida en
+DB la reserva atómica (parte D)** y deja la DDL y el caso de uso listos para cablear. El
+siguiente PR (con autorización) aplicaría la migración, implementaría el método `PgStore`
+espejado de la referencia en memoria y cablearía `ConfirmarPedidoUseCase` con pruebas
+e2e. **No cablear/migrar/hacer push por iniciativa propia.**
