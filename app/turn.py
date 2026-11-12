@@ -587,7 +587,29 @@ async def run_turn(
     runtime.prev_last_ocr_term = runtime.last_ocr_term
     # Lista de opciones persistida del turno anterior (para resolver
     # "quiero X cajas de la opción Z").
-    if isinstance(conv.last_options, list):
+    # CADUCIDAD DE LA LISTA PERSISTIDA. `last_options` resuelve "quiero 2 cajas de la
+    # opción 3" contra la lista que el cliente YA vio, pero sin fecha una lista de hace dos
+    # semanas seguiría resolviendo contra precios que ya no existen (y el aviso de dosis/
+    # envase se calcularía sobre productos que quizá ya no se venden). Mismo TTL que las
+    # listas del prompt: LISTA_PRECIOS_TTL_HORAS.
+    _opts_caducadas = False
+    if isinstance(conv.last_options, list) and conv.last_options:
+        _guardada = getattr(conv, "last_options_at", None)
+        if _guardada is None:
+            # Filas anteriores a la migración: no se puede afirmar que sean de hoy.
+            _opts_caducadas = True
+        else:
+            if _guardada.tzinfo is None:
+                _guardada = _guardada.replace(tzinfo=timezone.utc)
+            _opts_caducadas = (datetime.now(timezone.utc) - _guardada) > timedelta(
+                hours=LISTA_PRECIOS_TTL_HORAS
+            )
+        if _opts_caducadas:
+            logger.info(
+                "contexto: la lista de opciones guardada caducó (%s) — no se resuelve 'opción N' contra ella",
+                _guardada.isoformat() if _guardada else "sin fecha",
+            )
+    if isinstance(conv.last_options, list) and not _opts_caducadas:
         runtime.last_options = conv.last_options
     elif isinstance(conv.last_options, str) and conv.last_options.strip():
         try:
