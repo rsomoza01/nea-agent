@@ -13,7 +13,7 @@ import logging
 import re
 import time
 from contextlib import asynccontextmanager
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncIterator
 from zoneinfo import ZoneInfo
 
@@ -190,6 +190,19 @@ def _partir_mensaje_largo(texto: str, max_chars: int) -> list[str]:
 STALL_COOLDOWN = timedelta(hours=24)
 # Mensajes que se traen para contar el hilo del lead (el LLM ve menos).
 STALL_LOOKBACK = 40
+# ANTIGÜEDAD MÁXIMA DE UNA LISTA DE PRECIOS EN EL CONTEXTO DEL LLM.
+#
+# El prompt lleva los últimos mensajes del hilo, y entre ellos puede haber listas con
+# precios de días atrás. El LLM las copia como si fueran la respuesta de hoy. Medido en
+# producción (provider 05, 2026-11-12): a "dayana le va a escribir para concretar la
+# instalacion del servicio" —un mensaje administrativo, sin ningún medicamento— el agente
+# contestó con la lista de ACETAMINOFEN del 30 de octubre, trece días antes, y encima
+# preguntó por productos de esa misma lista vieja.
+#
+# Las listas viejas se sustituyen por una marca, no se borran: el hilo sigue teniendo
+# sentido (el cliente sí pidió acetaminofén aquel día), pero el modelo no puede reenviar
+# precios que ya no son los de hoy.
+LISTA_PRECIOS_TTL_HORAS = 24
 CONTEXT_ATTEMPTS = 3  # el relay puede tardar un instante en aterrizar en el CRM
 
 # Comando de pruebas: reinicia la memoria de ESA conversación. Disponible SOLO
@@ -509,11 +522,12 @@ async def run_turn(
             (i for i in range(len(history) - 1, -1, -1) if history[i].role == "user"),
             -1,
         )
+    _ahora = datetime.now(timezone.utc)
     messages: list[dict[str, Any]] = [{"role": "system", "content": system}] + [
         {
             "role": m.role,
             "content": (
-                m.content
+                _sin_lista_vieja(m, _ahora)
                 if m.role != "user" or i == idx_actual
                 else _texto_cliente_sin_marcadores(m.content)
             ),
@@ -585,7 +599,29 @@ async def run_turn(
     runtime.prev_last_ocr_term = runtime.last_ocr_term
     # Lista de opciones persistida del turno anterior (para resolver
     # "quiero X cajas de la opción Z").
-    if isinstance(conv.last_options, list):
+    # CADUCIDAD DE LA LISTA PERSISTIDA. `last_options` resuelve "quiero 2 cajas de la
+    # opción 3" contra la lista que el cliente YA vio, pero sin fecha una lista de hace dos
+    # semanas seguiría resolviendo contra precios que ya no existen (y el aviso de dosis/
+    # envase se calcularía sobre productos que quizá ya no se venden). Mismo TTL que las
+    # listas del prompt: LISTA_PRECIOS_TTL_HORAS.
+    _opts_caducadas = False
+    if isinstance(conv.last_options, list) and conv.last_options:
+        _guardada = getattr(conv, "last_options_at", None)
+        if _guardada is None:
+            # Filas anteriores a la migración: no se puede afirmar que sean de hoy.
+            _opts_caducadas = True
+        else:
+            if _guardada.tzinfo is None:
+                _guardada = _guardada.replace(tzinfo=timezone.utc)
+            _opts_caducadas = (datetime.now(timezone.utc) - _guardada) > timedelta(
+                hours=LISTA_PRECIOS_TTL_HORAS
+            )
+        if _opts_caducadas:
+            logger.info(
+                "contexto: la lista de opciones guardada caducó (%s) — no se resuelve 'opción N' contra ella",
+                _guardada.isoformat() if _guardada else "sin fecha",
+            )
+    if isinstance(conv.last_options, list) and not _opts_caducadas:
         runtime.last_options = conv.last_options
     elif isinstance(conv.last_options, str) and conv.last_options.strip():
         try:
@@ -4859,6 +4895,34 @@ def _quitar_frases(texto: str, patron: re.Pattern[str]) -> str:
     trozos = re.split(r"(?<=[.!?])\s+|\n{2,}", texto)
     quedan = [x for x in trozos if x and not patron.search(x)]
     return "\n\n".join(x.strip() for x in quedan if x.strip()).strip()
+
+
+def _sin_lista_vieja(mensaje: Any, ahora: Any) -> str:
+    """El texto del mensaje, salvo que sea una LISTA DE PRECIOS vieja.
+
+    Una lista de precios de días atrás no es contexto útil: es una respuesta que el LLM
+    acaba copiando como si fuera la de hoy (caso real: 13 días). Se sustituye por una marca
+    que conserva el hilo sin dejarle precios que reenviar.
+    """
+    texto = str(getattr(mensaje, "content", "") or "")
+    creado = getattr(mensaje, "created_at", None)
+    if not texto or creado is None:
+        return texto
+    if not _es_lista_de_precios(texto):
+        return texto
+    if creado.tzinfo is None:
+        creado = creado.replace(tzinfo=timezone.utc)
+    if (ahora - creado) <= timedelta(hours=LISTA_PRECIOS_TTL_HORAS):
+        return texto
+    logger.info("contexto: lista de precios de hace %d h fuera del prompt", int((ahora - creado).total_seconds() // 3600))
+    return "[lista de precios enviada el %s — desactualizada, no la reenvíes]" % creado.strftime("%d/%m")
+
+
+def _es_lista_de_precios(texto: str) -> bool:
+    """¿El texto es una lista de presentaciones con precio? (formato canónico 💊 + $/Bs)."""
+    if "💊" not in (texto or ""):
+        return False
+    return bool(re.search(r"\$\s*\d|\bBs\b", texto))
 
 
 def _texto_del_bot(history: list[Any], cuantos: int = 2) -> str:

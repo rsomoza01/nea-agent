@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +36,7 @@ _CONV_COLUMNS = frozenset(
         "last_product",
         "last_term",
         "last_options",
+        "last_options_at",
         "last_ocr_term",
         "cart_summary_shown",
         "cart_closed",
@@ -61,6 +62,7 @@ def _conv_from_row(row: asyncpg.Record) -> Conversation:
         last_product=row.get("last_product"),
         last_term=row.get("last_term"),
         last_options=row.get("last_options"),
+        last_options_at=row.get("last_options_at"),
         last_ocr_term=row.get("last_ocr_term"),
         cart_summary_shown=row.get("cart_summary_shown", False),
         cart_closed=row.get("cart_closed", False),
@@ -186,6 +188,10 @@ class PgStore:
         for col in ("last_product", "last_options"):
             if col in fields and not isinstance(fields[col], str):
                 fields[col] = json.dumps(fields[col], ensure_ascii=False)
+        # La lista de opciones se sella al guardarse: es lo que permite caducarla. Se hace
+        # AQUÍ, en el punto único de escritura, para que ningún camino se olvide de ponerla.
+        if "last_options" in fields:
+            fields["last_options_at"] = datetime.now(timezone.utc)
         sets = ", ".join(f"{col} = ${i + 2}" for i, col in enumerate(fields))
         await self.pool.execute(
             f"UPDATE bot_conversation SET {sets}, updated_at = now() WHERE id = $1",
