@@ -467,7 +467,11 @@ async def run_turn(
         conv.id, session_hours=ctx.settings.cart_session_hours
     )
     state_block = _build_state_block(
-        conv, cart, respuesta_cliente=user_text, pidio_precisar=pidio_precisar
+        conv,
+        cart,
+        respuesta_cliente=user_text,
+        pidio_precisar=pidio_precisar,
+        contexto_fresco=_contexto_fresco(conv),
     )
     if state_block:
         system = system + "\n\n" + state_block
@@ -4712,6 +4716,21 @@ def _quitar_frases(texto: str, patron: re.Pattern[str]) -> str:
     return "\n\n".join(x.strip() for x in quedan if x.strip()).strip()
 
 
+def _contexto_fresco(conv: Any) -> bool:
+    """¿El contexto de producto (`last_product` / `last_term`) es de las últimas 24 h?
+
+    Sin fecha se presentaba como actual para siempre. Las filas anteriores a la migración
+    `011_contexto_at` no tienen el dato: se tratan como NO frescas (mejor no citar un
+    producto que citar uno de hace un mes).
+    """
+    cuando = getattr(conv, "contexto_at", None)
+    if cuando is None:
+        return False
+    if cuando.tzinfo is None:
+        cuando = cuando.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - cuando) <= timedelta(hours=LISTA_PRECIOS_TTL_HORAS)
+
+
 def _sin_lista_vieja(mensaje: Any, ahora: Any) -> str:
     """El texto del mensaje, salvo que sea una LISTA DE PRECIOS vieja.
 
@@ -4734,10 +4753,23 @@ def _sin_lista_vieja(mensaje: Any, ahora: Any) -> str:
 
 
 def _es_lista_de_precios(texto: str) -> bool:
-    """¿El texto es una lista de presentaciones con precio? (formato canónico 💊 + $/Bs)."""
-    if "💊" not in (texto or ""):
+    """¿El texto afirma un estado de PEDIDO con precio? (lista 💊 o prosa de resumen).
+
+    No basta con mirar las listas `💊`: el 2026-11-13 el agente repitió en prosa un pedido
+    de 37 días antes —"Tu pedido es 1 caja de ACETAMINOFEN … por $1.80, ya registrado para
+    que un asesor lo procese"— ante un cliente que solo dijo que se le habían borrado los
+    chats. Ese texto no tenía `💊` y se colaba.
+    """
+    t = texto or ""
+    if not re.search(r"\$\s*\d|\bBs\b|\d+[.,]\d{2}\s*\$", t):
         return False
-    return bool(re.search(r"\$\s*\d|\bBs\b", texto))
+    if "💊" in t:
+        return True
+    # Prosa que da por hecho un pedido: pedido/carrito/total + registrado/procesar/entrega.
+    return bool(
+        re.search(r"\b(pedido|carrito|compra|total)\b", t, re.I)
+        and re.search(r"\b(registrad|proces|entreg|confirmad|apartad|reservad)", t, re.I)
+    )
 
 
 def _texto_del_bot(history: list[Any], cuantos: int = 2) -> str:
@@ -5211,6 +5243,7 @@ def _build_state_block(
     cart: list[CartItem],
     respuesta_cliente: str | None = None,
     pidio_precisar: bool = False,
+    contexto_fresco: bool = True,
 ) -> str:
     """Resumen de estado determinista inyectado en el system prompt.
 
@@ -5236,6 +5269,18 @@ def _build_state_block(
     }
     fase = fase_map.get(conv.phase, conv.phase)
     lines.append(f"- Fase: {fase}.")
+
+    # CONTEXTO DE PRODUCTO CADUCADO: `last_product` / `last_term` se presentaban siempre
+    # como "lo último", aunque fueran de hace semanas. Con eso el modelo reconstruyó un
+    # pedido de 37 días antes ante un mensaje que no tenía nada que ver.
+    if not contexto_fresco:
+        if conv.last_product or conv.last_term:
+            lines.append(
+                "- SIN contexto de producto reciente: la última búsqueda o el último "
+                "producto de esta conversación son VIEJOS. NO cites productos, precios, "
+                "pedidos ni totales anteriores; si hace falta, busca de nuevo."
+            )
+        return "\n".join(lines)
 
     # Último producto consultado
     if conv.last_product and isinstance(conv.last_product, dict):

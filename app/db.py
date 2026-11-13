@@ -37,6 +37,7 @@ _CONV_COLUMNS = frozenset(
         "last_term",
         "last_options",
         "last_options_at",
+        "contexto_at",
         "last_ocr_term",
         "cart_summary_shown",
         "cart_closed",
@@ -63,6 +64,7 @@ def _conv_from_row(row: asyncpg.Record) -> Conversation:
         last_term=row.get("last_term"),
         last_options=row.get("last_options"),
         last_options_at=row.get("last_options_at"),
+        contexto_at=row.get("contexto_at"),
         last_ocr_term=row.get("last_ocr_term"),
         cart_summary_shown=row.get("cart_summary_shown", False),
         cart_closed=row.get("cart_closed", False),
@@ -192,6 +194,10 @@ class PgStore:
         # AQUÍ, en el punto único de escritura, para que ningún camino se olvide de ponerla.
         if "last_options" in fields:
             fields["last_options_at"] = datetime.now(timezone.utc)
+        # El contexto de producto se sella igual: es lo que permite no presentar como
+        # "actual" un producto o una búsqueda de hace semanas.
+        if {"last_product", "last_term", "last_options"} & set(fields):
+            fields["contexto_at"] = datetime.now(timezone.utc)
         sets = ", ".join(f"{col} = ${i + 2}" for i, col in enumerate(fields))
         await self.pool.execute(
             f"UPDATE bot_conversation SET {sets}, updated_at = now() WHERE id = $1",

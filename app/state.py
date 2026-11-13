@@ -53,6 +53,8 @@ class Conversation:
     last_options: list[dict[str, Any]] | None = None
     # Cuándo se guardó esa lista (para caducarla: ver `last_options_ttl_hours`).
     last_options_at: Any | None = None
+    # Cuándo se refrescó el contexto de producto (last_product / last_term).
+    contexto_at: Any | None = None
     # True tras mostrar el Resumen del Pedido (ver_carrito). Indica que el
     # resumen (con formas de pago) ya se mostró en este pedido, para que el
     # mensaje final no lo repita. NO reinicia el carrito: el cliente puede
