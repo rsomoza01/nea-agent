@@ -2249,6 +2249,11 @@ class ToolRuntime:
         self.provider_hours: str | None = None
         # Efectos observables por turn.py:
         self.handoff_reason: str | None = None  # se ejecuta DESPUÉS de la despedida
+        # Paso 8 (UC-08): categoría clínica detectada en el turno (dato MÍNIMO, sin
+        # texto). Si está puesta, el handoff es una derivación clínica: la seguridad
+        # prevalece (no se cancela por carrito activo) y se registra de forma durable
+        # e idempotente. La categoría NO se envía al CRM (se mapea a `cliente`).
+        self.clinical_category: str | None = None
         self.booked = False
         self.routed_out = False
         self.proposed = False

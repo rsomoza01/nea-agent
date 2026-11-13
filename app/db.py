@@ -12,6 +12,12 @@ from typing import Any
 
 import asyncpg
 
+from app.application.clinical_handoff import (
+    ClinicalCategory,
+    ClinicalHandoff,
+    ClinicalHandoffState,
+    transicion_permitida as _clin_transicion_permitida,
+)
 from app.application.order_workflow import OrderAttempt, OrderPhase
 from app.state import (
     BotMessage,
@@ -501,6 +507,88 @@ class PgStore:
             order_attempt_id,
         )
         return self._fila_a_intento(row) if row is not None else None
+
+    # derivación clínica (Paso 8, UC-08) — reserva atómica e idempotente de UNA
+    # derivación ABIERTA por conversación (anti-duplicado).
+    @staticmethod
+    def _fila_a_derivacion(row: asyncpg.Record) -> ClinicalHandoff:
+        return ClinicalHandoff(
+            clinical_handoff_id=row["clinical_handoff_id"],
+            conversation_id=row["conversation_id"],
+            category=ClinicalCategory(row["category"]),
+            state=ClinicalHandoffState(row["state"]),
+        )
+
+    async def reservar_derivacion(
+        self,
+        *,
+        clinical_handoff_id: str,
+        conversation_id: int,
+        category: ClinicalCategory,
+    ) -> ClinicalHandoff:
+        # El índice único parcial `uq_clinical_handoff_abierto (conversation_id)
+        # WHERE state IN (abiertos)` hace que el INSERT sea atómico: si ya hay una
+        # derivación abierta para la conversación, ON CONFLICT DO NOTHING no crea
+        # otra y se recupera la existente (no se duplica el handoff).
+        row = await self.pool.fetchrow(
+            """
+            INSERT INTO clinical_handoff
+                (clinical_handoff_id, conversation_id, category, state)
+            VALUES ($1, $2, $3, 'solicitado')
+            ON CONFLICT (conversation_id) WHERE state IN
+                ('detectado','solicitado','asignado','atendido')
+            DO NOTHING
+            RETURNING clinical_handoff_id, conversation_id, category, state
+            """,
+            clinical_handoff_id, conversation_id, category.value,
+        )
+        if row is None:
+            abierto = await self.derivacion_abierta(conversation_id)
+            assert abierto is not None  # el conflicto implica que existe la abierta
+            return abierto
+        return self._fila_a_derivacion(row)
+
+    async def derivacion_abierta(
+        self, conversation_id: int
+    ) -> ClinicalHandoff | None:
+        row = await self.pool.fetchrow(
+            """
+            SELECT clinical_handoff_id, conversation_id, category, state
+            FROM clinical_handoff
+            WHERE conversation_id = $1
+              AND state IN ('detectado','solicitado','asignado','atendido')
+            ORDER BY created_at DESC LIMIT 1
+            """,
+            conversation_id,
+        )
+        return self._fila_a_derivacion(row) if row is not None else None
+
+    async def avanzar_estado_derivacion(
+        self, clinical_handoff_id: str, destino: ClinicalHandoffState
+    ) -> ClinicalHandoff | None:
+        row = await self.pool.fetchrow(
+            """
+            SELECT clinical_handoff_id, conversation_id, category, state
+            FROM clinical_handoff WHERE clinical_handoff_id = $1
+            """,
+            clinical_handoff_id,
+        )
+        if row is None:
+            return None
+        actual = self._fila_a_derivacion(row)
+        if not _clin_transicion_permitida(actual.state, destino):
+            raise ValueError(
+                f"transición no permitida: {actual.state.value} → {destino.value}"
+            )
+        upd = await self.pool.fetchrow(
+            """
+            UPDATE clinical_handoff SET state = $2
+            WHERE clinical_handoff_id = $1
+            RETURNING clinical_handoff_id, conversation_id, category, state
+            """,
+            clinical_handoff_id, destino.value,
+        )
+        return self._fila_a_derivacion(upd) if upd is not None else None
 
     # analytics (Fase 1: dashboard de medicamentos más buscados)
     @staticmethod

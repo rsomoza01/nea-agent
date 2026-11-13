@@ -23,6 +23,7 @@ from app.crm import CrmConflict, CrmError
 from app.hostility import ALERT as HOSTILITY_ALERT, hostile_streak
 from app.intencion import entender as entender_intencion
 from app import guards
+from app.application import clinical_handoff
 from app.llm import LlmExhausted
 from app.relevancia import (
     APELATIVOS as _APELATIVOS,
@@ -917,8 +918,44 @@ async def run_turn(
         and _quiere_ver_resumen(user_text, tiene_carrito=True)
     )
     if farmacia and final_text:
+        # G14 — Consulta clínica → derivación humana fail-closed (Paso 8, UC-08).
+        # MÁXIMA PRIORIDAD: la seguridad clínica prevalece sobre cualquier respuesta
+        # comercial. El bot NO aconseja (no diagnostica, no prescribe, no ajusta
+        # dosis ni sustituye tratamiento — PLAN §7, ADR-0006); deriva a un humano y
+        # responde SOLO con un mensaje de recepción/estado autorizado. La detección
+        # es determinista y de alta precisión sobre el texto del CLIENTE: no toca
+        # F14/F15/F15.1 ni el catálogo (no busca, no autoriza, no llama al LLM).
+        if (_cat_clinica := clinical_handoff.clasificar(user_text)) is not None:
+            logger.warning(
+                "guarda G14: consulta clínica (%s) — derivación humana fail-closed",
+                _cat_clinica.value,
+            )
+            runtime.clinical_category = _cat_clinica.value
+            # Registro durable + anti-duplicado idempotente (una sola derivación
+            # abierta por conversación). Best-effort: si el store falla, igual se
+            # deriva (fail-safe — la seguridad no depende de que persista el estado).
+            _clin_nueva = True
+            try:
+                _res_clin = await clinical_handoff.DerivarConsultaClinicaUseCase(
+                    ctx.store
+                ).ejecutar(conversation_id=conv.id, category=_cat_clinica)
+                _clin_nueva = (
+                    _res_clin.status
+                    is clinical_handoff.ClinicalHandoffStatus.SOLICITADO
+                )
+            except Exception as exc:
+                logger.warning("G14: no pude registrar la derivación clínica: %s", exc)
+            if _clin_nueva:
+                # Derivación nueva: mensaje de recepción + handoff al humano.
+                final_text = guards.TPL_DERIVACION_CLINICA
+                runtime.handoff_reason = "clinico"  # canonical_handoff_reason → cliente
+            else:
+                # Ya había una derivación ABIERTA: NO se duplica el handoff en el CRM;
+                # solo se repite un mensaje de ESTADO autorizado (PLAN §8 punto 6: el
+                # bot no reanuda consejo mientras el caso espera al humano).
+                final_text = guards.TPL_DERIVACION_CLINICA_EN_CURSO
         # G2 — política fuera del KB: escalado hardcodeado, jamás generación.
-        if guards.intencion_fuera_kb(user_text):
+        elif guards.intencion_fuera_kb(user_text):
             logger.warning("guarda G2 VETO: intención fuera de KB (%r) — plantilla de escalado", user_text[:80])
             final_text = guards.TPL_FUERA_KB
             if runtime.handoff_reason is None:
@@ -1067,8 +1104,15 @@ async def run_turn(
             runtime.handoff_reason = "lead_request"
 
     # Negativa con carrito: si algún guard pisó el texto, restaurar el resumen
-    # canónico del carrito (ver_carrito ya se forzó en el tool_loop).
-    if es_negativa_con_carrito and runtime.cart_summary_text and final_text != runtime.cart_summary_text:
+    # canónico del carrito (ver_carrito ya se forzó en el tool_loop). EXCEPCIÓN:
+    # una derivación clínica (G14) NO se restaura — la seguridad clínica prevalece
+    # sobre el resumen del pedido (PLAN §7).
+    if (
+        es_negativa_con_carrito
+        and runtime.clinical_category is None
+        and runtime.cart_summary_text
+        and final_text != runtime.cart_summary_text
+    ):
         logger.info("negativa con carrito: restaurando resumen canónico tras posible veto")
         final_text = runtime.cart_summary_text
 
@@ -1154,7 +1198,13 @@ async def run_turn(
     # medio de un pedido — un handoff que el LLM llamó tras una negativa ("no"
     # a "¿otro medicamento?") no debe matar la conversación; se cancela y se
     # responde con el resumen.
-    if runtime.handoff_reason is not None and cart_activo:
+    # La derivación clínica (G14) NO se cancela por carrito activo: una consulta
+    # clínica es clínica aunque haya un pedido en curso; la seguridad prevalece.
+    if (
+        runtime.handoff_reason is not None
+        and cart_activo
+        and runtime.clinical_category is None
+    ):
         logger.warning(
             "handoff cancelado: hay carrito activo (%s) — el pedido sigue",
             runtime.handoff_reason,

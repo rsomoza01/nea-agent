@@ -90,6 +90,13 @@ def canonical_handoff_reason(reason: str | None) -> str:
     r = (reason or "").strip().lower()
     if r in HANDOFF_REASONS:
         return r
+    # Derivación clínica (Paso 8, UC-08): el propietario decidió NO añadir `clinico`
+    # al catálogo del CRM todavía (sería cambio de contrato; un reason fuera de
+    # catálogo da 422 y pierde el handoff — cert. 002). Se mapea al bucket seguro
+    # existente `cliente` (el cliente necesita a un humano). La CATEGORÍA clínica no
+    # se envía al CRM: vive solo en el estado/auditoría interno de NEA.
+    if "clinic" in r or "clínic" in r:
+        return "cliente"
     if "hostil" in r or "groser" in r or "insult" in r:
         return "hostilidad"
     if any(k in r for k in ("humano", "persona", "pidi", "lead_request", "hablar")):

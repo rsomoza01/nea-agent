@@ -433,6 +433,43 @@ def pide_humano(texto: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# G14 — Consulta clínica → derivación humana fail-closed (Paso 8, UC-08)
+# ---------------------------------------------------------------------------
+# El cliente hace una consulta de CONSEJO clínico (diagnóstico, dosis,
+# interacción, contraindicación, embarazo/lactancia, pediatría, reacción
+# adversa, síntoma de alarma o sustitución individualizada). El bot NO
+# responde clínicamente: no diagnostica, no prescribe, no ajusta dosis ni
+# sustituye tratamiento (PLAN §7 "Seguridad clínica", ADR-0006). La única
+# salida segura es NO aconsejar y derivar a un humano.
+#
+# La DETECCIÓN vive en app/application/clinical_handoff.clasificar (capa de
+# aplicación, dirección de dependencias correcta); aquí solo viven las
+# PLANTILLAS constantes de respuesta, junto al resto de guards (el texto
+# fail-closed jamás lo redacta el LLM). turn.py cablea detección + handoff.
+
+# Mensaje de RECEPCIÓN autorizado (estado SOLICITADO): confirma que un humano
+# del equipo atenderá la consulta clínica. NO da ningún consejo clínico.
+TPL_DERIVACION_CLINICA = (
+    "Para cuidar tu salud, esta consulta la debe atender el equipo "
+    "farmacéutico de forma personal: no puedo dar indicaciones médicas, de "
+    "dosis ni de tratamiento por este medio. Ya la estoy derivando a un "
+    "profesional de la farmacia, que te responderá por este mismo chat. Si "
+    "sientes un malestar grave o urgente, acude de inmediato a un centro de "
+    "salud. 🙏"
+)
+
+# Mensaje de ESTADO autorizado (derivación ya ABIERTA): el cliente insiste y el
+# caso aún espera al humano. Solo se repite que el equipo lo atenderá; NO se
+# reanuda consejo clínico mientras el caso está abierto (PLAN §8 punto 6).
+TPL_DERIVACION_CLINICA_EN_CURSO = (
+    "Tu consulta ya está en manos del equipo farmacéutico y te responderán por "
+    "este mismo chat en cuanto puedan. No puedo adelantarte indicaciones "
+    "médicas, de dosis ni de tratamiento. Si es una urgencia, acude a un "
+    "centro de salud. 🙏"
+)
+
+
+# ---------------------------------------------------------------------------
 # G10 — Composición/uso farmacológico o promesa de búsqueda sin respaldo
 # ---------------------------------------------------------------------------
 # El agente afirma la clase terapéutica o el uso de un medicamento ('es un

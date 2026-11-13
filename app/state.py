@@ -12,6 +12,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Protocol
 
+from app.application.clinical_handoff import (
+    ClinicalCategory,
+    ClinicalHandoff,
+    ClinicalHandoffState,
+    transicion_permitida as _clin_transicion_permitida,
+)
 from app.application.order_workflow import OrderAttempt, OrderPhase
 
 if TYPE_CHECKING:
@@ -276,6 +282,25 @@ class Store(Protocol):
         ...
     async def obtener_intento(self, order_attempt_id: str) -> OrderAttempt | None: ...
 
+    # derivación clínica (Paso 8, UC-08): reserva atómica e idempotente de UNA
+    # derivación ABIERTA por conversación (anti-duplicado). Satisface el puerto
+    # `ClinicalHandoffStore` de la capa de aplicación.
+    async def reservar_derivacion(
+        self,
+        *,
+        clinical_handoff_id: str,
+        conversation_id: int,
+        category: ClinicalCategory,
+    ) -> ClinicalHandoff:
+        """Crea la derivación si no hay otra abierta; si la hay, devuelve esa (no duplica)."""
+        ...
+    async def derivacion_abierta(
+        self, conversation_id: int
+    ) -> ClinicalHandoff | None: ...
+    async def avanzar_estado_derivacion(
+        self, clinical_handoff_id: str, destino: ClinicalHandoffState
+    ) -> ClinicalHandoff | None: ...
+
     # analytics (Fase 1: dashboard de medicamentos más buscados)
     async def log_med_query(
         self,
@@ -356,6 +381,7 @@ class MemoryStore:
         self.pending_sends: dict[int, PendingSend] = {}
         self.cart: dict[int, list[CartItem]] = {}
         self.order_attempts: dict[str, OrderAttempt] = {}
+        self.clinical_handoffs: dict[str, ClinicalHandoff] = {}
         self.med_queries: list[dict[str, Any]] = []
         # F15 — decisiones de la capa de comprensión (incluidas las que NO buscan).
         self.intent_decisions: list[dict[str, Any]] = []
@@ -555,6 +581,55 @@ class MemoryStore:
 
     async def obtener_intento(self, order_attempt_id: str) -> OrderAttempt | None:
         return self.order_attempts.get(order_attempt_id)
+
+    async def reservar_derivacion(
+        self,
+        *,
+        clinical_handoff_id: str,
+        conversation_id: int,
+        category: ClinicalCategory,
+    ) -> ClinicalHandoff:
+        # Anti-duplicado: si ya hay una derivación ABIERTA para la conversación, se
+        # devuelve esa (no se crea otra). Equivale al índice único parcial
+        # `(conversation_id) WHERE abierto` + ON CONFLICT DO NOTHING de PgStore.
+        abierto = await self.derivacion_abierta(conversation_id)
+        if abierto is not None:
+            return abierto
+        h = ClinicalHandoff(
+            clinical_handoff_id=clinical_handoff_id,
+            conversation_id=conversation_id,
+            category=category,
+            state=ClinicalHandoffState.SOLICITADO,
+        )
+        self.clinical_handoffs[clinical_handoff_id] = h
+        return h
+
+    async def derivacion_abierta(
+        self, conversation_id: int
+    ) -> ClinicalHandoff | None:
+        for h in self.clinical_handoffs.values():
+            if h.conversation_id == conversation_id and h.abierto:
+                return h
+        return None
+
+    async def avanzar_estado_derivacion(
+        self, clinical_handoff_id: str, destino: ClinicalHandoffState
+    ) -> ClinicalHandoff | None:
+        actual = self.clinical_handoffs.get(clinical_handoff_id)
+        if actual is None:
+            return None
+        if not _clin_transicion_permitida(actual.state, destino):
+            raise ValueError(
+                f"transición no permitida: {actual.state.value} → {destino.value}"
+            )
+        avanzado = ClinicalHandoff(
+            clinical_handoff_id=actual.clinical_handoff_id,
+            conversation_id=actual.conversation_id,
+            category=actual.category,
+            state=destino,
+        )
+        self.clinical_handoffs[clinical_handoff_id] = avanzado
+        return avanzado
 
     async def log_med_query(
         self,
