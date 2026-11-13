@@ -111,5 +111,12 @@ El Policy Engine devuelve (sin reemplazar la puerta de catálogo):
   - `/chat` sin `X-API-Key` válida se rechaza.
 - **Fail-closed:** comprensión caída → denegar, no buscar.
 
-**🔸 PENDIENTE:** pruebas negativas de acceso cruzado Staff/empleado requieren el
-modelo de identidad del Paso 9 (PLAN §8 q3).
+**🔸 PENDIENTE → BLOQUEADO (Paso 9):** las pruebas negativas de acceso cruzado
+Staff/empleado requieren un **modelo de identidad verificable de empleado** que el
+producto **no tiene hoy**. Ver auditoría y diseño en
+[`SECURITY-ACTOR-POLICIES.md`](SECURITY-ACTOR-POLICIES.md) y el bloqueo formal en
+[`ADR-0008`](ADR/ADR-0008-identidad-staff-bloqueada.md). Hasta que el propietario
+apruebe la identidad: **fail-closed, todo Staff denegado** (solo la negativa
+"cliente no alcanza superficie Staff" es verificable hoy). Hallazgo abierto: IDOR de
+lectura en `/analytics/*` por `provider_id` de query sin binding a la credencial
+(F-1).
