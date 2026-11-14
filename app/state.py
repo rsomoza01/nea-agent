@@ -828,6 +828,10 @@ class AppContext:
     crm: Any  # CrmClient
     llm: Any  # OpenAiLlm o fake con .complete()
     profile: Any | None = None  # ProfileProvider; None en tests = perfil mínimo
+    # Persistencia de identidad/sesión/auditoría del Staff Agent (Paso 11). Separada
+    # del `store` de Customer a propósito (StaffStore de app/staff/identity.py). None =
+    # superficie Staff no montada (las rutas /staff/* responden 503). Ver app/staff/.
+    staff: Any | None = None  # StaffStore
     coalescer: Any | None = None
     relay_wake: asyncio.Event = field(default_factory=asyncio.Event)
     # Un candado por identidad: los turnos de UNA conversación se serializan.

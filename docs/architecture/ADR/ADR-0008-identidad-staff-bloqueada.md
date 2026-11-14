@@ -1,6 +1,17 @@
 # ADR-0008 — Autorización por actor: diseño fail-closed y BLOQUEO de Staff por falta de identidad verificable
 
-- **Estado:** Aceptada (diseño) + **BLOQUEO operativo** (implementación Staff aplazada hasta aprobación de un modelo de identidad)
+> ## ✅ DESBLOQUEADO (2026-11-14) por [`ADR-0010`](ADR-0010-identidad-staff-sesion.md)
+>
+> El bloqueo operativo que fija este ADR se levantó cuando el propietario **aprobó un
+> modelo de identidad verificable de empleado** (sesión con token emitido). Ese modelo
+> está implementado en [`ADR-0010`](ADR-0010-identidad-staff-sesion.md) + migración
+> `018_staff_identity.sql` + `app/staff/`. Las negativas N2/N3/N4 del §7 de
+> [`../SECURITY-ACTOR-POLICIES.md`](../SECURITY-ACTOR-POLICIES.md), antes BLOCKED, son
+> ahora **ejercitables y probadas** (`tests/test_staff_agent.py`). El diseño de este ADR
+> (deny-by-default, no simular auth, no promover la API-key a rol) **sigue vigente**: es
+> exactamente lo que ADR-0010 implementa.
+
+- **Estado:** Aceptada (diseño) + bloqueo operativo **LEVANTADO por ADR-0010** (2026-11-14)
 - **Fecha:** 2026-11-13
 - **Paso del plan:** 9 (Identidad, permisos y frontera Customer/Staff)
 - **Relacionada con:** [`../POLICY-MATRIX.md`](../POLICY-MATRIX.md), [`../SECURITY-ACTOR-POLICIES.md`](../SECURITY-ACTOR-POLICIES.md), [`../DOMAIN-MODEL.md`](../DOMAIN-MODEL.md) §1, [`ADR-0002`](ADR-0002-llm-sin-autoridad.md), [`ADR-0003`](ADR-0003-puerta-unica-autorizacion.md), PLAN §7 (aislamiento de tenant) y §8 q3 (identidad de empleado), §9

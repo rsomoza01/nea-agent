@@ -60,7 +60,7 @@ Columnas: **Actor** · **Acción** · **Recurso** · **Alcance de farmacia** ·
 | Integración (API key) | Leer analytics top-meds | `med_queries` | `providerId` (query) | `X-API-Key == CRM_BOT_API_KEY` | — |
 | Integración (API key) | Leer pacientes crónicos | `patient_profiles` | `providerId` | `X-API-Key` | — |
 | Integración (API key) | Marcar consent crónico | `patient_profiles` | `providerId` | **🔸 sin endpoint hoy** (`marcar_consent:831`) | PENDIENTE |
-| Empleado/Farmacéutico/Admin (individual) | Operaciones internas | — | — | **🔸 PENDIENTE** (sin identidad/rol individual; PLAN §8 q3) | PENDIENTE |
+| Empleado/Farmacéutico/Admin (individual) | Operaciones internas (`/staff/*`, piloto cerrado) | analytics, pedido, perfiles crónicos | `pharmacy_id` de la **sesión** | ✅ **IMPLEMENTADO** (Paso 11/ADR-0010): sesión Bearer + rol (clerk⊂pharmacist⊂admin); deny-by-default; mutación exige confirmación | `staff_audit` (append-only) |
 | LLM | — | — | — | **ninguna**: no autoriza, no ejecuta, no afirma hechos | — |
 
 > **La `X-API-Key` identifica una *integración* (el CRM/dashboard que llama), no a
@@ -111,12 +111,11 @@ El Policy Engine devuelve (sin reemplazar la puerta de catálogo):
   - `/chat` sin `X-API-Key` válida se rechaza.
 - **Fail-closed:** comprensión caída → denegar, no buscar.
 
-**🔸 PENDIENTE → BLOQUEADO (Paso 9):** las pruebas negativas de acceso cruzado
-Staff/empleado requieren un **modelo de identidad verificable de empleado** que el
-producto **no tiene hoy**. Ver auditoría y diseño en
-[`SECURITY-ACTOR-POLICIES.md`](SECURITY-ACTOR-POLICIES.md) y el bloqueo formal en
-[`ADR-0008`](ADR/ADR-0008-identidad-staff-bloqueada.md). Hasta que el propietario
-apruebe la identidad: **fail-closed, todo Staff denegado** (solo la negativa
-"cliente no alcanza superficie Staff" es verificable hoy). Hallazgo abierto: IDOR de
-lectura en `/analytics/*` por `provider_id` de query sin binding a la credencial
-(F-1).
+**✅ IMPLEMENTADO (Paso 11, 2026-11-14):** el propietario aprobó el modelo de identidad
+de empleado y se implementó ([`ADR-0010`](ADR/ADR-0010-identidad-staff-sesion.md)): las
+negativas de acceso cruzado Staff/empleado (tenant A→B, rol insuficiente, identidad
+expirada/revocada) son ahora **ejercitables y probadas** (`tests/test_staff_agent.py`),
+además de "cliente no alcanza superficie Staff". El hallazgo **F-1** quedó **mitigado**
+(binding `provider_id == settings.provider_id` en mono-tenant + tenant desde la sesión en
+`/staff/*`). F-2 (firma Meta en producción) sigue abierto. Ver
+[`SECURITY-ACTOR-POLICIES.md`](SECURITY-ACTOR-POLICIES.md) §6-§7.

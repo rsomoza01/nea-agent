@@ -1,15 +1,16 @@
 # NEA — Identidad, permisos y frontera Customer/Staff (Paso 9)
 
-> ## 🛑 ESTADO: DISEÑO + BLOQUEO
+> ## ✅ ESTADO: DISEÑO (Paso 9) → IMPLEMENTADO (Paso 11, 2026-11-14)
 >
-> El producto **no dispone hoy de identidad verificable de empleados**
-> (ver auditoría §2 y [`ADR-0008`](ADR/ADR-0008-identidad-staff-bloqueada.md)).
-> Por mandato del Paso 9 — *"si el producto no dispone de identidad verificable
-> para empleados, entrega diseño y bloqueo; no simules autenticación"* — este
-> documento es **solo diseño**. **No** se implementa runtime de Staff, **no** se
-> crean roles/sesiones, **no** se cambian canales de autenticación. La
-> implementación queda bloqueada hasta que el propietario **apruebe un modelo de
-> identidad de empleado** (PLAN §8 q3).
+> Este documento fue el **diseño + bloqueo** del Paso 9. El propietario **aprobó el
+> modelo de identidad de empleado** y el Paso 11 lo **implementó**: identidad por sesión
+> emitida ([`ADR-0010`](ADR/ADR-0010-identidad-staff-sesion.md)), migración
+> `018_staff_identity.sql`, policy-engine deny-by-default y auditoría append-only en
+> `app/staff/`, superficie `/staff/*` como **piloto cerrado**. El diseño §3-§6 de abajo
+> es ahora el **contrato implementado**; las negativas §7 N2/N3/N4 — antes BLOCKED — son
+> **ejercitables y probadas** (`tests/test_staff_agent.py`). El hallazgo **F-1** quedó
+> **mitigado** (binding `provider_id == settings.provider_id` en mono-tenant). El bloqueo
+> de [`ADR-0008`](ADR/ADR-0008-identidad-staff-bloqueada.md) está **levantado**.
 
 > **Insumos:** [`POLICY-MATRIX.md`](POLICY-MATRIX.md), [`DOMAIN-MODEL.md`](DOMAIN-MODEL.md) §1-§2,
 > [`USE-CASES.md`](USE-CASES.md), [`ADR-0002`](ADR/ADR-0002-llm-sin-autoridad.md),
@@ -181,9 +182,10 @@ staff_audit:
   **acción y el recurso por referencia**, no el texto del cliente.
 - El registro es **obligatorio incluso para denegaciones** (intentos fallidos son
   señal de abuso).
-- **Bloqueado:** la tabla no se crea en este paso porque `actor_id` requiere la
-  identidad de empleado aprobada. Auditar la API-key compartida como "actor" sería
-  auditoría falsa.
+- ✅ **IMPLEMENTADO (Paso 11):** la tabla `staff_audit` se crea en la migración
+  `018_staff_identity.sql` y `actor_id` es el **empleado autenticado** (no la API-key).
+  El código solo INSERTA (append-only); se auditan autorizados y denegados. Ver
+  `app/staff/pg.PgStaffStore.registrar_auditoria` y `EnMemoriaStaffStore`.
 
 ---
 
@@ -191,9 +193,9 @@ staff_audit:
 
 | Amenaza | Diseño de control | Estado |
 |---|---|---|
-| **IDOR / tenant-crossing** (F-1) | `pharmacy_id` obligatorio en cada repo + validación del `provider_id` recibido contra el contexto de la credencial. Mitigación mínima sin identidad nueva: en instancia mono-tenant, exigir `provider_id == settings.provider_id` en `/analytics/*`. | **Diseñado; corrección requiere aprobación (docs-only)** |
+| **IDOR / tenant-crossing** (F-1) | `pharmacy_id` obligatorio en cada repo + validación del `provider_id` recibido contra el contexto de la credencial. Mitigación mínima sin identidad nueva: en instancia mono-tenant, exigir `provider_id == settings.provider_id` en `/analytics/*`. | ✅ **MITIGADO** (`webhook._provider_mismatch` → 403; `/staff/*` fija tenant desde la sesión) |
 | **Cambio de tenant** | `pharmacy_id` solo del backend; nunca del LLM/texto/cliente. Cualquier `pharmacy_id` entrante se **compara**, no se **adopta**. | ✅ invariante vigente para catálogo/carrito; ⚠ pendiente en analytics (F-1) |
-| **Spoofing de rol** | `role` nunca se deriva de la posesión de un secreto compartido ni del canal; solo de una sesión de empleado autenticada (inexistente hoy → deny). | **Bloqueado por diseño (ADR-0008)** |
+| **Spoofing de rol** | `role` nunca se deriva de la posesión de un secreto compartido ni del canal; solo de una sesión de empleado autenticada. | ✅ **IMPLEMENTADO** (`role` sale de `staff_session`; ADR-0010) |
 | **Replay** | `correlation_id` único por operación + idempotencia. Patrón ya probado: dedup por `wa_message_id` (`processed_message`, gate `INSERT ... ON CONFLICT`) y reserva atómica de `order_attempt`/`clinical_handoff`. Las mutaciones Staff reusarían el mismo idioma idempotente. | **Patrón disponible; aplica al implementar Staff** |
 | **Firma ausente** (F-2) | Exigir `META_APP_SECRET` en producción (rechazar `/webhook` sin firma). | **Diseñado; cambio de config requiere aprobación** |
 
@@ -207,10 +209,10 @@ expirar/cruzar/degradar). Ninguna debe implementarse simulando identidad.
 
 | # | Prueba negativa | Resultado esperado | Estado | Por qué |
 |---|---|---|---|---|
-| N1 | **Cliente invoca operación Staff** | denegado | ✅ **verificable hoy** (estructural) | El cliente entra por WhatsApp; `/chat` y `/analytics/*` exigen `X-API-Key` que el cliente no posee → 401. No hay herramienta Staff mutante expuesta al turno del cliente. |
-| N2 | **Empleado de farmacia A opera en B** | denegado (tenant mismatch) | 🛑 **BLOCKED** | No existe "empleado" autenticado ni por-farmacia que ejercitar. Diseño: `resource.pharmacy_id != context.pharmacy_id → Denegado`. |
-| N3 | **Rol insuficiente** | denegado | 🛑 **BLOCKED** | No existen roles de persona (`role` siempre `None`). Diseño: acción que exige rol con `role=None → Denegado`. |
-| N4 | **Identidad expirada** | denegado | 🛑 **BLOCKED** | No existe sesión con expiración. Diseño: `issued_at` + TTL → `Denegado` al vencer. |
+| N1 | **Cliente / no autenticado invoca operación Staff** | denegado (401) | ✅ **probado** | El cliente entra por WhatsApp; `/staff/*` exige sesión Bearer que no posee → 401 (`test_N1_no_autenticado_401_auditado`). Auditado como `denegado:no_autenticado`. |
+| N2 | **Empleado de farmacia A opera en B** | denegado (tenant mismatch) | ✅ **probado** | `autorizar` compara `resource_pharmacy_id` con la farmacia de la SESIÓN → `denegado:tenant_mismatch` (`test_N2_tenant_crossing_denegado`). |
+| N3 | **Rol insuficiente** | denegado | ✅ **probado** | `clerk` no alcanza `analytics.chronic_patients` (rol mínimo farmacéutico) → 403 `denegado:rol_insuficiente` (`test_N3_clerk_no_puede_cronicos_403`). |
+| N4 | **Identidad expirada / revocada** | denegado (401) | ✅ **probado** | Sesión con `expires_at` vencido o `revoked` → `verificar_sesion` devuelve None → 401 (`test_N4_sesion_expirada_401`, `test_logout_revoca_sesion`). |
 
 **Nota de honestidad de la prueba N1:** se documenta como estructuralmente cierta por
 auditoría de código (no hay superficie Staff tras la puerta del cliente), sin

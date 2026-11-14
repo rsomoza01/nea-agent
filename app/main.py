@@ -27,6 +27,8 @@ from app.profile import ProfileProvider
 from app.relay import RelayWorker
 from app.sender import SenderWorker
 from app.state import AppContext
+from app.staff.api import router as staff_router
+from app.staff.pg import PgStaffStore
 from app.turn import handle_flush
 from app.webhook import router as webhook_router
 from app.aliases import cargar_desde_store as cargar_aliases
@@ -83,6 +85,9 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
                     default_name=settings.agent_name,
                     brief_path=settings.brief_path or None,
                 ),
+                # Staff Agent (Paso 11): identidad/sesión/auditoría sobre el MISMO pool.
+                # Piloto cerrado — sin empleados sembrados, /staff/* queda fail-closed.
+                staff=PgStaffStore(store.pool),
             )
         c: AppContext = app.state.ctx
         _wire_coalescer(c)
@@ -114,6 +119,7 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
     if ctx is not None:
         _wire_coalescer(ctx)
     app.include_router(webhook_router)
+    app.include_router(staff_router)
 
     @app.get("/health")
     async def health(request: Request):  # type: ignore[no-untyped-def]
