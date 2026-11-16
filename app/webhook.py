@@ -381,6 +381,19 @@ async def _early_typing(ctx: AppContext, identity: str) -> None:
 # X-API-Key (misma que el webhook). Filtros: providerId (obligatorio),
 # desde/hasta (ISO), top N (default 20).
 
+
+def _provider_mismatch(ctx: AppContext, provider_id: str) -> bool:
+    """F-1 (SECURITY-ACTOR-POLICIES §6, ADR-0008): en instancia mono-tenant el
+    `provider_id` del query DEBE coincidir con el de la instancia; la X-API-Key es un
+    secreto GLOBAL compartido, así que sin este binding cualquiera que la posea leería
+    analytics de cualquier farmacia cambiando el query (IDOR / tenant-crossing).
+
+    Cuando `settings.provider_id` está vacío (p. ej. tests/dev sin tenant fijado) no se
+    aplica el binding — el comportamiento no cambia respecto al AS-IS.
+    """
+    fijado = (ctx.settings.provider_id or "").strip()
+    return bool(fijado) and provider_id != fijado
+
 @router.get("/analytics/top-meds")
 async def analytics_top_meds(
     request: Request,
@@ -397,6 +410,8 @@ async def analytics_top_meds(
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     if not provider_id:
         return JSONResponse({"error": "provider_id requerido"}, status_code=400)
+    if _provider_mismatch(ctx, provider_id):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
     try:
         data = await ctx.store.top_med_queries(
             provider_id=provider_id,
@@ -439,6 +454,8 @@ async def analytics_chronic_patients(
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     if not provider_id:
         return JSONResponse({"error": "provider_id requerido"}, status_code=400)
+    if _provider_mismatch(ctx, provider_id):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
     try:
         # wa_identitys llega como lista separada por comas (el CRM filtra por
         # nombre/teléfono desde su tabla contact y pasa las identidades).

@@ -1,0 +1,40 @@
+{
+ "modelo": "meituan/longcat-2.0",
+ "escenarios": [
+  {
+   "id": "13-frases-con-contexto",
+   "titulo": "Las mismas frases EN MITAD de la conversación (contexto real de las quejas)",
+   "nota": "Tras listar un producto, la frase de conversación debe seguir sin buscar.",
+   "conversacion": [
+    {
+     "cliente": "tienen macrodantina?",
+     "agente": [
+      "Sí, aquí está:\n\nMACRODANTINA\n💊 1. MACRODANTINA 100 MG X 20 CAP\n   $6,80  |  Bs 5.100,00\n\n👉 Para agregar al carrito: quiero X cajas de la opción Z\n   Ejemplo: quiero 2 cajas de la opción 3\n🛒 ¿Otro medicamento? Escríbeme el nombre y lo busco.\n✅ Cuando termines, escribe LISTO y te muestro el resumen de tu pedido."
+     ]
+    },
+    {
+     "cliente": "No puede ser Indu.",
+     "agente": [
+      "¿Qué pasa con la macrodantina, el precio o algo más? Cuéntame y veo qué te puedo ofrecer."
+     ]
+    },
+    {
+     "cliente": "Solo una marca?",
+     "agente": [
+      "No tengo información confirmada sobre ese medicamento en este momento y no quiero darte datos incorrectos. Para precio, disponibilidad o composición exacta, déjame buscarlo en el catálogo. ¿Cuál es el medicamento que buscas?"
+     ]
+    },
+    {
+     "cliente": "Por ahroa no",
+     "agente": [
+      "Perfecto, aquí estoy cuando lo necesites. Que tengas buena noche 🌙"
+     ]
+    }
+   ]
+  }
+ ],
+ "consultas_al_catalogo": [
+  "macrodantina",
+  "macrodantina"
+ ]
+}

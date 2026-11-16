@@ -25,7 +25,22 @@ logger = logging.getLogger("nea.crm")
 
 
 class CrmError(Exception):
-    """Fallo genérico hablando con el CRM (red, 5xx, 401...)."""
+    """Fallo de PROVEEDOR hablando con el CRM (red, 5xx, status inesperado).
+
+    Taxonomía (Paso 10, punto 7): distinguir **fallo de proveedor** de **no
+    encontrado** (los métodos devuelven `None` en 404, no lanzan) y de **no
+    autorizado** (`CrmUnauthorized`). El 409 tipado es `CrmConflict`.
+    """
+
+
+class CrmUnauthorized(CrmError):
+    """401/403 del CRM: credencial inválida o sin permiso. NO es fallo de red
+    ni "no encontrado"; no se reintenta a ciegas. Subclase de `CrmError` para no
+    romper los `except CrmError` existentes (retrocompatible)."""
+
+    def __init__(self, status_code: int) -> None:
+        super().__init__(f"CRM rechazó la credencial ({status_code})")
+        self.status_code = status_code
 
 
 class CrmConflict(CrmError):
@@ -90,6 +105,13 @@ def canonical_handoff_reason(reason: str | None) -> str:
     r = (reason or "").strip().lower()
     if r in HANDOFF_REASONS:
         return r
+    # Derivación clínica (Paso 8, UC-08): el propietario decidió NO añadir `clinico`
+    # al catálogo del CRM todavía (sería cambio de contrato; un reason fuera de
+    # catálogo da 422 y pierde el handoff — cert. 002). Se mapea al bucket seguro
+    # existente `cliente` (el cliente necesita a un humano). La CATEGORÍA clínica no
+    # se envía al CRM: vive solo en el estado/auditoría interno de NEA.
+    if "clinic" in r or "clínic" in r:
+        return "cliente"
     if "hostil" in r or "groser" in r or "insult" in r:
         return "hostilidad"
     if any(k in r for k in ("humano", "persona", "pidi", "lead_request", "hablar")):
@@ -115,9 +137,15 @@ class CrmClient:
 
     async def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
         try:
-            return await self._http.request(method, url, **kwargs)
+            resp = await self._http.request(method, url, **kwargs)
         except httpx.HTTPError as exc:
             raise CrmError(f"error de red hacia el CRM: {exc}") from exc
+        # 401/403 se tipan aquí (punto 7): no autorizado ≠ fallo de proveedor ≠
+        # 404 "no encontrado". Centralizado para todos los endpoints; como
+        # CrmUnauthorized es CrmError, los `except CrmError` siguen capturándolo.
+        if resp.status_code in (401, 403):
+            raise CrmUnauthorized(resp.status_code)
+        return resp
 
     async def get_context(
         self, wa_identity: str, conversation_id: str | None = None

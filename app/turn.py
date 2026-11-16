@@ -21,7 +21,9 @@ from app import media
 from app.config import canonical_identity
 from app.crm import CrmConflict, CrmError
 from app.hostility import ALERT as HOSTILITY_ALERT, hostile_streak
+from app.intencion import entender as entender_intencion
 from app import guards
+from app.application import clinical_handoff
 from app.llm import LlmExhausted
 from app.relevancia import (
     APELATIVOS as _APELATIVOS,
@@ -31,7 +33,12 @@ from app.relevancia import (
 from app.stall import ALERTA as STALL_ALERT, racha_vacia, sin_rumbo
 from app.profile import resolve_profile
 from app.prompt import build_system_prompt
-from app.wtext import a_formato_whatsapp
+from app.wtext import WA_MAX_CHARS, a_formato_whatsapp, partir_mensaje_largo
+
+# Alias de compatibilidad: la partición de mensajes largos y su tope viven ahora
+# en wtext (texto saliente de WhatsApp). turn.py mantiene el nombre interno como
+# fachada para no romper call-sites ni `from app.turn import _partir_mensaje_largo`.
+_partir_mensaje_largo = partir_mensaje_largo
 from app.state import (
     AppContext,
     Conversation,
@@ -141,47 +148,11 @@ async def _typing_heartbeat(ctx: AppContext, crm_conv_id: str, stop: asyncio.Eve
 
 # WhatsApp: límite duro por mensaje (el CRM valida ≤4096 y WhatsApp corta/da
 # error por encima). Margen de seguridad para encabezados de partes.
-WA_MAX_CHARS = 4000
 # Presupuesto de tiempo para consultar los medicamentos de una lista en un mismo turno.
 # Pasado ese tiempo se responde con lo ya consultado y se dice qué quedó pendiente: un
 # turno eterno deja al cliente sin respuesta y bloquea los mensajes que llegan entretanto
 # (el lock es por identidad). Medido en vivo, provider 05, 2026-11-07.
 PRESUPUESTO_BACKSTOP_S = 45
-
-
-def _partir_mensaje_largo(texto: str, max_chars: int) -> list[str]:
-    """Divide un mensaje >max_chars en partes enviables por WhatsApp.
-
-    Corta por PÁRRAFOS (líneas vacías) para no romper una opción 💊 a la
-    mitad: acumula párrafos mientras entren; un párrafo individual más largo
-    que max_chars se corta duro por líneas. Nunca devuelve partes vacías.
-    """
-    texto = (texto or "").strip()
-    if len(texto) <= max_chars:
-        return [texto] if texto else []
-    partes: list[str] = []
-    actual = ""
-    for parrafo in re.split(r"\n\s*\n", texto):
-        parrafo = parrafo.strip()
-        if not parrafo:
-            continue
-        candidato = f"{actual}\n\n{parrafo}" if actual else parrafo
-        if len(candidato) <= max_chars:
-            actual = candidato
-            continue
-        if actual:
-            partes.append(actual)
-        # Párrafo individual demasiado largo: cortar por líneas.
-        while len(parrafo) > max_chars:
-            corte = parrafo.rfind("\n", 0, max_chars)
-            if corte <= 0:
-                corte = max_chars
-            partes.append(parrafo[:corte].rstrip())
-            parrafo = parrafo[corte:].lstrip()
-        actual = parrafo
-    if actual:
-        partes.append(actual)
-    return partes
 
 
 # Cuánto calla el agente tras cerrar por falta de rumbo. Un lead que vuelve al
@@ -261,6 +232,17 @@ async def handle_flush(ctx: AppContext, identity: str, items: list[Any]) -> None
             await run_turn(ctx, identity, items)
     except Exception:
         logger.exception("turno de %s reventó — silencio", identity)
+
+
+def _g13_accion_ocurrio(runtime: ToolRuntime, familia: str) -> bool:
+    """G13: ¿la acción de la familia detectada SÍ ocurrió en este turno?
+    pedido→pedido_finalizado; agregado→carrito_agregado_turno; apartado→nunca
+    (esta farmacia no tiene herramienta de agenda/apartado)."""
+    if familia == "pedido":
+        return bool(getattr(runtime, "pedido_finalizado", False))
+    if familia == "agregado":
+        return bool(getattr(runtime, "carrito_agregado_turno", False))
+    return False  # apartado/agendado: no existe la herramienta → nunca ocurrió
 
 
 async def run_turn(
@@ -976,8 +958,44 @@ async def run_turn(
         and _quiere_ver_resumen(user_text, tiene_carrito=True)
     )
     if farmacia and final_text:
+        # G14 — Consulta clínica → derivación humana fail-closed (Paso 8, UC-08).
+        # MÁXIMA PRIORIDAD: la seguridad clínica prevalece sobre cualquier respuesta
+        # comercial. El bot NO aconseja (no diagnostica, no prescribe, no ajusta
+        # dosis ni sustituye tratamiento — PLAN §7, ADR-0006); deriva a un humano y
+        # responde SOLO con un mensaje de recepción/estado autorizado. La detección
+        # es determinista y de alta precisión sobre el texto del CLIENTE: no toca
+        # F14/F15/F15.1 ni el catálogo (no busca, no autoriza, no llama al LLM).
+        if (_cat_clinica := clinical_handoff.clasificar(user_text)) is not None:
+            logger.warning(
+                "guarda G14: consulta clínica (%s) — derivación humana fail-closed",
+                _cat_clinica.value,
+            )
+            runtime.clinical_category = _cat_clinica.value
+            # Registro durable + anti-duplicado idempotente (una sola derivación
+            # abierta por conversación). Best-effort: si el store falla, igual se
+            # deriva (fail-safe — la seguridad no depende de que persista el estado).
+            _clin_nueva = True
+            try:
+                _res_clin = await clinical_handoff.DerivarConsultaClinicaUseCase(
+                    ctx.store
+                ).ejecutar(conversation_id=conv.id, category=_cat_clinica)
+                _clin_nueva = (
+                    _res_clin.status
+                    is clinical_handoff.ClinicalHandoffStatus.SOLICITADO
+                )
+            except Exception as exc:
+                logger.warning("G14: no pude registrar la derivación clínica: %s", exc)
+            if _clin_nueva:
+                # Derivación nueva: mensaje de recepción + handoff al humano.
+                final_text = guards.TPL_DERIVACION_CLINICA
+                runtime.handoff_reason = "clinico"  # canonical_handoff_reason → cliente
+            else:
+                # Ya había una derivación ABIERTA: NO se duplica el handoff en el CRM;
+                # solo se repite un mensaje de ESTADO autorizado (PLAN §8 punto 6: el
+                # bot no reanuda consejo mientras el caso espera al humano).
+                final_text = guards.TPL_DERIVACION_CLINICA_EN_CURSO
         # G2 — política fuera del KB: escalado hardcodeado, jamás generación.
-        if guards.intencion_fuera_kb(user_text):
+        elif guards.intencion_fuera_kb(user_text):
             logger.warning("guarda G2 VETO: intención fuera de KB (%r) — plantilla de escalado", user_text[:80])
             final_text = guards.TPL_FUERA_KB
             if runtime.handoff_reason is None:
@@ -1017,10 +1035,24 @@ async def run_turn(
         elif (
             not es_negativa_con_carrito
             and guards.afirma_composicion(final_text)
-            and not runtime.last_products
+            and not guards.hay_evidencia_composicion(runtime.last_products, final_text)
         ):
-            logger.warning("guarda G5 VETO: afirmación de composición/genérico sin respaldo — plantilla sin-composición")
-            final_text = guards.TPL_SIN_COMPOSICION
+            # D-B1: la evidencia es por (afirmación, producto), no por turno.
+            # Cualquier resultado del catálogo (irrelevante o parcial) ya NO apaga
+            # la guarda: solo la respalda un producto que exponga la composición
+            # afirmada. Fail-closed: el catálogo de hoy no la expone → se veta.
+            logger.warning("guarda G5 VETO: afirmación de composición/genérico sin respaldo por producto — plantilla sin-composición")
+            if runtime.last_products:
+                # Conserva la información comercial respaldada (precio/lista): el
+                # veto no vacía la respuesta, solo retira la afirmación sin respaldo.
+                from app.tools import _formatear_lista_productos
+                _term_g5 = runtime.last_products_term or runtime.last_term or ""
+                final_text = (
+                    _formatear_lista_productos(runtime.last_products, _term_g5)
+                    + "\n\n" + guards.TPL_SIN_COMPOSICION
+                )
+            else:
+                final_text = guards.TPL_SIN_COMPOSICION
         # G6 — precio con dígitos, stock o principio activo directo afirmado
         # sin respaldo de catálogo. Complementa G1 (que solo actúa cuando el
         # cliente preguntó el precio) y G5 (composición más amplia): G6 cubre
@@ -1061,6 +1093,16 @@ async def run_turn(
         elif guards.contiene_toolcall_json(final_text):
             logger.warning("guarda G12 VETO: tool-call JSON cruda en texto final — plantilla G12")
             final_text = guards.TPL_G12_TOOLCALL
+        # G13 — el agente afirmó una ACCIÓN que no ocurrió (pedido registrado,
+        # agregado al carrito, apartado). Dispara SOLO si la frase de la familia
+        # aparece Y la señal de estado del turno dice que la acción NO sucedió.
+        # La frase sola nunca veta. No juzga escalado (G11), promesas ni precios.
+        elif (
+            (_fam_g13 := guards.familia_accion_afirmada(final_text))
+            and not _g13_accion_ocurrio(runtime, _fam_g13)
+        ):
+            logger.warning("guarda G13: afirmó una acción que no ocurrió (%s) — plantilla G13", _fam_g13)
+            final_text = guards.TPL_G13_ACCION
         # G9 — cliente pide hablar con humano pero el LLM no llamó handoff:
         # el bench marcaba el cierre seco ("Entendido…") como debio_escalar/tono.
         # Plantilla constante empática + handoff garantizado.
@@ -1102,8 +1144,15 @@ async def run_turn(
             runtime.handoff_reason = "lead_request"
 
     # Negativa con carrito: si algún guard pisó el texto, restaurar el resumen
-    # canónico del carrito (ver_carrito ya se forzó en el tool_loop).
-    if es_negativa_con_carrito and runtime.cart_summary_text and final_text != runtime.cart_summary_text:
+    # canónico del carrito (ver_carrito ya se forzó en el tool_loop). EXCEPCIÓN:
+    # una derivación clínica (G14) NO se restaura — la seguridad clínica prevalece
+    # sobre el resumen del pedido (PLAN §7).
+    if (
+        es_negativa_con_carrito
+        and runtime.clinical_category is None
+        and runtime.cart_summary_text
+        and final_text != runtime.cart_summary_text
+    ):
         logger.info("negativa con carrito: restaurando resumen canónico tras posible veto")
         final_text = runtime.cart_summary_text
 
@@ -1189,7 +1238,13 @@ async def run_turn(
     # medio de un pedido — un handoff que el LLM llamó tras una negativa ("no"
     # a "¿otro medicamento?") no debe matar la conversación; se cancela y se
     # responde con el resumen.
-    if runtime.handoff_reason is not None and cart_activo:
+    # La derivación clínica (G14) NO se cancela por carrito activo: una consulta
+    # clínica es clínica aunque haya un pedido en curso; la seguridad prevalece.
+    if (
+        runtime.handoff_reason is not None
+        and cart_activo
+        and runtime.clinical_category is None
+    ):
         logger.warning(
             "handoff cancelado: hay carrito activo (%s) — el pedido sigue",
             runtime.handoff_reason,
@@ -1678,6 +1733,11 @@ async def _tool_loop(
     # Cuenta rondas consecutivas donde el LLM llamó tools con arguments vacíos
     # ({}): señal de bucle degenerado — cortamos con un texto de respaldo.
     empty_rounds = 0
+    # D-A4: firma de la última ronda de tool-calls y cuántas veces seguidas se ha
+    # repetido idéntica (misma herramienta + argumentos): detecta el bucle de la
+    # misma llamada aunque traiga argumentos.
+    firma_previa: tuple = ()
+    rondas_repetidas = 0
     # Pre-check de elección por número de opción ("quiero 2 cajas de la opción 3"
     # o selección múltiple "quiero 1 caja de 1,4,7 y 8"): se resuelve ANTES de
     # la primera llamada al LLM, para que el modelo no sobrescriba
@@ -2653,10 +2713,89 @@ async def _tool_loop(
                 trans_term_2 = _extraer_termino_transcripcion(user_text)
                 if trans_term_2:
                     term = trans_term_2
-                elif _parece_consulta_medicamento(user_text) and not _lead_esta_cerrando(
-                    _texto_cliente_sin_marcadores(user_text)
-                ):
-                    term = _extraer_termino_medicamento(user_text)
+                elif not _lead_esta_cerrando(_texto_cliente_sin_marcadores(user_text)):
+                    # F15 — LA CAPA DE COMPRENSIÓN DECIDE ANTES DE BUSCAR.
+                    # Antes esta decisión la tomaba `_parece_consulta_medicamento`
+                    # (forma del texto): cualquier oración sin '?' de ≤4 palabras con
+                    # una palabra larga pasaba, y el agente buscaba «ser indu» o «vivo
+                    # ciudad bolivar» (13 consultas al catálogo y contaminación de
+                    # `med_queries`). Ahora: camino rápido determinista y, en la duda,
+                    # la capa (una llamada); si la capa no responde, se conserva la
+                    # conducta anterior.
+                    candidato = _extraer_termino_medicamento(user_text)
+                    hace_falta = (not runtime.consulted_catalog) or (
+                        runtime.med_not_found and not runtime.catalog_retried
+                    )
+                    if not hace_falta:
+                        # El LLM ya consultó el catálogo este turno: no hay nada que
+                        # decidir y no se gasta una llamada de la capa.
+                        term = None
+                    elif not bool(getattr(ctx.settings, "intent_layer", True)):
+                        term = (
+                            candidato
+                            if candidato and _parece_consulta_medicamento(user_text)
+                            else None
+                        )
+                    else:
+                        # Estado conversacional compacto para la capa (revisión #5):
+                        # últimos turnos + qué se mostró antes. Sin esto, la elipsis y
+                        # el cambio de producto se juzgan a ciegas.
+                        estado_partes = []
+                        for m in messages[-3:-1]:
+                            rol = m.get("role") or "?"
+                            contenido = str(m.get("content") or "")[:220]
+                            if contenido:
+                                estado_partes.append(f"{rol}: {contenido}")
+                        if runtime.last_term:
+                            estado_partes.append(f"última búsqueda: {runtime.last_term}")
+                        if runtime.last_options:
+                            nombres = ", ".join(
+                                str(p.get("nombre") or p.get("producto") or "?")
+                                for p in runtime.last_options[:4]
+                            )
+                            estado_partes.append(f"última lista mostrada: {nombres}")
+                        ent = await entender_intencion(
+                            _texto_cliente_sin_marcadores(user_text) or user_text,
+                            llm=ctx.llm,
+                            settings=ctx.settings,
+                            termino_candidato=candidato,
+                            producto_previo=(runtime.last_product or {}).get("nombre")
+                            or (runtime.last_product or {}).get("producto"),
+                            estado="\n".join(estado_partes) or None,
+                        )
+                        # Auditoría: viaja con la búsqueda hasta `med_queries` y, además,
+                        # se registra la DECISIÓN (también las que NO buscan: revisión #6).
+                        runtime.intent_fuente = ent.fuente
+                        runtime.intent_acto = ent.acto
+                        runtime.intent_motivo = ent.motivo
+                        runtime.intent_confianza = ent.confianza
+                        runtime.intent_hay_consulta = ent.hay_consulta
+                        runtime.intent_termino = ent.termino
+                        await runtime.registrar_decision_intencion(candidato)
+                        if ent.hay_consulta:
+                            term = ent.termino or candidato
+                            logger.info(
+                                "capa de comprensión: acto=%s (%s) — SE BUSCA %r (confianza %.2f)",
+                                ent.acto, ent.fuente, term, ent.confianza,
+                            )
+                        elif ent.hay_consulta is False:
+                            term = None
+                            logger.info(
+                                "capa de comprensión: acto=%s (%s) — NO se busca "
+                                "(el candidato era %r): %s",
+                                ent.acto, ent.fuente, candidato, ent.motivo,
+                            )
+                        else:
+                            # NO CONCLUYENTE = NO BUSCAR (fail-closed). Antes se reaplicaba
+                            # el heurístico de forma, que era justo el que buscaba basura
+                            # ('ser indu', 'vivo ciudad bolivar'): revisión externa,
+                            # «fail-open, no fail-safe». Ante la duda, el agente aclara.
+                            term = None
+                            logger.info(
+                                "capa de comprensión: NO concluyente (%s) — no se busca "
+                                "(el candidato era %r); el turno aclara",
+                                ent.motivo, candidato,
+                            )
                 # EL TÍTULO TIENE QUE SER EL FÁRMACO, NO LA FRASE. `_extraer_termino_medicamento`
                 # quita verbos de consulta y relleno, pero NO el ruido del HABLA (muletillas,
                 # coletillas) — eso solo lo hace `_limpiar_transcripcion`. Con una nota de voz
@@ -2695,7 +2834,18 @@ async def _tool_loop(
                 # 2. O consultó pero no encontró nada (med_not_found) — quizás
                 #    usó un término distinto al deterministicamente correcto.
                 #    Re-consultar con el término extraído puede encontrar productos.
-                if term and (not runtime.consulted_catalog or (runtime.med_not_found and not runtime.catalog_retried)):
+                # D-A3: UN SOLO intento de búsqueda forzada por término y turno.
+                # Antes la condición dependía de `consulted_catalog`, que NUNCA pasa
+                # a True si la puerta F15.1 no autoriza el término (capa off, fail-safe
+                # o rechazo conclusivo): el backstop re-forzaba el mismo término cada
+                # ronda hasta agotar → silencio. Con `catalog_retried` (que ya se pone
+                # True al primer intento, igual que los backstops de OCR/voz) se sale
+                # del bucle con la respuesta honesta que F15.1 prevé.
+                if (
+                    term
+                    and not runtime.catalog_retried
+                    and (not runtime.consulted_catalog or runtime.med_not_found)
+                ):
                     # Nunca forzar la búsqueda con una frase que NO parece un
                     # medicamento (reclamos, garantías, saludos, "caja cada
                     # uno"): consultar el catálogo con basura devuelve
@@ -2755,9 +2905,33 @@ async def _tool_loop(
                     "turno: %d rondas seguidas con tool-calls sin arguments — corto con respaldo",
                     empty_rounds,
                 )
-                return _fallback_farmacia(user_text, runtime, ctx, farmacia)
+                # D-A1: _fallback_farmacia es `async def`; sin `await` se devolvía
+                # la coroutine como texto y el turno reventaba en los guards
+                # (TypeError) → silencio. Con await (vía _respaldo_sin_texto, que
+                # además es resiliente a fallos de catálogo) se envía el respaldo.
+                return await _respaldo_sin_texto(user_text, runtime, ctx, farmacia)
         else:
             empty_rounds = 0
+        # D-A4: la MISMA llamada (herramienta + argumentos normalizados) repetida
+        # ≥3 veces seguidas es un bucle degenerado aunque los argumentos NO estén
+        # vacíos (el contador `empty_rounds` solo cubre `{}`): quema rondas y cae
+        # en el silencio del final. Una secuencia de búsquedas DISTINTAS no es un
+        # bucle (firmas distintas → el contador se reinicia) y no se corta.
+        firma_ronda = tuple(
+            (tc.name, json.dumps(tc.arguments, ensure_ascii=False, sort_keys=True))
+            for tc in reply.tool_calls
+        )
+        if firma_ronda and firma_ronda == firma_previa:
+            rondas_repetidas += 1
+        else:
+            rondas_repetidas = 1
+            firma_previa = firma_ronda
+        if rondas_repetidas >= 3:
+            logger.warning(
+                "turno: %d rondas idénticas de tool-calls (%s) — corto con respaldo",
+                rondas_repetidas, firma_ronda[0][0] if firma_ronda else "?",
+            )
+            return await _respaldo_sin_texto(user_text, runtime, ctx, farmacia)
         messages.append(
             {
                 "role": "assistant",
@@ -2879,8 +3053,11 @@ async def _tool_loop(
             "se manda la pregunta canónica en vez de silencio"
         )
         return PREGUNTA_RECOMENDACION
-    logger.warning("turno: demasiadas rondas de herramientas — corto sin texto")
-    return None
+    # D-A2: agotar MAX_TOOL_ROUNDS con llamadas válidas pero sin texto NO puede
+    # dejar al cliente en silencio. Respaldo determinista con lo que YA se obtuvo
+    # del catálogo en el turno (sin inventar precio/stock/disponibilidad).
+    logger.warning("turno: demasiadas rondas de herramientas — respaldo determinista en vez de silencio")
+    return await _respaldo_sin_texto(user_text, runtime, ctx, farmacia)
 
 SEND_ATTEMPTS = 4  # backoff 1 s, 2 s, 4 s entre intentos (~7 s en el turno)
 
@@ -4145,6 +4322,33 @@ async def _fallback_farmacia(
 
     lista = _formatear_lista_productos(products, term)
     return lista + "\n\n" + MENSAJE_SUGERIDO_CARRITO
+
+
+async def _respaldo_sin_texto(
+    user_text: str, runtime: ToolRuntime, ctx: AppContext, farmacia: bool
+) -> str:
+    """D-A2/D-A4: respaldo determinista cuando el bucle de herramientas se agota
+    (o se corta por degeneración) sin que el modelo produjera texto.
+
+    Preferimos lo que YA se obtuvo del catálogo en el turno — `productos_turno`
+    acumula TODAS las búsquedas con resultados, así ningún medicamento obtenido
+    se pierde (caso A4: seis medicamentos en un mensaje). Si no hubo ningún
+    resultado, se cae en `_fallback_farmacia` (consulta honesta), que nunca
+    inventa precio, stock ni disponibilidad.
+    """
+    from app.tools import _formatear_lista_productos
+
+    obtenidos = list(getattr(runtime, "productos_turno", None) or runtime.last_products)
+    if farmacia and obtenidos:
+        term = _extraer_termino_medicamento(user_text) or runtime.last_term or ""
+        return _formatear_lista_productos(obtenidos, term) + "\n\n" + MENSAJE_SUGERIDO_CARRITO
+    # Sin resultados: consulta honesta. Si el catálogo está caído (error/timeout),
+    # NO se deja al cliente en silencio ni se inventa nada: limitación honesta.
+    try:
+        return await _fallback_farmacia(user_text, runtime, ctx, farmacia)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("respaldo sin texto: el catálogo falló (%s) — limitación honesta", exc)
+        return guards.TPL_VERIFICACION_CATALOGO
 
 
 def _respuesta_envase_agotado(

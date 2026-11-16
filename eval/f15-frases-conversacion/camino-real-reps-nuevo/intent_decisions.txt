@@ -1,0 +1,15 @@
+ candidato |  termino  | hay_consulta |         acto         |                         motivo                          
+-----------+-----------+--------------+----------------------+---------------------------------------------------------
+ vivacina  | vivacina  | t            | consulta_medicamento | pregunta si tienen medicamento vivacina
+ vivacina  | vivacina  | t            | consulta_medicamento | pide medicamento vivacina, coincide candidato
+ vivacina  | vivacina  | t            | consulta_medicamento | cliente pide medicamento vivacina, candidato coincide
+ vivicina  | vivacina  | t            | consulta_medicamento | Cliente pide vivacina; candidato casi idéntico
+ vivacina  | vivacina  | t            | consulta_medicamento | cliente pide medicamento vivacina, coincide candidato
+ vivacina  | vivacina  | t            | consulta_medicamento | pide medicamento vivacina, candidato coincide
+ vibracina | vibracina | t            | consulta_medicamento | cliente pide vivacina, coincide con candidato vibracina
+ vivacina  | vivacina  | t            | consulta_medicamento | cliente pide medicamento vivacina
+ vivacina  | vivacina  | t            | consulta_medicamento | pide medicamento vivacina, candidato coincide
+ vibracina | vivacina  | t            | consulta_medicamento | pide medicamento vivacina, coincide con candidato
+ vivacina  | vivacina  | t            | consulta_medicamento | cliente pide medicamento vivacina
+(11 rows)
+

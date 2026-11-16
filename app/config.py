@@ -62,6 +62,21 @@ class Settings(BaseSettings):
     vision_model: str = ""
     vision_api_key: str = ""
     vision_base_url: str = ""
+    # Ajustes opcionales de rendimiento para proveedores OpenAI-compatible.
+    # Vacíos por defecto: no cambian el comportamiento hasta medir y habilitar.
+    llm_reasoning_effort: str = ""
+    llm_provider_sort: str = ""
+    # F15 — CAPA DE COMPRENSIÓN DEL ACTO DE CONVERSACIÓN. Decide si el mensaje trae
+    # una consulta de medicamento ANTES de buscar en el catálogo. Quejas oct-2026:
+    # «No puede ser Indu.» → el agente contestó «No tengo SER INDU»; «Vivo en Ciudad
+    # Bolivar.» → 13 consultas al catálogo (incl. 'bol', 'boli'), contaminando
+    # `med_queries`. `intent_layer=False` apaga la capa y deja el heurístico anterior.
+    # Proveedor propio opcional (mismo patrón que VISION_*): vacío = modelo del chat.
+    intent_layer: bool = True
+    intent_model: str = ""
+    intent_api_key: str = ""
+    intent_base_url: str = ""
+    intent_timeout: float = 12.0  # segundos; al vencer, fail-safe (comportamiento anterior)
     history_window: int = 10
 
     # Guardarraíles y tiempos
@@ -135,6 +150,11 @@ class Settings(BaseSettings):
     # Desarrollo: loguear el JSON crudo de mensajes no-texto entrantes para
     # capturar los formatos reales de Meta (spec 002). Apagar al terminar.
     capture_payloads: bool = False
+
+    # Métricas (Paso 10 / ADR-0009). Apagado = fachada no-op total (sin coste).
+    # Encendido = el sink de logging emite líneas `METRIC ...` a `nea.metrics`.
+    # No instala ninguna dependencia nueva; un proveedor real requiere ADR aparte.
+    metrics_enabled: bool = False
 
     @staticmethod
     def _identities(csv: str) -> frozenset[str]:

@@ -1,0 +1,513 @@
+{
+  "modelo": "deepseek/deepseek-v4.1-flash",
+  "frases": 50,
+  "aciertos": 50,
+  "pct": 100.0,
+  "falsos_negativos": [],
+  "falsos_positivos": [],
+  "terminos_imperfectos": [],
+  "inconclusivos": [],
+  "segundos": 117.3,
+  "filas": [
+    {
+      "frase": "No puede ser Indu.",
+      "esperado_buscar": false,
+      "obtenido": false,
+      "acto": "atributo_producto",
+      "termino": null,
+      "fuente": "capa",
+      "confianza": 0.92,
+      "motivo": "habla del laboratorio Indu, no pide medicamento"
+    },
+    {
+      "frase": "No puede ser Indu, esa marca no la quiero",
+      "esperado_buscar": false,
+      "obtenido": false,
+      "acto": "atributo_producto",
+      "termino": null,
+      "fuente": "capa",
+      "confianza": 0.9,
+      "motivo": "rechaza marca del producto ya mostrado"
+    },
+    {
+      "frase": "Vivo en Ciudad Bolivar.",
+      "esperado_buscar": false,
+      "obtenido": false,
+      "acto": "dato_personal",
+      "termino": null,
+      "fuente": "capa",
+      "confianza": 0.95,
+      "motivo": "cliente da su lugar de residencia, no pide medicamento"
+    },
+    {
+      "frase": "Vivo en Ciudad Bolivar, cerca de la plaza",
+      "esperado_buscar": false,
+      "obtenido": false,
+      "acto": "dato_personal",
+      "termino": null,
+      "fuente": "capa",
+      "confianza": 0.95,
+      "motivo": "Cliente da su dirección, no pide medicamento"
+    },
+    {
+      "frase": "Solo una marca?",
+      "esperado_buscar": false,
+      "obtenido": false,
+      "acto": "atributo_producto",
+      "termino": null,
+      "fuente": "capa",
+      "confianza": 0.9,
+      "motivo": "pregunta por marca del producto ya mostrado"
+    },
+    {
+      "frase": "Solo una marca o hay varias?",
+      "esperado_buscar": false,
+      "obtenido": false,
+      "acto": "atributo_producto",
+      "termino": null,
+      "fuente": "capa",
+      "confianza": 0.92,
+      "motivo": "Pregunta por marcas del producto ya mostrado"
+    },
+    {
+      "frase": "Por ahroa no",
+      "esperado_buscar": false,
+      "obtenido": false,
+      "acto": "dilatoria",
+      "termino": null,
+      "fuente": "capa",
+      "confianza": 0.95,
+      "motivo": "negativa temporal, no pide medicamento"
+    },
+    {
+      "frase": "Por ahora no necesito nada",
+      "esperado_buscar": false,
+      "obtenido": false,
+      "acto": "dilatoria",
+      "termino": null,
+      "fuente": "capa",
+      "confianza": 0.95,
+      "motivo": "cliente no necesita nada por ahora"
+    },
+    {
+      "frase": "No, gracias, mas tarde te escribo",
+      "esperado_buscar": false,
+      "obtenido": false,
+      "acto": "dilatoria",
+      "termino": null,
+      "fuente": "capa",
+      "confianza": 0.95,
+      "motivo": "Cliente pospone la compra para más tarde"
+    },
+    {
+      "frase": "Buenos dias mi amor, como estas?",
+      "esperado_buscar": false,
+      "obtenido": false,
+      "acto": "saludo",
+      "termino": null,
+      "fuente": "capa",
+      "confianza": 0.97,
+      "motivo": "saludo y cortesía, sin pedir medicamento"
+    },
+    {
+      "frase": "gracias, linda",
+      "esperado_buscar": false,
+      "obtenido": false,
+      "acto": "cortesia",
+      "termino": null,
+      "fuente": "capa",
+      "confianza": 0.97,
+      "motivo": "agradecimiento con halago, no pide medicamento"
+    },
+    {
+      "frase": "que Dios te bendiga",
+      "esperado_buscar": false,
+      "obtenido": false,
+      "acto": "cortesia",
+      "termino": null,
+      "fuente": "capa",
+      "confianza": 0.97,
+      "motivo": "bendición, cortesía sin pedido de medicamento"
+    },
+    {
+      "frase": "esto me parece muy caro",
+      "esperado_buscar": false,
+      "obtenido": false,
+      "acto": "reclamo",
+      "termino": null,
+      "fuente": "capa",
+      "confianza": 0.95,
+      "motivo": "reclamo de precio, no pide medicamento"
+    },
+    {
+      "frase": "me vendieron un medicamento vencido",
+      "esperado_buscar": false,
+      "obtenido": false,
+      "acto": "reclamo",
+      "termino": null,
+      "fuente": "capa",
+      "confianza": 0.95,
+      "motivo": "reclamo por medicamento vencido, no pide producto"
+    },
+    {
+      "frase": "mi nombre es Maria y tengo 45 anos",
+      "esperado_buscar": false,
+      "obtenido": false,
+      "acto": "dato_personal",
+      "termino": null,
+      "fuente": "capa",
+      "confianza": 0.97,
+      "motivo": "da nombre y edad, no pide medicamento"
+    },
+    {
+      "frase": "paso manana por la farmacia",
+      "esperado_buscar": false,
+      "obtenido": false,
+      "acto": "dilatoria",
+      "termino": null,
+      "fuente": "capa",
+      "confianza": 0.9,
+      "motivo": "Avisa que pasará mañana, no pide medicamento"
+    },
+    {
+      "frase": "tienen delivery?",
+      "esperado_buscar": false,
+      "obtenido": false,
+      "acto": "otro",
+      "termino": null,
+      "fuente": "capa",
+      "confianza": 0.9,
+      "motivo": "pregunta por servicio de delivery, no medicamento"
+    },
+    {
+      "frase": "aceptan zelle?",
+      "esperado_buscar": false,
+      "obtenido": false,
+      "acto": "otro",
+      "termino": null,
+      "fuente": "capa",
+      "confianza": 0.95,
+      "motivo": "pregunta por medio de pago, no medicamento"
+    },
+    {
+      "frase": "a que hora cierran hoy?",
+      "esperado_buscar": false,
+      "obtenido": false,
+      "acto": "otro",
+      "termino": null,
+      "fuente": "capa",
+      "confianza": 0.95,
+      "motivo": "pregunta horario de cierre, no medicamento"
+    },
+    {
+      "frase": "si, esa es la presentacion que quiero",
+      "esperado_buscar": false,
+      "obtenido": false,
+      "acto": "atributo_producto",
+      "termino": null,
+      "fuente": "capa",
+      "confianza": 0.9,
+      "motivo": "confirma presentación del producto ya mostrado"
+    },
+    {
+      "frase": "tienen delivery?",
+      "esperado_buscar": false,
+      "obtenido": false,
+      "acto": "otro",
+      "termino": null,
+      "fuente": "capa",
+      "confianza": 0.95,
+      "motivo": "pregunta por servicio de delivery, no medicamento"
+    },
+    {
+      "frase": "aceptan zelle?",
+      "esperado_buscar": false,
+      "obtenido": false,
+      "acto": "otro",
+      "termino": null,
+      "fuente": "capa",
+      "confianza": 0.95,
+      "motivo": "pregunta por medio de pago, no medicamento"
+    },
+    {
+      "frase": "a que hora cierran hoy?",
+      "esperado_buscar": false,
+      "obtenido": false,
+      "acto": "otro",
+      "termino": null,
+      "fuente": "capa",
+      "confianza": 0.95,
+      "motivo": "pregunta horario de cierre, no medicamento"
+    },
+    {
+      "frase": "Solo una marca o hay varias?",
+      "esperado_buscar": false,
+      "obtenido": false,
+      "acto": "atributo_producto",
+      "termino": null,
+      "fuente": "capa",
+      "confianza": 0.9,
+      "motivo": "pregunta por marcas del producto mostrado"
+    },
+    {
+      "frase": "Por ahora no necesito nada",
+      "esperado_buscar": false,
+      "obtenido": false,
+      "acto": "dilatoria",
+      "termino": null,
+      "fuente": "capa",
+      "confianza": 0.95,
+      "motivo": "Cliente declina temporalmente, no pide medicamento"
+    },
+    {
+      "frase": "cuanto es el minimo para delivery?",
+      "esperado_buscar": false,
+      "obtenido": false,
+      "acto": "otro",
+      "termino": null,
+      "fuente": "capa",
+      "confianza": 0.95,
+      "motivo": "pregunta por mínimo de domicilio, no medicamento"
+    },
+    {
+      "frase": "hacen envios a San Cristobal?",
+      "esperado_buscar": false,
+      "obtenido": false,
+      "acto": "otro",
+      "termino": null,
+      "fuente": "capa",
+      "confianza": 0.95,
+      "motivo": "pregunta por envios, no por medicamento"
+    },
+    {
+      "frase": "tienen sucursal en el centro?",
+      "esperado_buscar": false,
+      "obtenido": false,
+      "acto": "otro",
+      "termino": null,
+      "fuente": "capa",
+      "confianza": 0.95,
+      "motivo": "pregunta por sucursal, no por medicamento"
+    },
+    {
+      "frase": "me pueden mandar la factura por correo?",
+      "esperado_buscar": false,
+      "obtenido": false,
+      "acto": "otro",
+      "termino": null,
+      "fuente": "capa",
+      "confianza": 0.95,
+      "motivo": "pide factura por correo, no medicamento"
+    },
+    {
+      "frase": "necesito hablar con una persona",
+      "esperado_buscar": false,
+      "obtenido": false,
+      "acto": "otro",
+      "termino": null,
+      "fuente": "capa",
+      "confianza": 0.95,
+      "motivo": "pide hablar con un asesor humano"
+    },
+    {
+      "frase": "tienen atamel forte?",
+      "esperado_buscar": true,
+      "obtenido": true,
+      "acto": "consulta_medicamento",
+      "termino": "atamel forte",
+      "fuente": "capa",
+      "confianza": 0.97,
+      "motivo": "pide medicamento atamel forte"
+    },
+    {
+      "frase": "precio de la macrodantina de 100",
+      "esperado_buscar": true,
+      "obtenido": true,
+      "acto": "consulta_medicamento",
+      "termino": "macrodantina 100",
+      "fuente": "capa",
+      "confianza": 0.98,
+      "motivo": "pide precio de macrodantina 100"
+    },
+    {
+      "frase": "necesito metformina 850",
+      "esperado_buscar": true,
+      "obtenido": true,
+      "acto": "consulta_medicamento",
+      "termino": "metformina 850",
+      "fuente": "capa",
+      "confianza": 0.97,
+      "motivo": "cliente pide metformina 850 explícitamente"
+    },
+    {
+      "frase": "buenas tardes, precio de la nitrofurantoina de 50mg y la vitamina C",
+      "esperado_buscar": true,
+      "obtenido": true,
+      "acto": "consulta_medicamento",
+      "termino": "nitrofurantoina 50mg vitamina c",
+      "fuente": "capa",
+      "confianza": 0.95,
+      "motivo": "pide precio de dos medicamentos concretos"
+    },
+    {
+      "frase": "vivacina",
+      "esperado_buscar": true,
+      "obtenido": true,
+      "acto": "consulta_medicamento",
+      "termino": "vivacina",
+      "fuente": "nombre",
+      "confianza": 0.7,
+      "motivo": "nombre pelado corto"
+    },
+    {
+      "frase": "shampo dreene",
+      "esperado_buscar": true,
+      "obtenido": true,
+      "acto": "consulta_medicamento",
+      "termino": "shampoo drene",
+      "fuente": "capa",
+      "confianza": 0.8,
+      "motivo": "pide producto concreto shampo dreene"
+    },
+    {
+      "frase": "omeprasol 20",
+      "esperado_buscar": true,
+      "obtenido": true,
+      "acto": "consulta_medicamento",
+      "termino": "omeprasol 20",
+      "fuente": "capa",
+      "confianza": 0.95,
+      "motivo": "nombre de medicamento mal escrito, omeprazol 20"
+    },
+    {
+      "frase": "lorsatan",
+      "esperado_buscar": true,
+      "obtenido": true,
+      "acto": "consulta_medicamento",
+      "termino": "lorsatan",
+      "fuente": "nombre",
+      "confianza": 0.7,
+      "motivo": "nombre pelado corto"
+    },
+    {
+      "frase": "y el diclofencao de 50 cuanto sale?",
+      "esperado_buscar": true,
+      "obtenido": true,
+      "acto": "consulta_medicamento",
+      "termino": "diclofenaco 50",
+      "fuente": "capa",
+      "confianza": 0.9,
+      "motivo": "pide precio de diclofenaco 50"
+    },
+    {
+      "frase": "solunoval solucion bucal y pinvex solucion bucal",
+      "esperado_buscar": true,
+      "obtenido": true,
+      "acto": "consulta_medicamento",
+      "termino": "solunoval solucion bucal, pinvex solucion bucal",
+      "fuente": "capa",
+      "confianza": 0.9,
+      "motivo": "pide dos soluciones bucales concretas"
+    },
+    {
+      "frase": "amoxicilina y acido clavulanico",
+      "esperado_buscar": true,
+      "obtenido": true,
+      "acto": "consulta_medicamento",
+      "termino": "amoxicilina acido clavulanico",
+      "fuente": "capa",
+      "confianza": 0.95,
+      "motivo": "el cliente nombra un medicamento concreto"
+    },
+    {
+      "frase": "esoz, leprit y evigax",
+      "esperado_buscar": true,
+      "obtenido": true,
+      "acto": "consulta_medicamento",
+      "termino": "esoz, leprit, evigax",
+      "fuente": "capa",
+      "confianza": 0.72,
+      "motivo": "nombra tres posibles medicamentos, coincide candidato"
+    },
+    {
+      "frase": "tienen vitamina c?",
+      "esperado_buscar": true,
+      "obtenido": true,
+      "acto": "consulta_medicamento",
+      "termino": "vitamina c",
+      "fuente": "capa",
+      "confianza": 0.95,
+      "motivo": "cliente pide vitamina c"
+    },
+    {
+      "frase": "digame el precio del losartan de 50",
+      "esperado_buscar": true,
+      "obtenido": true,
+      "acto": "consulta_medicamento",
+      "termino": "losartan 50",
+      "fuente": "capa",
+      "confianza": 0.97,
+      "motivo": "pide precio de losartan 50"
+    },
+    {
+      "frase": "fexofenasina para la alergia esta sirviendo?",
+      "esperado_buscar": true,
+      "obtenido": true,
+      "acto": "consulta_medicamento",
+      "termino": "fexofenasina alergia",
+      "fuente": "capa",
+      "confianza": 0.75,
+      "motivo": "pregunta por fexofenasina para alergia"
+    },
+    {
+      "frase": "busco algo para el dolor de cabeza",
+      "esperado_buscar": true,
+      "obtenido": true,
+      "acto": "consulta_medicamento",
+      "termino": "dolor de cabeza",
+      "fuente": "capa",
+      "confianza": 0.95,
+      "motivo": "pide categoría para síntoma dolor de cabeza"
+    },
+    {
+      "frase": "venden jarabe para la tos?",
+      "esperado_buscar": true,
+      "obtenido": true,
+      "acto": "consulta_medicamento",
+      "termino": "jarabe tos",
+      "fuente": "capa",
+      "confianza": 0.95,
+      "motivo": "pide jarabe para la tos"
+    },
+    {
+      "frase": "hay crema para las manchas?",
+      "esperado_buscar": true,
+      "obtenido": true,
+      "acto": "consulta_medicamento",
+      "termino": "crema manchas",
+      "fuente": "capa",
+      "confianza": 0.95,
+      "motivo": "pide crema para manchas, categoría explícita"
+    },
+    {
+      "frase": "que antibioticos tienen?",
+      "esperado_buscar": true,
+      "obtenido": true,
+      "acto": "consulta_medicamento",
+      "termino": "antibioticos",
+      "fuente": "capa",
+      "confianza": 0.95,
+      "motivo": "cliente pide categoría de antibioticos"
+    },
+    {
+      "frase": "mándame el precio de la metformina",
+      "esperado_buscar": true,
+      "obtenido": true,
+      "acto": "consulta_medicamento",
+      "termino": "metformina",
+      "fuente": "capa",
+      "confianza": 0.95,
+      "motivo": "pide precio de metformina"
+    }
+  ]
+}

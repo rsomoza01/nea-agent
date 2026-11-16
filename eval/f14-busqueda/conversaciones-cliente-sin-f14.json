@@ -1,0 +1,376 @@
+{
+ "modelo": "meituan/longcat-2.0",
+ "escenarios": [
+  {
+   "id": "1-apelativo-y-vitamina",
+   "titulo": "Caso 1 real: apelativo + nitrofurantoina + vitamina C",
+   "nota": "El término viejo era 'amor nitrofurantoina 50mg vitamina' y 'amor' validaba TE AMO PRESERV.",
+   "conversacion": [
+    {
+     "cliente": "Buenas tardes!! Mi amor que precio tiene la nitrofurantoina de 50mg y la vitamina C",
+     "agente": [
+      "NITROFURANTOINA 50MG\n💊 1. NITROFURANTOINA 50 MG X 20 CAP\n   $4,10  |  Bs 3.075,00\n💊 2. NITROFURANTOINA 100 MG X 20 CAP\n   $5,20  |  Bs 3.900,00\n\nVITAMINA C\n💊 3. VITAMINA C 500 MG X 10 TAB\n   $2,30  |  Bs 1.725,00\n💊 4. VITAMINA K 10 MG X 30 TAB\n   $3,10  |  Bs 2.325,00\n💊 5. VITAMINA E 400 UI X 10 CAP\n   $3,60  |  Bs 2.700,00\n\n\n👉 Para agregar al carrito: quiero X cajas de la opción Z\n   Ejemplo: quiero 2 cajas de la opción 3\n🛒 ¿Otro medicamento? Escríbeme el nombre y lo busco.\n✅ Cuando termines, escribe LISTO y te muestro el resumen de tu pedido."
+     ]
+    },
+    {
+     "cliente": "dame 2 cajas de la nitro",
+     "agente": [
+      "⚠️ No tengo 2 NITRO. No te ofrezco otro medicamento parecido para no confundirte: son cosas distintas.\n¿Me confirmas el nombre tal como viene en la caja, o te paso con un auxiliar?"
+     ]
+    },
+    {
+     "cliente": "y la vitamina c cuanto sale?",
+     "agente": [
+      "VITAMINA\n💊 1. VITAMINA C 500 MG X 10 TAB\n   $2,30  |  Bs 1.725,00\n💊 2. VITAMINA K 10 MG X 30 TAB\n   $3,10  |  Bs 2.325,00\n💊 3. VITAMINA E 400 UI X 10 CAP\n   $3,60  |  Bs 2.700,00\n\n👉 Para agregar al carrito: quiero X cajas de la opción Z\n   Ejemplo: quiero 2 cajas de la opción 3\n🛒 ¿Otro medicamento? Escríbeme el nombre y lo busco.\n✅ Cuando termines, escribe LISTO y te muestro el resumen de tu pedido."
+     ]
+    },
+    {
+     "cliente": "no gracias, eso es todo",
+     "agente": [
+      "Antes de cerrar tu pedido, ¿cómo prefieres recibirlo?\n\n1️⃣ Delivery (envío a tu dirección)\n2️⃣ Retirar en Farmacia\n\nResponde *1* o *2*."
+     ]
+    }
+   ]
+  },
+  {
+   "id": "2-vivacina",
+   "titulo": "Caso 2 real: typo que cruzaba de categoría",
+   "nota": "Antes: 'vivacina' devolvía VITAMINA K y VITAMINA C (fuzzy de 2 ediciones).",
+   "conversacion": [
+    {
+     "cliente": "vivacina",
+     "agente": [
+      "VITAMINA\n💊 1. VITAMINA C 500 MG X 10 TAB\n   $2,30  |  Bs 1.725,00\n💊 2. VITAMINA K 10 MG X 30 TAB\n   $3,10  |  Bs 2.325,00\n💊 3. VITAMINA E 400 UI X 10 CAP\n   $3,60  |  Bs 2.700,00\n\n👉 Para agregar al carrito: quiero X cajas de la opción Z\n   Ejemplo: quiero 2 cajas de la opción 3\n🛒 ¿Otro medicamento? Escríbeme el nombre y lo busco.\n✅ Cuando termines, escribe LISTO y te muestro el resumen de tu pedido."
+     ]
+    },
+    {
+     "cliente": "o sea que lo tienes o no?",
+     "agente": [
+      "No, \"vivacina\" no aparece en el catálogo. Lo que te mostré fueron vitaminas porque el nombre suena parecido, pero no es lo mismo.\n\n¿Estás buscando algún otro medicamento? Dime el nombre exacto de la caja o qué necesitas y lo busco."
+     ]
+    },
+    {
+     "cliente": "y cuanto cuesta?",
+     "agente": [
+      "Lo siento, no tengo un precio confirmado de eso en este momento y no quiero darte un número equivocado. Te puedo comunicar con un asistente de la farmacia para que te lo confirme. ¿Lo deseas?"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "3-opcion-en-mensaje-mixto",
+   "titulo": "Caso 3 real: 'opción N' dentro de un mensaje con otra pregunta",
+   "nota": "Antes: no resolvía la opción 9 y buscaba 'macrodantina querer vitamina opción'.",
+   "conversacion": [
+    {
+     "cliente": "que tienen para la alergia?",
+     "agente": [
+      "No encontré esos antihistamínicos en el catálogo actual, lo siento. \n\n¿Traes el nombre exacto que está en la caja o buscas alguna otra presentación, como gotas o spray nasal?"
+     ]
+    },
+    {
+     "cliente": "Precio de la macrodantina?? Voy a querer una vitamina C de la opción 9",
+     "agente": [
+      "⚠️ Ojo: esas opciones no coinciden con la última lista que te envié.\n\n¿Me repites los números, o mejor me dices el nombre del medicamento y lo busco?"
+     ]
+    },
+    {
+     "cliente": "listo, eso es todo",
+     "agente": [
+      "VITAMINA\n💊 1. VITAMINA C 500 MG X 10 TAB\n   $2,30  |  Bs 1.725,00\n💊 2. VITAMINA K 10 MG X 30 TAB\n   $3,10  |  Bs 2.325,00\n💊 3. VITAMINA E 400 UI X 10 CAP\n   $3,60  |  Bs 2.700,00\n\n👉 Para agregar al carrito: quiero X cajas de la opción Z\n   Ejemplo: quiero 2 cajas de la opción 3\n🛒 ¿Otro medicamento? Escríbeme el nombre y lo busco.\n✅ Cuando termines, escribe LISTO y te muestro el resumen de tu pedido."
+     ]
+    }
+   ]
+  },
+  {
+   "id": "4-dos-bucales-typo",
+   "titulo": "Caso 4 real: dos medicamentos y un typo (solunoval → solunovar)",
+   "nota": "Antes: un solo término concatenado y apertura 'No tengo SOLUNOVAL BUCAL' + lista.",
+   "conversacion": [
+    {
+     "cliente": "buenas tardes precio de solunoval solución bucal y pinvex solución bucal",
+     "agente": [
+      "SOLUNOVAR\n⚠️ No tengo SOLUNOVAL en solución bucal. Lo tengo en: solución oral.\n\n💊 1. SOLUNOVAR SOLUCION BUCAL X 1 FCO\n   $7,40  |  Bs 5.550,00\n\nPINVEX\n⚠️ No tengo PINVEX en solución bucal. Lo tengo en: solución oral.\n\n💊 2. PINVEX SOLUCION BUCAL X 1 FCO\n   $6,90  |  Bs 5.175,00\n\n\n👉 Para agregar al carrito: quiero X cajas de la opción Z\n   Ejemplo: quiero 2 cajas de la opción 3\n🛒 ¿Otro medicamento? Escríbeme el nombre y lo busco.\n✅ Cuando termines, escribe LISTO y te muestro el resumen de tu pedido."
+     ]
+    },
+    {
+     "cliente": "quiero 1 caja de la opción 1",
+     "agente": [
+      "✅ Agregado al carrito: SOLUNOVAR SOLUCION BUCAL X 1 FCO ×1\n\n⚠️ No tengo PINVEX en solución bucal. Lo tengo en: solución oral.\n\nPINVEX BUCAL\n💊 1. PINVEX SOLUCION BUCAL X 1 FCO\n   $6,90  |  Bs 5.175,00\n\n👉 Para agregar al carrito: quiero X cajas de la opción Z\n   Ejemplo: quiero 2 cajas de la opción 3\n🛒 ¿Otro medicamento? Escríbeme el nombre y lo busco.\n✅ Cuando termines, escribe LISTO y te muestro el resumen de tu pedido."
+     ]
+    },
+    {
+     "cliente": "listo",
+     "agente": [
+      "Antes de cerrar tu pedido, ¿cómo prefieres recibirlo?\n\n1️⃣ Delivery (envío a tu dirección)\n2️⃣ Retirar en Farmacia\n\nResponde *1* o *2*."
+     ]
+    }
+   ]
+  },
+  {
+   "id": "5-typos-simples",
+   "titulo": "Typos que ya funcionaban (no deben romperse)",
+   "nota": "omeprasol, diclofencao, fexofenasina, azitromisina, clonacepan.",
+   "conversacion": [
+    {
+     "cliente": "tienen omeprasol 20?",
+     "agente": [
+      "Sí, tenemos omeprazol 20 mg x 30 cápsulas por $4,50 o Bs 3.375,00. ¿Cuántas cajas necesitas?\n\n👉 Para agregar al carrito: quiero X cajas de la opción Z\n   Ejemplo: quiero 2 cajas de la opción 3\n🛒 ¿Otro medicamento? Escríbeme el nombre y lo busco.\n✅ Cuando termines, escribe LISTO y te muestro el resumen de tu pedido."
+     ]
+    },
+    {
+     "cliente": "y diclofencao 50?",
+     "agente": [
+      "Sí, tenemos:\n\n💊 DICLOFENACO 50 MG X 20 TAB\n   $2,40 | Bs 1.800,00\n\n¿Cuántas cajas necesitas?\n\n👉 Para agregar al carrito: quiero X cajas de la opción Z\n   Ejemplo: quiero 2 cajas de la opción 3\n🛒 ¿Otro medicamento? Escríbeme el nombre y lo busco.\n✅ Cuando termines, escribe LISTO y te muestro el resumen de tu pedido."
+     ]
+    },
+    {
+     "cliente": "me sirve el fexofenasina para la alergia?",
+     "agente": [
+      "Sí, la fexofenadina es un antihistamínico indicado para síntomas de alergia (estornudos, comezón, secreción nasal). Tenemos disponible:\n\n💊 FEXOFENADINA 120 MG X 10 TAB\n   $5,90 | Bs 4.425,00\n\n¿Cuántas cajas necesitas?\n\n👉 Para agregar al carrito: quiero X cajas de la opción Z\n   Ejemplo: quiero 2 cajas de la opción 3\n🛒 ¿Otro medicamento? Escríbeme el nombre y lo busco.\n✅ Cuando termines, escribe LISTO y te muestro el resumen de tu pedido."
+     ]
+    },
+    {
+     "cliente": "ok gracias, hasta luego",
+     "agente": [
+      "De nada, que te mejores pronto 👋"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "6-lista-de-medicamentos",
+   "titulo": "Lista de varios medicamentos en un mensaje",
+   "nota": "esoz, leprit y evigax en una sola línea.",
+   "conversacion": [
+    {
+     "cliente": "esoz, leprit y evigax",
+     "agente": [
+      "⚠️ No disponibles en el catálogo: EVIGAX\n\nESOZ\n💊 1. ESOZ 40 MG X 7 CAP\n   $5,50  |  Bs 4.125,00\n\nLEPRIT\n💊 2. LEPRIT 25 MG X 30 TAB\n   $7,50  |  Bs 5.625,00\n\n\n👉 Para agregar al carrito: quiero X cajas de la opción Z\n   Ejemplo: quiero 2 cajas de la opción 3\n🛒 ¿Otro medicamento? Escríbeme el nombre y lo busco.\n✅ Cuando termines, escribe LISTO y te muestro el resumen de tu pedido."
+     ]
+    },
+    {
+     "cliente": "quiero 3 cajas de la opción 2",
+     "agente": [
+      "✅ Agregado al carrito: LEPRIT 25 MG X 30 TAB ×3\n\nListo, agregué 3 cajas de LEPRIT 25 MG X 30 TAB. ¿Necesitas buscar otro medicamento?"
+     ]
+    },
+    {
+     "cliente": "no, nada mas",
+     "agente": [
+      "Antes de cerrar tu pedido, ¿cómo prefieres recibirlo?\n\n1️⃣ Delivery (envío a tu dirección)\n2️⃣ Retirar en Farmacia\n\nResponde *1* o *2*."
+     ]
+    }
+   ]
+  },
+  {
+   "id": "7-multi-conector",
+   "titulo": "Dos medicamentos con conector + pregunta de precio",
+   "nota": "nitrofurantoina y la vitamina C (dos búsquedas, no una frase).",
+   "conversacion": [
+    {
+     "cliente": "que precio tiene la losartana de 50 y la metformina de 850",
+     "agente": [
+      "LOSARTAN\n💊 1. LOSARTAN 50 MG X 30 TAB\n   $4,30  |  Bs 3.225,00\n\nMETFORMINA\n💊 2. METFORMINA 850 MG X 30 TAB\n   $4,80  |  Bs 3.600,00\n\n\n👉 Para agregar al carrito: quiero X cajas de la opción Z\n   Ejemplo: quiero 2 cajas de la opción 3\n🛒 ¿Otro medicamento? Escríbeme el nombre y lo busco.\n✅ Cuando termines, escribe LISTO y te muestro el resumen de tu pedido."
+     ]
+    },
+    {
+     "cliente": "quiero 1 caja de cada uno",
+     "agente": [
+      "⚠️ Ojo: esas opciones no coinciden con la última lista que te envié.\n\n¿Me repites los números, o mejor me dices el nombre del medicamento y lo busco?"
+     ]
+    },
+    {
+     "cliente": "listo",
+     "agente": [
+      "Antes de cerrar tu pedido, ¿cómo prefieres recibirlo?\n\n1️⃣ Delivery (envío a tu dirección)\n2️⃣ Retirar en Farmacia\n\nResponde *1* o *2*."
+     ]
+    }
+   ]
+  },
+  {
+   "id": "8-coformulacion",
+   "titulo": "Co-formulación: no debe partirse en dos medicamentos",
+   "nota": "amoxicilina + ácido clavulánico es UN producto.",
+   "conversacion": [
+    {
+     "cliente": "tienen amoxicilina y acido clavulanico?",
+     "agente": [
+      "AMOXICILINA\n💊 1. AMOXICILINA 500 MG X 21 CAP\n   $5,60  |  Bs 4.200,00\n💊 2. AMOXICILINA + ACIDO CLAVULANICO 875 MG X 14 TAB\n   $9,30  |  Bs 6.975,00\n\nACIDO CLAVULANICO\n💊 3. AMOXICILINA + ACIDO CLAVULANICO 875 MG X 14 TAB\n   $9,30  |  Bs 6.975,00\n\n\n👉 Para agregar al carrito: quiero X cajas de la opción Z\n   Ejemplo: quiero 2 cajas de la opción 3\n🛒 ¿Otro medicamento? Escríbeme el nombre y lo busco.\n✅ Cuando termines, escribe LISTO y te muestro el resumen de tu pedido."
+     ]
+    },
+    {
+     "cliente": "cuanto sale?",
+     "agente": [
+      "Sí, tenemos:\n\nAMOXICILINA + ÁCIDO CLAVULANICO\n💊 1. 875 MG X 14 TAB\n   $9,30 | Bs 6.975,00\n\n¿Te sirve esta presentación? 👆\n\n👉 Para agregar al carrito: quiero X cajas de la opción Z\n   Ejemplo: quiero 2 cajas de la opción 3\n🛒 ¿Otro medicamento? Escríbeme el nombre y lo busco.\n✅ Cuando termines, escribe LISTO y te muestro el resumen de tu pedido."
+     ]
+    }
+   ]
+  },
+  {
+   "id": "9-cortesia-sola",
+   "titulo": "Cortesía sin consulta (no debe listar productos)",
+   "nota": "El saludo solo no es una búsqueda.",
+   "conversacion": [
+    {
+     "cliente": "hola mi amor buenos días",
+     "agente": [
+      "¡Buenos días! 😊 Soy Nea, el asistente de inteligencia artificial de esta farmacia. Estoy aquí para ayudarte a encontrar medicamentos, precios y disponibilidad rápido. \n\n¿Qué necesitas hoy?"
+     ]
+    },
+    {
+     "cliente": "gracias, linda",
+     "agente": [
+      "¡A ti por escribirme! Si necesitas algún medicamento o información, aquí estoy. Que tengas un lindo día ✨"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "10-marca-no-se-esconde",
+   "titulo": "Marca en el catálogo: el alias no debe esconderla",
+   "nota": "macrodantina existe como producto; el alias solo reescribe typos, no marcas.",
+   "conversacion": [
+    {
+     "cliente": "tienen macrodantina?",
+     "agente": [
+      "Sí, tenemos macrodantina 💊\n\n*MACRODANTINA*\n💊 1. MACRODANTINA 100 MG X 20 CAP\n   $6,80 | Bs 5.100,00\n\n¿Te sirve esa presentación o necesitas otra cantidad?\n\n👉 Para agregar al carrito: quiero X cajas de la opción Z\n   Ejemplo: quiero 2 cajas de la opción 3\n🛒 ¿Otro medicamento? Escríbeme el nombre y lo busco.\n✅ Cuando termines, escribe LISTO y te muestro el resumen de tu pedido."
+     ]
+    },
+    {
+     "cliente": "y la nitrofurantoina?",
+     "agente": [
+      "NITROFURANTOINA\n💊 1. NITROFURANTOINA 50 MG X 20 CAP\n   $4,10  |  Bs 3.075,00\n💊 2. NITROFURANTOINA 100 MG X 20 CAP\n   $5,20  |  Bs 3.900,00\n\n👉 Para agregar al carrito: quiero X cajas de la opción Z\n   Ejemplo: quiero 2 cajas de la opción 3\n🛒 ¿Otro medicamento? Escríbeme el nombre y lo busco.\n✅ Cuando termines, escribe LISTO y te muestro el resumen de tu pedido."
+     ]
+    }
+   ]
+  }
+ ],
+ "consultas_al_catalogo": [
+  "nitrofurantoina 50 mg",
+  "vitamina C",
+  "nitrofurantoina 50mg",
+  "vitamina c",
+  "vitamina c",
+  "NITROFURANTOINA 50 MG X 20 CAP",
+  "vitamina c",
+  "vivacina",
+  "sea",
+  "sea",
+  "loratadina",
+  "olratadina",
+  "lroatadina",
+  "loartadina",
+  "lortaadina",
+  "loraatdina",
+  "loratdaina",
+  "lorataidna",
+  "loratadnia",
+  "loratadian",
+  "lratadina",
+  "loratadi",
+  "lorata",
+  "lorat",
+  "lora",
+  "lor",
+  "cetirizina",
+  "ectirizina",
+  "cteirizina",
+  "ceitrizina",
+  "cetriizina",
+  "cetiirzina",
+  "cetirziina",
+  "cetiriizna",
+  "cetiriznia",
+  "cetirizian",
+  "cetirisina",
+  "cetirizi",
+  "cetiri",
+  "cetir",
+  "ceti",
+  "cet",
+  "difenhidramina",
+  "idfenhidramina",
+  "dfienhidramina",
+  "diefnhidramina",
+  "difnehidramina",
+  "difehnidramina",
+  "difenihdramina",
+  "difenhdiramina",
+  "difenhirdamina",
+  "difenhidarmina",
+  "difenhidrmaina",
+  "difenhidraimna",
+  "difenhidramnia",
+  "difenhid",
+  "difenh",
+  "difen",
+  "dife",
+  "dif",
+  "macrodantina",
+  "vitamina C",
+  "macrodantina",
+  "vitamina C",
+  "solunoval bucal",
+  "pinvex bucal",
+  "Pinvox",
+  "Pinvic",
+  "Pinvlex",
+  "Pinvaspasm",
+  "solunoval bucal",
+  "Solunoval",
+  "Ovumet",
+  "Metrodina",
+  "Flagyl",
+  "Tricomonac",
+  "pinvex bucal",
+  "Novalgina",
+  "Conmel",
+  "Dironina",
+  "Baralgina",
+  "pinvex bucal",
+  "omeprazol 20",
+  "diclofenac 50",
+  "fexofenadina",
+  "esomeprazol",
+  "leprit",
+  "evigax",
+  "veigax",
+  "eivgax",
+  "evgiax",
+  "eviagx",
+  "evigxa",
+  "ebigax",
+  "evigax",
+  "eviga",
+  "evig",
+  "evi",
+  "entecavir",
+  "esoz",
+  "leprit",
+  "evigax",
+  "veigax",
+  "eivgax",
+  "evgiax",
+  "eviagx",
+  "evigxa",
+  "ebigax",
+  "evigax",
+  "eviga",
+  "evig",
+  "evi",
+  "sildenafil",
+  "losartan 50 mg",
+  "metformina 850 mg",
+  "losartana 50",
+  "metformina",
+  "losartan 50 mg",
+  "metformina 850 mg",
+  "amoxicilina acido clavulanico",
+  "amoxicilina",
+  "acido clavulanico",
+  "amoxicilina acido clavulanico",
+  "macrodantina",
+  "nitrofurantoina"
+ ]
+}

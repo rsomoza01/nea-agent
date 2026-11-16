@@ -1,0 +1,14 @@
+ fuente |         acto         | hay_consulta |                        candidato                        |      termino       |                           motivo                           
+--------+----------------------+--------------+---------------------------------------------------------+--------------------+------------------------------------------------------------
+ llm    | consulta_medicamento | t            | vivacina                                                | vivacina           | pregunta si tienen medicamento vivacina
+ llm    | consulta_medicamento | t            | vibacina                                                | vivacina           | Pide medicamento vivacina; candidato coincide salvo b/v
+ capa   | consulta_medicamento | t            | vivacina                                                | vivacina           | cliente pide medicamento vivacina, aparece en mensaje
+ llm    | consulta_medicamento | t            | vivacina                                                | vivacina           | pregunta si tienen vivacina
+ llm    | consulta_medicamento | t            | vibacina                                                | vivacina           | pide medicamento vivacina, coincide con candidato vibacina
+ capa   | consulta_medicamento | t            | vivacina paso les cuento sirvieron compre semana pasada | vivacina           | pregunta por vivacina, nombre de medicamento
+ llm    | consulta_medicamento | t            | losartán                                                | losartan metformin | pide dos medicamentos concretos
+ llm    | consulta_medicamento | t            | metformina                                              | losartan metformin | pide dos medicamentos concretos
+ llm    | consulta_medicamento | t            | metformin                                               | losartan metformin | cliente pide losartan y metformin
+ capa   | atributo_producto    | f            | marca era indu                                          |                    | habla del laboratorio Indu del producto ya mostrado
+(10 rows)
+

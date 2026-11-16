@@ -922,6 +922,18 @@ def filtrar_relevantes(
         return productos
     farmacos = tokens_farmaco(termino)
     utiles = farmacos or tokens_senal(termino, _MIN_LEN_SENAL)
+    # LA LETRA DE LA VITAMINA MANDA (F14/C1): si el cliente pidió "vitamina C",
+    # ninguna otra vitamina puede entrar — ni en el estricto ni en el rescate.
+    # Sin esto el rescate, que se apoya en el token genérico 'vitamina', volvía a
+    # colar VITAMINA K y VITAMINA E (medido en la simulación de conversaciones).
+    letra_vit = _letra_de_vitamina_del_termino(termino)
+    if letra_vit and productos:
+        productos = [
+            p for p in productos
+            if not _es_otra_vitamina(
+                str(p.get("nombre") or p.get("producto") or ""), letra_vit
+            )
+        ]
     # C2/F14.4: con UN solo token de señal, la distancia 2 de typo exige
     # evidencia de parentesco ('vivacina' ≈ 'vitamina' ya no cruza de categoría).
     # Con 2+ tokens se mantiene el comportamiento medido en las fases previas.
@@ -1039,6 +1051,62 @@ def tokens_posible_farmaco(termino: str) -> list[str]:
     más permisiva — no es la que se usa aquí.
     """
     return _tokens_farmaco(termino)
+
+
+def _letra_de_vitamina_del_termino(termino: str) -> str | None:
+    """La letra de la vitamina que pidió el cliente ('vitamina c' → 'c')."""
+    for w in _norm(termino).split():
+        if _es_letra_de_vitamina(w, termino):
+            return w
+    return None
+
+
+def _es_otra_vitamina(nombre: str, letra: str) -> bool:
+    """¿El producto es de una vitamina DISTINTA a `letra`?
+
+    Hallazgo de la simulación de conversaciones (2026-10-30): con el término
+    'vitamina c' el guard POR PRODUCTO acertaba (VITAMINA K no es relevante),
+    pero el RESCATE ESCALONADO volvía a colarlos porque se apoya en el token
+    genérico 'vitamina' — el cliente pedía C y recibía C, K y E.
+    """
+    for otra in _VITAMINAS:
+        if otra == letra:
+            continue
+        if _relevante_letra_de_vitamina(otra, nombre):
+            return True
+    return False
+
+
+def correccion_creible(original: str, corregido: str) -> bool:
+    """¿La corrección de escritura es un typo del MISMO fármaco? (regla C2)
+
+    Puerta ÚNICA para cualquier corrección que el código haga "hacia" un término
+    del catálogo: un typo creíble (misma letra inicial/salvo un desplazamiento)
+    sí, un salto de categoría no.
+
+    Por qué existe (hallazgo de la simulación de conversaciones, 2026-10-30):
+    la recuperación por "núcleo" del árbol integrado validaba el resultado
+    contra el término YA CORREGIDO, así que 'vivacina' → 'vitamina' pasaba con
+    los productos de VITAMINA C/K/E y el cliente recibía vitaminas pidiendo otra
+    cosa (con el añadido «Asumí que buscas VITAMINA 👍»). El filtro de relevancia
+    de C2 no lo veía porque nunca comparaba el original.
+
+    Casos reales que SÍ pasan: 'omeprasol'→'omeprazol' (prefijo 6),
+    'diclofencao'→'diclofenaco' (desplazamiento), 'solunoval'→'solunovar'
+    (1 edición), 'hialuronico'→'hialuronato' (prefijo 8).
+    Casos que se rechazan: 'vivacina'→'vitamina' (prefijo 2, 2 sustituciones).
+    """
+    a = _norm(original).split()
+    b = _norm(corregido).split()
+    if not a or not b:
+        return False
+    for x, y in zip(a, b):
+        if x == y:
+            continue
+        dist = _levenshtein(x, y)
+        if not _typo_aceptable(x, y, dist, estricto=True):
+            return False
+    return True
 
 
 # El OCR de una imagen que NO es un medicamento devuelve una FRASE, no un nombre.
