@@ -131,12 +131,41 @@ def cita_superlativo_precio(texto: str) -> bool:
 # respalden. Hallazgo del Laboratorio: Daflon con "principio activo ramiprilo"
 # o Daflon con "el genérico más económico del...". Plantilla que no afirma
 # nada y ofrece buscar en el catálogo.
+# El detector corre sobre el texto NORMALIZADO (minúsculas y SIN tildes): los
+# modelos escriben "composicion" y "composición" indistintamente (D-B3). Por eso
+# los patrones van sin acentos.
 AFIRMA_COMPOSICION = re.compile(
-    r"\b(principio\s+activo|mismo\s+principio\s+activo|"
-    r"es\s+el\s+gen[eé]rico\s+de|gen[eé]rico\s+equivalente|"
-    r"equivalente\s+gen[eé]rico|ingrediente\s+activo|"
-    r"composici[oó]n\s+\w|contiene\s+[a-záéíóúñ]{4,})\b",
+    r"principio\s+activo"                          # su/el/mismo principio activo
+    r"|ingrediente\s+activo"
+    r"|generico\s+(de|del|es|equivalente)"         # es el genérico de/del, el genérico es
+    r"|equivalente\s+generico"
+    r"|equivalente?\s+a(l|\s)"                      # es equivalente a/al, equivale a/al
+    r"|equivale\s+a(l|\s)"
+    r"|mismo\s+efecto"                             # tiene el mismo efecto que
+    r"|se\s+(puede\s+)?reemplaza(r)?\s+por"        # se puede reemplazar por
+    r"|mismo\s+medicamento"                        # es el mismo medicamento que
+    r"|composicion\s+\w"                           # composición incluye/del/es (D-B3: sin \b final)
+    r"|contiene\s+[a-z]{4,}"
+    r"|lleva\s+[a-z]{4,}",
     re.I,
+)
+
+# Modo NO afirmativo: preguntas y negaciones/limitaciones honestas NO deben
+# vetarse (D-B4). Se excluye el texto interrogativo y el que niega el hecho.
+_NO_AFIRMA_COMPOSICION = re.compile(
+    r"\bno\s+(tengo|puedo|se\b|quiero|hay|confirmo|estoy\s+segur)"
+    r"|\bprefiero\s+no\b"
+    r"|\bsin\s+(confirmar|datos)\b",
+    re.I,
+)
+
+# Campos del payload del producto que exponen composición/principio activo. El
+# catálogo ACTUAL (producto, nombre, precio, precioBs, presentacion, productId,
+# laboratorio) NO expone ninguno → fail-closed: la afirmación nunca se respalda.
+_CAMPOS_COMPOSICION = (
+    "composicion", "principioactivo", "principio_activo",
+    "ingredienteactivo", "ingrediente_activo", "monodroga",
+    "sustanciaactiva", "sustancia_activa",
 )
 
 TPL_SIN_COMPOSICION = (
@@ -147,9 +176,57 @@ TPL_SIN_COMPOSICION = (
 )
 
 
+def _sin_tildes(texto: str) -> str:
+    """Minúsculas y sin diacríticos (los modelos mezclan 'composicion'/'composición')."""
+    t = unicodedata.normalize("NFD", (texto or "").lower())
+    return "".join(c for c in t if unicodedata.category(c) != "Mn")
+
+
 def afirma_composicion(texto: str) -> bool:
-    """G5: el texto del AGENTE afirma principio activo, composición o equivalencia genérica."""
-    return bool(texto) and bool(AFIRMA_COMPOSICION.search(texto))
+    """G5: el texto del AGENTE afirma —en modo AFIRMATIVO— principio activo,
+    composición o equivalencia genérica. Excluye preguntas y negaciones honestas
+    (D-B4) y normaliza tildes (D-B3).
+
+    Se evalúa POR ORACIÓN: una afirmación declarativa dispara aunque OTRA oración
+    del mensaje (p. ej. el pie '¿Otro medicamento?' del carrito) sea interrogativa.
+    """
+    if not texto:
+        return False
+    for oracion in re.findall(r"[^.!?\n]*[.!?\n]|[^.!?\n]+$", texto):
+        if "?" in oracion or "¿" in oracion:
+            continue  # interrogativa: no afirma
+        norm = _sin_tildes(oracion)
+        if _NO_AFIRMA_COMPOSICION.search(norm):
+            continue  # negación/limitación honesta
+        if AFIRMA_COMPOSICION.search(norm):
+            return True
+    return False
+
+
+def hay_evidencia_composicion(
+    products: list[dict] | None, texto: str
+) -> bool:
+    """G5 (D-B1) — evidencia por (afirmación, producto), FAIL-CLOSED: True solo si
+    algún producto devuelto por la herramienta expone un campo de composición cuyo
+    valor aparece en el texto del agente. Si el payload no expone composición (el
+    catálogo de hoy no lo hace), devuelve False → la afirmación NO se respalda."""
+    if not products or not texto:
+        return False
+    texto_norm = _sin_tildes(texto)
+    for p in products:
+        if not isinstance(p, dict):
+            continue
+        for clave, valor in p.items():
+            clave_norm = _sin_tildes(str(clave)).replace(" ", "")
+            if not any(c in clave_norm for c in _CAMPOS_COMPOSICION):
+                continue
+            if not isinstance(valor, str) or not valor.strip():
+                continue
+            valor_norm = _sin_tildes(valor)
+            for token in re.findall(r"[a-z]{4,}", valor_norm):
+                if token in texto_norm:
+                    return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -356,6 +433,43 @@ def pide_humano(texto: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# G14 — Consulta clínica → derivación humana fail-closed (Paso 8, UC-08)
+# ---------------------------------------------------------------------------
+# El cliente hace una consulta de CONSEJO clínico (diagnóstico, dosis,
+# interacción, contraindicación, embarazo/lactancia, pediatría, reacción
+# adversa, síntoma de alarma o sustitución individualizada). El bot NO
+# responde clínicamente: no diagnostica, no prescribe, no ajusta dosis ni
+# sustituye tratamiento (PLAN §7 "Seguridad clínica", ADR-0006). La única
+# salida segura es NO aconsejar y derivar a un humano.
+#
+# La DETECCIÓN vive en app/application/clinical_handoff.clasificar (capa de
+# aplicación, dirección de dependencias correcta); aquí solo viven las
+# PLANTILLAS constantes de respuesta, junto al resto de guards (el texto
+# fail-closed jamás lo redacta el LLM). turn.py cablea detección + handoff.
+
+# Mensaje de RECEPCIÓN autorizado (estado SOLICITADO): confirma que un humano
+# del equipo atenderá la consulta clínica. NO da ningún consejo clínico.
+TPL_DERIVACION_CLINICA = (
+    "Para cuidar tu salud, esta consulta la debe atender el equipo "
+    "farmacéutico de forma personal: no puedo dar indicaciones médicas, de "
+    "dosis ni de tratamiento por este medio. Ya la estoy derivando a un "
+    "profesional de la farmacia, que te responderá por este mismo chat. Si "
+    "sientes un malestar grave o urgente, acude de inmediato a un centro de "
+    "salud. 🙏"
+)
+
+# Mensaje de ESTADO autorizado (derivación ya ABIERTA): el cliente insiste y el
+# caso aún espera al humano. Solo se repite que el equipo lo atenderá; NO se
+# reanuda consejo clínico mientras el caso está abierto (PLAN §8 punto 6).
+TPL_DERIVACION_CLINICA_EN_CURSO = (
+    "Tu consulta ya está en manos del equipo farmacéutico y te responderán por "
+    "este mismo chat en cuanto puedan. No puedo adelantarte indicaciones "
+    "médicas, de dosis ni de tratamiento. Si es una urgencia, acude a un "
+    "centro de salud. 🙏"
+)
+
+
+# ---------------------------------------------------------------------------
 # G10 — Composición/uso farmacológico o promesa de búsqueda sin respaldo
 # ---------------------------------------------------------------------------
 # El agente afirma la clase terapéutica o el uso de un medicamento ('es un
@@ -489,3 +603,73 @@ def contiene_toolcall_json(texto: str) -> bool:
         if _NOMBRES_HERRAMIENTA.search(m.group(1)) and '"name"' in m.group(1).lower():
             return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# G13 — Afirmación de una ACCIÓN que no ocurrió
+# ---------------------------------------------------------------------------
+# El juez marca `alucinacion` cuando el agente afirma una acción que nunca pasó.
+# Caso medido (comprador_decidido): "Listo, quedó registrado." con el carrito
+# VACÍO y SIN llamada a finalizar_pedido. Rojo visible al cliente.
+#
+# El detector es LÉXICO por familia. El veto solo dispara cuando la frase
+# aparece Y la señal de estado del turno dice que la acción NO ocurrió (la
+# condición de estado se evalúa en turn.py). La frase sola NUNCA dispara.
+# Familias (spec G13 §2): pedido_registrado / agregado_al_pedido /
+# apartado_o_agendado. No juzga escalado (G11), ni promesas, ni precios/stock.
+# Nota: los stems son PARCIALES ('registrad' → registrado/registrada), así que la
+# alternativa NO lleva `\b` de cierre (rompería 'registrado'); el `\b` de apertura sí.
+G13_PEDIDO_REGISTRADO = re.compile(
+    r"\b(qued[oó]\s+registrad|lo\s+registr[ée]|"
+    r"finalic[ée]\s+(tu|el|su)\s+pedido|cerr[ée]\s+(tu|el|su)\s+pedido|"
+    r"pedido\s+(ya\s+)?(qued[oó]\s+)?(registrad|confirmad|finalizad|cerrad)|"
+    r"tu\s+pedido\s+(ya\s+)?(qued[oó]|est[áa])\s+(registrad|list)|"
+    r"listo,?\s+qued[oó]\s+registrad)",
+    re.I,
+)
+
+G13_AGREGADO_AL_PEDIDO = re.compile(
+    r"\b((ya\s+)?lo\s+(agregu[ée]|a[ñn]ad[íi])\s+(a\s+tu|al)\s+(pedido|carrito)|"
+    r"(ya\s+)?(agregu[ée]|a[ñn]ad[íi])\s+\w+\s+(a\s+tu|al)\s+(pedido|carrito)|"
+    r"ya\s+est[áa]\s+en\s+tu\s+pedido)",
+    re.I,
+)
+
+G13_APARTADO_O_AGENDADO = re.compile(
+    r"\b((te\s+)?lo\s+(apart[ée]|reserv[ée])|"
+    r"(te\s+)?(lo\s+)?agend[ée]|queda\s+(apartad|reservad)|"
+    r"reservad[oa]\s+a\s+tu\s+nombre)",
+    re.I,
+)
+
+# Guarda de negación: no dispara si el texto NIEGA el hecho (spec §2.1).
+G13_NEGACION = re.compile(
+    r"\bno\s+(puedo|se\s+puede|hay|qued[oó]|logr[ée]|alcanc[ée]|pude)\b",
+    re.I,
+)
+
+# Plantilla constante (spec §2.4): no afirma nada nuevo, ofrece dejarlo listo.
+TPL_G13_ACCION = (
+    "No puedo confirmar que eso quedara registrado: en este chat no hay un "
+    "pedido cerrado. Si quieres, lo dejamos listo ahora — dime el medicamento "
+    "y cuántas cajas."
+)
+
+
+def familia_accion_afirmada(texto: str) -> str | None:
+    """G13: devuelve la familia de acción que el AGENTE afirma —'pedido',
+    'agregado' o 'apartado'— o None. Con guarda de negación: una frase que
+    NIEGA el hecho ('no puedo cerrar el pedido') no cuenta. La señal de estado
+    (si la acción ocurrió) la evalúa turn.py; aquí solo está la detección léxica.
+    """
+    if not texto:
+        return None
+    if G13_NEGACION.search(texto):
+        return None
+    if G13_PEDIDO_REGISTRADO.search(texto):
+        return "pedido"
+    if G13_AGREGADO_AL_PEDIDO.search(texto):
+        return "agregado"
+    if G13_APARTADO_O_AGENDADO.search(texto):
+        return "apartado"
+    return None

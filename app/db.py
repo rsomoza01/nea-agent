@@ -12,6 +12,13 @@ from typing import Any
 
 import asyncpg
 
+from app.application.clinical_handoff import (
+    ClinicalCategory,
+    ClinicalHandoff,
+    ClinicalHandoffState,
+    transicion_permitida as _clin_transicion_permitida,
+)
+from app.application.order_workflow import OrderAttempt, OrderPhase
 from app.state import (
     BotMessage,
     CartItem,
@@ -468,6 +475,133 @@ class PgStore:
             created_at=row["created_at"], updated_at=row["updated_at"],
         )
 
+    # intento de pedido (Paso 7, ADR-0007) — reserva atómica e idempotente.
+    @staticmethod
+    def _fila_a_intento(row: asyncpg.Record) -> OrderAttempt:
+        return OrderAttempt(
+            order_attempt_id=row["order_attempt_id"],
+            cart_fingerprint=row["cart_fingerprint"],
+            phase=OrderPhase(row["phase"]),
+        )
+
+    async def reservar_intento(
+        self, *, order_attempt_id: str, conversation_id: int, cart_fingerprint: str
+    ) -> OrderAttempt:
+        # Mismo idioma que mark_processed: el INSERT … ON CONFLICT DO NOTHING es
+        # atómico; si gana, RETURNING trae la fila; si otro ya reservó ese id, viene
+        # vacío y se recupera el intento existente (no se duplica ni se sobrescribe).
+        row = await self.pool.fetchrow(
+            """
+            INSERT INTO order_attempt (order_attempt_id, conversation_id, cart_fingerprint)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (order_attempt_id) DO NOTHING
+            RETURNING order_attempt_id, conversation_id, cart_fingerprint, phase
+            """,
+            order_attempt_id, conversation_id, cart_fingerprint,
+        )
+        if row is None:
+            row = await self.pool.fetchrow(
+                """
+                SELECT order_attempt_id, conversation_id, cart_fingerprint, phase
+                FROM order_attempt WHERE order_attempt_id = $1
+                """,
+                order_attempt_id,
+            )
+        assert row is not None
+        return self._fila_a_intento(row)
+
+    async def obtener_intento(self, order_attempt_id: str) -> OrderAttempt | None:
+        row = await self.pool.fetchrow(
+            """
+            SELECT order_attempt_id, conversation_id, cart_fingerprint, phase
+            FROM order_attempt WHERE order_attempt_id = $1
+            """,
+            order_attempt_id,
+        )
+        return self._fila_a_intento(row) if row is not None else None
+
+    # derivación clínica (Paso 8, UC-08) — reserva atómica e idempotente de UNA
+    # derivación ABIERTA por conversación (anti-duplicado).
+    @staticmethod
+    def _fila_a_derivacion(row: asyncpg.Record) -> ClinicalHandoff:
+        return ClinicalHandoff(
+            clinical_handoff_id=row["clinical_handoff_id"],
+            conversation_id=row["conversation_id"],
+            category=ClinicalCategory(row["category"]),
+            state=ClinicalHandoffState(row["state"]),
+        )
+
+    async def reservar_derivacion(
+        self,
+        *,
+        clinical_handoff_id: str,
+        conversation_id: int,
+        category: ClinicalCategory,
+    ) -> ClinicalHandoff:
+        # El índice único parcial `uq_clinical_handoff_abierto (conversation_id)
+        # WHERE state IN (abiertos)` hace que el INSERT sea atómico: si ya hay una
+        # derivación abierta para la conversación, ON CONFLICT DO NOTHING no crea
+        # otra y se recupera la existente (no se duplica el handoff).
+        row = await self.pool.fetchrow(
+            """
+            INSERT INTO clinical_handoff
+                (clinical_handoff_id, conversation_id, category, state)
+            VALUES ($1, $2, $3, 'solicitado')
+            ON CONFLICT (conversation_id) WHERE state IN
+                ('detectado','solicitado','asignado','atendido')
+            DO NOTHING
+            RETURNING clinical_handoff_id, conversation_id, category, state
+            """,
+            clinical_handoff_id, conversation_id, category.value,
+        )
+        if row is None:
+            abierto = await self.derivacion_abierta(conversation_id)
+            assert abierto is not None  # el conflicto implica que existe la abierta
+            return abierto
+        return self._fila_a_derivacion(row)
+
+    async def derivacion_abierta(
+        self, conversation_id: int
+    ) -> ClinicalHandoff | None:
+        row = await self.pool.fetchrow(
+            """
+            SELECT clinical_handoff_id, conversation_id, category, state
+            FROM clinical_handoff
+            WHERE conversation_id = $1
+              AND state IN ('detectado','solicitado','asignado','atendido')
+            ORDER BY created_at DESC LIMIT 1
+            """,
+            conversation_id,
+        )
+        return self._fila_a_derivacion(row) if row is not None else None
+
+    async def avanzar_estado_derivacion(
+        self, clinical_handoff_id: str, destino: ClinicalHandoffState
+    ) -> ClinicalHandoff | None:
+        row = await self.pool.fetchrow(
+            """
+            SELECT clinical_handoff_id, conversation_id, category, state
+            FROM clinical_handoff WHERE clinical_handoff_id = $1
+            """,
+            clinical_handoff_id,
+        )
+        if row is None:
+            return None
+        actual = self._fila_a_derivacion(row)
+        if not _clin_transicion_permitida(actual.state, destino):
+            raise ValueError(
+                f"transición no permitida: {actual.state.value} → {destino.value}"
+            )
+        upd = await self.pool.fetchrow(
+            """
+            UPDATE clinical_handoff SET state = $2
+            WHERE clinical_handoff_id = $1
+            RETURNING clinical_handoff_id, conversation_id, category, state
+            """,
+            clinical_handoff_id, destino.value,
+        )
+        return self._fila_a_derivacion(upd) if upd is not None else None
+
     # analytics (Fase 1: dashboard de medicamentos más buscados)
     @staticmethod
     def _parse_fecha(s: str | None) -> date | None:
@@ -493,16 +627,44 @@ class PgStore:
         product_name: str | None,
         result_count: int,
         added_to_cart: bool = False,
+        intent: dict[str, Any] | None = None,
     ) -> None:
+        intent = intent or {}
         await self.pool.execute(
             """
             INSERT INTO med_queries
               (conversation_id, provider_id, term, product_id, product_name,
-               result_count, added_to_cart)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+               result_count, added_to_cart,
+               intent_fuente, intent_acto, intent_motivo, intent_confianza)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             """,
             conversation_id, provider_id, term, product_id, product_name,
             result_count, added_to_cart,
+            intent.get("fuente"), intent.get("acto"), intent.get("motivo"),
+            intent.get("confianza"),
+        )
+
+    async def log_intent_decision(
+        self,
+        conversation_id: int,
+        provider_id: str,
+        fuente: str,
+        acto: str | None,
+        hay_consulta: bool | None,
+        termino: str | None,
+        candidato: str | None,
+        motivo: str | None,
+        confianza: float | None,
+    ) -> None:
+        await self.pool.execute(
+            """
+            INSERT INTO intent_decisions
+              (conversation_id, provider_id, fuente, acto, hay_consulta, termino,
+               candidato, motivo, confianza)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            """,
+            conversation_id, provider_id, fuente, acto, hay_consulta, termino,
+            candidato, motivo, confianza,
         )
 
     # ----------------------------------------------------------- alias (F14.4) ---

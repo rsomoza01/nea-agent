@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 
 from app.crm import CrmConflict, CrmError
 from app.state import AppContext, PendingSend, utcnow
+from app.wtext import WA_MAX_CHARS, partir_mensaje_largo
 
 logger = logging.getLogger("nea.sender")
 
@@ -53,9 +54,7 @@ class SenderWorker:
         ctx = self._ctx
         # WhatsApp límite 4096: un pending largo (receta de 8 meds) se divide
         # en partes ≤4000 — el mismo trato que el turno en vivo (turn._send).
-        from app.turn import WA_MAX_CHARS, _partir_mensaje_largo
-
-        partes = _partir_mensaje_largo(item.content, WA_MAX_CHARS)
+        partes = partir_mensaje_largo(item.content, WA_MAX_CHARS)
         for i, parte in enumerate(partes):
             try:
                 await ctx.crm.send_message(item.crm_conversation_id, parte)

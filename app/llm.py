@@ -64,6 +64,8 @@ class OpenAiLlm:
         vision_model: str | None = None,
         vision_api_key: str | None = None,
         vision_base_url: str | None = None,
+        reasoning_effort: str | None = None,
+        provider_sort: str | None = None,
     ) -> None:
         # base_url ≠ None → proveedor OpenAI-compatible (p. ej. OpenRouter,
         # para el bench de modelos del 002). La transcripción de audio es una
@@ -73,6 +75,9 @@ class OpenAiLlm:
         self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
         self._model = model
         self._transcribe_model = transcribe_model
+        self._reasoning_effort = (reasoning_effort or "").strip()
+        self._provider_sort = (provider_sort or "").strip()
+        self._extras_ok = bool(self._reasoning_effort or self._provider_sort)
         if transcribe_api_key:
             self._transcribe_client = AsyncOpenAI(
                 api_key=transcribe_api_key,
@@ -354,6 +359,29 @@ class OpenAiLlm:
                 await asyncio.sleep(1.0)
         raise LlmExhausted(str(last_error))
 
+    def _extras(self) -> dict[str, Any]:
+        """Parámetros opcionales fuera del contrato OpenAI; vacíos = no enviar."""
+        if not self._extras_ok:
+            return {}
+        extra: dict[str, Any] = {}
+        if self._reasoning_effort:
+            extra["reasoning"] = {"effort": self._reasoning_effort}
+        if self._provider_sort:
+            extra["provider"] = {"sort": self._provider_sort}
+        return extra
+
+    def _quiza_por_los_extras(self, exc: Exception) -> None:
+        """Desactiva los hints si el proveedor los rechaza; nunca sacrifica respuesta."""
+        if not self._extras_ok:
+            return
+        message = str(exc).lower()
+        if "reasoning" in message or "provider" in message:
+            self._extras_ok = False
+            logger.warning(
+                "llm: el proveedor rechazó los ajustes opcionales; se desactivan "
+                "para este proceso y se reintenta sin ellos"
+            )
+
     async def complete(
         self,
         messages: list[dict[str, Any]],
@@ -366,6 +394,9 @@ class OpenAiLlm:
                 if tools:
                     kwargs["tools"] = tools
                     kwargs["tool_choice"] = "auto"
+                extra = self._extras()
+                if extra:
+                    kwargs["extra_body"] = extra
                 resp = await self._client.chat.completions.create(
                     model=self._model, messages=messages, **kwargs
                 )
@@ -386,6 +417,7 @@ class OpenAiLlm:
                 logger.warning("llm: respuesta vacía, intento %d", attempt + 1)
             except Exception as exc:  # red, API, parseo — todo reintenta
                 last_error = exc
+                self._quiza_por_los_extras(exc)
                 logger.warning("llm: fallo en intento %d: %s", attempt + 1, exc)
             if attempt < self.RETRIES:
                 await asyncio.sleep(2**attempt)  # 1 s, 2 s
