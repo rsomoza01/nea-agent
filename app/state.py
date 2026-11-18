@@ -86,6 +86,17 @@ class Conversation:
     # un mensaje nuevo que empiece por número, ni se sabe que el mensaje siguiente
     # a "¿a qué dirección?" es la dirección y no una consulta de medicamento.
     delivery_pending: str = ""
+    # True mientras el cliente tiene DELANTE el resumen con
+    # "¿Confirmas el pedido con un *SI*, o quieres agregar otro medicamento?" y
+    # todavía no lo confirmó ni agregó nada.
+    #
+    # Sin este sello, lo que el cliente contesta después del resumen cae en el vacío:
+    # medido en el provider 04 (18-nov, AFLAMAX + ATAMEL, retiro en farmacia),
+    #   "No"  → el agente repitió el resumen COMPLETO (o el menú de entrega)
+    #   "2"   → "⚠️ Ojo: esas opciones no coinciden con la última lista que te envié"
+    # porque ya no había ni lista de opciones ni pregunta de entrega en vuelo. El
+    # cliente quedó atrapado sin forma de cerrar el pedido.
+    confirmacion_pendiente: bool = False
     # Puesta cuando el agente cierra por conversación sin rumbo: mientras
     # viva, el turno guarda silencio (ver app/stall.py).
     stalled_at: datetime | None = None

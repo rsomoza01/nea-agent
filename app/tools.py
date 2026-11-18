@@ -2440,6 +2440,20 @@ class ToolRuntime:
         self.delivery_pregunta = False
         self.delivery_pendiente = ""
 
+    async def marcar_confirmacion_pendiente(self, pendiente: bool) -> None:
+        """Enciende/apaga el sello del resumen esperando confirmación.
+
+        Lo enciende `ver_carrito` (es quien imprime la pregunta de cierre) y lo apaga
+        cualquier movimiento del carrito, el cierre del pedido o un mensaje que hable
+        de otra cosa (ver el paso de entrega en `app/turn.py`).
+        """
+        if bool(self._conv.confirmacion_pendiente) == bool(pendiente):
+            return
+        await self._ctx.store.update_conversation(
+            self._conv.id, confirmacion_pendiente=bool(pendiente)
+        )
+        self._conv.confirmacion_pendiente = bool(pendiente)
+
     async def guardar_eleccion_entrega(self, metodo: str) -> None:
         """Guarda el MÉTODO DE ENTREGA elegido ('delivery' | 'pickup').
 
@@ -4713,6 +4727,11 @@ class ToolRuntime:
             "¿Confirmas el pedido con un *SI*, o quieres agregar otro medicamento?"
         )
         self.cart_summary_text = "\n".join(bloque)
+        # El resumen PREGUNTA "¿Confirmas el pedido con un *SI*, o quieres agregar otro
+        # medicamento?". Desde aquí el pedido espera una decisión del cliente, y ese
+        # estado tiene que sobrevivir al turno: sin él, el "No" repetía el resumen y el
+        # "2" caía en el guard de opciones ("no coinciden con la última lista").
+        await self.marcar_confirmacion_pendiente(True)
         return {
             "ok": True,
             "resumen_para_el_cliente": self.cart_summary_text,
@@ -4816,11 +4835,13 @@ class ToolRuntime:
             delivery_address=None,
             delivery_pending="",
             cart_summary_shown=False,
+            confirmacion_pendiente=False,
         )
         self._conv.delivery_method = None
         self._conv.delivery_address = None
         self._conv.delivery_pending = ""
         self._conv.cart_summary_shown = False
+        self._conv.confirmacion_pendiente = False
         # Formas de pago del tenant (multitenant, field `paymenType` de Firestore)
         # para recordarle al cliente cómo puede pagar — SOLO si el resumen no las
         # mostró ya (evitar duplicación del bloque).

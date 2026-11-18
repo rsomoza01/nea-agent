@@ -51,6 +51,7 @@ _CONV_COLUMNS = frozenset(
         "delivery_method",
         "delivery_address",
         "delivery_pending",
+        "confirmacion_pendiente",
         "avance_at",
     }
 )
@@ -79,6 +80,7 @@ def _conv_from_row(row: asyncpg.Record) -> Conversation:
         delivery_method=row.get("delivery_method"),
         delivery_address=row.get("delivery_address"),
         delivery_pending=row.get("delivery_pending") or "",
+        confirmacion_pendiente=bool(row.get("confirmacion_pendiente")),
         avance_at=row.get("avance_at"),
     )
 
@@ -254,6 +256,9 @@ class PgStore:
                         followup_sent = FALSE, stalled_at = NULL,
                         avance_at = NULL,
                         cart_summary_shown = FALSE, cart_closed = FALSE,
+                        confirmacion_pendiente = FALSE,
+                        delivery_method = NULL, delivery_address = NULL,
+                        delivery_pending = '',
                         updated_at = now()
                     WHERE id = $1
                     """,

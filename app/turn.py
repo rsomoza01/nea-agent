@@ -1482,6 +1482,56 @@ async def _resolver_paso_entrega(
     conv = runtime._conv
     pendiente = conv.delivery_pending or ""
 
+    # --- 0) EL CLIENTE TIENE EL RESUMEN DELANTE, SIN CONFIRMAR ---
+    #
+    # El resumen termina con "¿Confirmas el pedido con un *SI*, o quieres agregar otro
+    # medicamento?". Lo que llega después NO es una búsqueda ni una opción de lista: es
+    # una decisión sobre el pedido. Sin atenderlo aquí, el "No" del cliente reenviaba el
+    # resumen completo (o el menú de entrega) y el "2" caía en el guard de opciones:
+    #
+    #     cliente: "No"  → resumen otra vez
+    #     cliente: "2"   → "⚠️ Ojo: esas opciones no coinciden con la última lista…"
+    #
+    # Medido en el provider 04 (18-nov). El cliente quedaba sin forma de cerrar el pedido.
+    if conv.confirmacion_pendiente:
+        # a) Confirma: se apaga el sello y el flujo normal cierra el pedido.
+        if _es_confirmacion_resumen(user_text):
+            await runtime.marcar_confirmacion_pendiente(False)
+            return False, None
+        # b) Dice NO: se le reconoce sin repetirle el resumen ni el menú.
+        if _es_negativa_de_confirmacion(user_text):
+            logger.info("confirmación del resumen: el cliente dijo NO — dejo el pedido tal cual")
+            entrega = _resumen_corto_de_entrega(conv)
+            await _send(
+                ctx, conv.id, runtime._crm_conv_id,
+                MENSAJE_CONFIRMACION_SIGUE.format(
+                    entrega=f" ({entrega})" if entrega else ""
+                ),
+            )
+            return True, None
+        # c) Contesta 1/2 al menú que acaba de ver: es la entrega, no una lista.
+        eleccion_confirmacion = _eleccion_entrega(user_text)
+        if eleccion_confirmacion == "pickup":
+            await runtime.guardar_eleccion_entrega("pickup")
+            logger.info("confirmación del resumen: eligió RETIRAR — el pedido sigue esperando SI")
+            await _send(
+                ctx, conv.id, runtime._crm_conv_id,
+                MENSAJE_ENTREGA_CONFIRMADA.format(metodo="retiras en farmacia"),
+            )
+            return True, None
+        if eleccion_confirmacion == "delivery":
+            await runtime.guardar_eleccion_entrega("delivery")
+            logger.info("confirmación del resumen: eligió DELIVERY — pido la dirección")
+            await _send(ctx, conv.id, runtime._crm_conv_id, MENSAJE_PEDIR_DIRECCION)
+            return True, None
+        # d) Habla de otra cosa (otro medicamento, una pregunta): el sello se apaga y
+        #    el turno sigue normal. Si vuelve a ver el resumen, se vuelve a encender.
+        logger.info(
+            "confirmación del resumen: %r no responde a la pregunta de cierre — apago el sello",
+            user_text[:60],
+        )
+        await runtime.marcar_confirmacion_pendiente(False)
+
     # --- 1) RESPUESTA A UNA PREGUNTA DE ENTREGA EN VUELO ---
     if pendiente == "method":
         eleccion = _eleccion_entrega(user_text)
@@ -4018,6 +4068,43 @@ MENSAJE_METODO_ENTREGA = (
     "1️⃣ Delivery (envío a tu dirección)\n"
     "2️⃣ Retirar en Farmacia\n\n"
     "Responde *1* o *2*."
+)
+
+# Respuestas NEGATIVAS a "¿Confirmas el pedido con un *SI*, o quieres agregar otro
+# medicamento?". Se comparan contra el mensaje COMPLETO (fullmatch): un "no tengo la
+# receta" o un "no, tráeme atamel" NO son una negativa a confirmar, son otra cosa.
+_NEGATIVAS_CONFIRMACION = re.compile(
+    r"\s*(?:no|nop|nope|nel|no\s+gracias|no,?\s+gracias|no\s+por\s+ahora|"
+    r"no\s+todavia|no\s+todavía|todavia\s+no|todavía\s+no|aun\s+no|aún\s+no|"
+    r"no\s+quiero|no\s+confirmo|no\s+confirmar|dejalo\s+asi|déjalo\s+así|"
+    r"no\s+por\s+los\s+momentos)[.!,\s]*",
+    re.IGNORECASE,
+)
+
+
+def _es_negativa_de_confirmacion(texto: str) -> bool:
+    """¿El cliente dijo NO a la pregunta de confirmación del resumen?"""
+    return bool(_NEGATIVAS_CONFIRMACION.fullmatch((texto or "").strip()))
+
+
+def _resumen_corto_de_entrega(conv: Any) -> str:
+    """Cómo se entrega el pedido, en una línea: para no repetir el bloque entero."""
+    if getattr(conv, "delivery_method", None) == "delivery":
+        return "con delivery a tu dirección"
+    if getattr(conv, "delivery_method", None) == "pickup":
+        return "para retirar en farmacia"
+    return ""
+
+
+MENSAJE_CONFIRMACION_SIGUE = (
+    "Sin problema 👍 Dejo tu pedido tal cual{entrega}.\n\n"
+    "Si quieres agregar otro medicamento, dime cuál y lo busco. "
+    "Y cuando quieras cerrarlo, confírmame con un *SI*."
+)
+
+MENSAJE_ENTREGA_CONFIRMADA = (
+    "Perfecto, {metodo} 👍 Tu pedido sigue tal cual. "
+    "Cuando quieras cerrarlo, confírmame con un *SI*."
 )
 
 MENSAJE_PEDIR_DIRECCION = (
