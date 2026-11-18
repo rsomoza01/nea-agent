@@ -530,12 +530,23 @@ async def run_turn(
     # UNA línea cálida en este turno y después calla (gate 1.5). El conteo es
     # determinista aquí; el LLM solo pone la redacción.
     del_lead = [m.content for m in recientes if m.role == "user"]
-    cerrar_sin_rumbo = streak < 3 and sin_rumbo(del_lead, conv.phase)
+    # El candado mide AVANCE, no tamaño del hilo: cuántos mensajes lleva el lead
+    # desde el último avance real (`avance_at`), y nada si hay un pedido en curso.
+    # Antes era `len(del_lead) >= 14`, o sea que la conversación se cerraba por
+    # llegar a 14 mensajes aunque el cliente estuviera comprando.
+    cart_previo = bool(
+        await ctx.store.cart_items(conv.id, session_hours=settings.cart_session_hours)
+    )
+    entrega_previa = conv.delivery_method
+    sin_avance = await ctx.store.count_lead_messages_since(conv.id, conv.avance_at)
+    cerrar_sin_rumbo = streak < 3 and sin_rumbo(
+        del_lead, conv.phase, carrito_activo=cart_previo, sin_avance=sin_avance
+    )
     if cerrar_sin_rumbo:
         logger.info(
-            "turno %s: sin rumbo (%d mensajes del lead, racha vacía %d) — cierro",
+            "turno %s: sin rumbo (%d mensajes sin avance, racha vacía %d) — cierro",
             identity,
-            len(del_lead),
+            sin_avance,
             racha_vacia(del_lead),
         )
         messages.append({"role": "system", "content": STALL_ALERT})
@@ -1265,7 +1276,30 @@ async def run_turn(
         updates["last_ocr_term"] = runtime.last_ocr_term
     if runtime.last_options:
         updates["last_options"] = runtime.last_options
-    if cerrar_sin_rumbo:
+    # AVANCE REAL del turno: se sella para que el candado vuelva a contar desde
+    # cero. Si el turno ofreció catálogo, movió el carrito, eligió entrega, derivó
+    # o agendó, la conversación SÍ va a algún lado y no puede cerrarse por número
+    # de mensajes.
+    hubo_avance = bool(
+        runtime.last_options
+        or runtime.last_product
+        or cart_activo
+        or runtime.booked
+        or runtime.routed_out
+        or runtime.handoff_reason is not None
+        or conv.delivery_method != entrega_previa
+    )
+    if hubo_avance:
+        updates["avance_at"] = utcnow()
+    # El cierre decidido ANTES del turno se cancela si durante el turno se movió
+    # el carrito: el cliente está comprando (caso real 2026-11-17, provider 05).
+    cerrar_de_verdad = cerrar_sin_rumbo and not cart_activo
+    if cerrar_sin_rumbo and cart_activo:
+        logger.info(
+            "turno %s: cierre por falta de rumbo CANCELADO — el carrito se movió en este turno",
+            identity,
+        )
+    if cerrar_de_verdad:
         # Se marca aunque el envío haya fallado: la decisión de cerrar ya se
         # tomó y no queremos que el próximo mensaje reabra el ciclo.
         updates["stalled_at"] = utcnow()

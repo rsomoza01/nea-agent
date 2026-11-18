@@ -51,6 +51,7 @@ _CONV_COLUMNS = frozenset(
         "delivery_method",
         "delivery_address",
         "delivery_pending",
+        "avance_at",
     }
 )
 
@@ -78,6 +79,7 @@ def _conv_from_row(row: asyncpg.Record) -> Conversation:
         delivery_method=row.get("delivery_method"),
         delivery_address=row.get("delivery_address"),
         delivery_pending=row.get("delivery_pending") or "",
+        avance_at=row.get("avance_at"),
     )
 
 
@@ -104,6 +106,25 @@ class PgStore:
             for path in files:
                 logger.info("migración: aplicando %s", path.name)
                 await conn.execute(path.read_text(encoding="utf-8"))
+
+    async def count_lead_messages_since(
+        self, conversation_id: int, since: Any | None
+    ) -> int:
+        """Mensajes del LEAD desde el último avance real (o desde el inicio si no hubo).
+
+        Es la medida que usa el candado de cierre: "¿cuántos mensajes lleva el
+        cliente sin que la conversación produzca nada?", no "¿cuánto mide el hilo?".
+        """
+        row = await self.pool.fetchrow(
+            """
+            SELECT count(*) AS n FROM bot_message
+            WHERE conversation_id = $1 AND role = 'user'
+              AND ($2::timestamptz IS NULL OR created_at > $2::timestamptz)
+            """,
+            conversation_id,
+            since,
+        )
+        return int((row or {}).get("n") or 0)
 
     # -------------------------------------------------------------- dedup ---
 
@@ -229,6 +250,7 @@ class PgStore:
                     SET phase = 'descubrimiento', greeted = FALSE,
                         media_notice_sent = FALSE, followup_due_at = NULL,
                         followup_sent = FALSE, stalled_at = NULL,
+                        avance_at = NULL,
                         cart_summary_shown = FALSE, cart_closed = FALSE,
                         updated_at = now()
                     WHERE id = $1

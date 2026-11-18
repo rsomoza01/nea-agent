@@ -89,6 +89,13 @@ class Conversation:
     # Puesta cuando el agente cierra por conversación sin rumbo: mientras
     # viva, el turno guarda silencio (ver app/stall.py).
     stalled_at: datetime | None = None
+    # Cuándo fue el último AVANCE REAL del hilo (se ofreció una lista, se movió
+    # el carrito, se eligió entrega, se derivó). El candado de cierre cuenta los
+    # mensajes del lead POSTERIORES a este sello, no el tamaño del hilo: antes
+    # `len(mensajes_del_lead) >= 14` cerraba cualquier conversación que llegara a
+    # 14 mensajes, aunque estuviera comprando (caso real provider 05, 2026-11-17:
+    # cerró el turno en que el cliente agregó OMEGA 3 al carrito).
+    avance_at: datetime | None = None
 
 
 @dataclass
