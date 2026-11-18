@@ -110,16 +110,18 @@ class PgStore:
     async def count_lead_messages_since(
         self, conversation_id: int, since: Any | None
     ) -> int:
-        """Mensajes del LEAD desde el último avance real (o desde el inicio si no hubo).
+        """Mensajes del LEAD desde el último avance real (0 si no hay sello).
 
         Es la medida que usa el candado de cierre: "¿cuántos mensajes lleva el
         cliente sin que la conversación produzca nada?", no "¿cuánto mide el hilo?".
         """
+        if since is None:
+            return 0
         row = await self.pool.fetchrow(
             """
             SELECT count(*) AS n FROM bot_message
             WHERE conversation_id = $1 AND role = 'user'
-              AND ($2::timestamptz IS NULL OR created_at > $2::timestamptz)
+              AND created_at > $2::timestamptz
             """,
             conversation_id,
             since,

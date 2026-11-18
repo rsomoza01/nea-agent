@@ -496,14 +496,18 @@ class MemoryStore:
 
         `created_at` puede faltar en el fake, así que se compara solo si hay sello.
         """
-        msgs = [
-            m
-            for m in self.messages
-            if m.conversation_id == conversation_id and m.role == "user"
-        ]
         if since is None:
-            return len(msgs)
-        return len([m for m in msgs if getattr(m, "created_at", None) and m.created_at > since])
+            return 0
+        return len(
+            [
+                m
+                for m in self.messages
+                if m.conversation_id == conversation_id
+                and m.role == "user"
+                and getattr(m, "created_at", None)
+                and m.created_at > since
+            ]
+        )
 
     async def replace_offered_slots(
         self, conversation_id: int, slots: list[OfferedSlot]
