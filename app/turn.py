@@ -3102,6 +3102,11 @@ async def _tool_loop(
     return await _respaldo_sin_texto(user_text, runtime, ctx, farmacia)
 
 SEND_ATTEMPTS = 4  # backoff 1 s, 2 s, 4 s entre intentos (~7 s en el turno)
+# Códigos 409 del CRM que NO son transitorios: la instancia de la farmacia no
+# puede enviar (token inválido tras recrear la instancia, o número desconectado).
+# Reintentar o encolar en pending_send no arregla nada: el mensaje se queda
+# girando 24 h y el cliente, esperando. Se deriva a un humano.
+SEND_FATAL_CODES = frozenset({"reconnect_required", "not_connected"})
 
 
 async def _send(ctx: AppContext, conv_id: int, crm_conv_id: str, text: str) -> bool:
@@ -3131,6 +3136,20 @@ async def _send(ctx: AppContext, conv_id: int, crm_conv_id: str, text: str) -> b
                 break
             except CrmConflict as exc:
                 # ai_paused / window_closed: silencio respetuoso, sin reintento.
+                if exc.code in SEND_FATAL_CODES:
+                    logger.error(
+                        "envío imposible (%s): la instancia de esta farmacia no puede "
+                        "enviar — handoff a humano, sin reintentos",
+                        exc.code,
+                    )
+                    try:
+                        await ctx.crm.post_handoff(crm_conv_id, "error")
+                    except Exception:
+                        logger.warning(
+                            "no pude registrar el handoff tras envío imposible",
+                            exc_info=True,
+                        )
+                    return False
                 logger.info("envío bloqueado por el CRM (%s) — silencio", exc.code)
                 return False
             except CrmError as exc:
