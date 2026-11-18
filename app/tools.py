@@ -30,6 +30,13 @@ from app.relevancia import (
     tokens_farmaco,
 )
 from app.aliases import reescribir as _reescribir_alias
+from app.application.adapters import ToolRuntimeEngineCatalogAdapter
+from app.application.catalog_search import BuscarCatalogoUseCase
+from app.application.contracts import CatalogSearchRequest
+from app.application.order_workflow import (
+    ConfirmarPedidoUseCase,
+    nuevo_order_attempt_id,
+)
 
 # Palabras que revelan que el LLM alucinó una frase como término de búsqueda
 # (backstops del prompt, mensajes de "unsupported", instrucciones, etc.).
@@ -2242,6 +2249,11 @@ class ToolRuntime:
         self.provider_hours: str | None = None
         # Efectos observables por turn.py:
         self.handoff_reason: str | None = None  # se ejecuta DESPUÉS de la despedida
+        # Paso 8 (UC-08): categoría clínica detectada en el turno (dato MÍNIMO, sin
+        # texto). Si está puesta, el handoff es una derivación clínica: la seguridad
+        # prevalece (no se cancela por carrito activo) y se registra de forma durable
+        # e idempotente. La categoría NO se envía al CRM (se mapea a `cliente`).
+        self.clinical_category: str | None = None
         self.booked = False
         self.routed_out = False
         self.proposed = False
@@ -2447,7 +2459,7 @@ class ToolRuntime:
             if name == "handoff":
                 return self._handoff(args)
             if name == "buscar_medicamento":
-                return await self._buscar_medicamento(args)
+                return await self._buscar_catalogo(args)
             if name == "sugerir_generico":
                 return await self._sugerir_generico(args)
             if name == "info_provider":
@@ -2953,6 +2965,26 @@ class ToolRuntime:
         if re.search(r"\d", crudo) and not re.search(r"\d", inferido):
             return None  # el crudo traía dosis y el inferido la perdería
         return inferido
+
+    async def _buscar_catalogo(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Adaptador de la herramienta `buscar_medicamento` → caso de uso UC-01.
+
+        `execute` despacha aquí: construye el caso de uso sobre el motor existente
+        (sin reescribirlo) y lo invoca **una sola vez**. El caso de uso orquesta la
+        búsqueda y produce un `CatalogSearchResult` tipado (fuente/campos/limitaciones);
+        a la herramienta se le devuelve `to_tool_dict()`, que es el **mismo dict** que
+        emitía el motor, para no cambiar el formato externo ni lo que ve el LLM.
+
+        El caso de uso NO autoriza ni llama al LLM: la puerta única F15.1
+        (`_autorizar_busqueda`) sigue dentro del motor (`_buscar_medicamento`). Un
+        `CrmError` del motor propaga a través del caso de uso hasta el `except CrmError`
+        de `execute` (mismo manejo que antes).
+        """
+        caso_de_uso = BuscarCatalogoUseCase(ToolRuntimeEngineCatalogAdapter(self))
+        resultado = await caso_de_uso.ejecutar(
+            CatalogSearchRequest(termino=str(args.get("nombre") or ""))
+        )
+        return resultado.to_tool_dict()
 
     async def _buscar_medicamento(self, args: dict[str, Any]) -> dict[str, Any]:
         nombre = str(args.get("nombre") or "").strip()
@@ -4689,6 +4721,23 @@ class ToolRuntime:
                 "error": "carrito_vacio",
                 "detalle": "no hay productos en el pedido; no puedes finalizar sin nada",
             }
+        # Paso 7 (ADR-0007): registra el INTENTO de pedido en NEA ANTES de la nota del
+        # CRM. Es el registro durable y auditable del pedido — así existe evidencia del
+        # pedido aunque la nota best-effort del CRM falle. La confirmación explícita ya
+        # ocurrió aguas arriba (backstop `_quiere_finalizar`/`_es_confirmacion_resumen`),
+        # por eso el caso de uso se invoca con `confirmacion_explicita=True`. El id es
+        # nuevo por cada finalización intencional (escenario C); la reserva es idempotente
+        # por si el mismo intento se reintentara. NO afirma aceptación por la farmacia
+        # (sostiene G13). Best-effort: no derriba el turno si el store falla.
+        try:
+            await ConfirmarPedidoUseCase(self._ctx.store).ejecutar(
+                conversation_id=self._conv.id,
+                items=items,
+                order_attempt_id=nuevo_order_attempt_id(),
+                confirmacion_explicita=True,
+            )
+        except Exception as exc:
+            logger.warning("tools: no pude registrar el intento de pedido en NEA: %s", exc)
         # Registra el pedido como nota de la conversación en el CRM (FR-9) y
         # notifica a un humano para que lo procese.
         lineas = []

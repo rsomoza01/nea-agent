@@ -76,16 +76,34 @@ def racha_vacia(user_texts: list[str]) -> int:
     return racha
 
 
-def sin_rumbo(user_texts: list[str], fase: str) -> bool:
+def sin_rumbo(
+    user_texts: list[str],
+    fase: str,
+    *,
+    carrito_activo: bool = False,
+    sin_avance: int | None = None,
+) -> bool:
     """¿Toca cerrar amable y dejar de responder?
 
-    Dos caminos, ambos con evidencia acumulada:
+    Tres condiciones, todas con evidencia acumulada:
     - el lead lleva `RACHA_VACIA` mensajes seguidos sin decir nada, o
-    - la conversación se estiró más de `MAX_MENSAJES_SIN_AVANCE` mensajes sin
-      salir nunca del descubrimiento (ni agendando, ni DIY, ni handoff).
+    - lleva `MAX_MENSAJES_SIN_AVANCE` mensajes SIN AVANCE REAL (sin que se
+      ofreciera una lista, se moviera el carrito, se eligiera entrega ni se
+      derivara), o
+    - [compatibilidad] si no se conoce `sin_avance`, el tamaño del hilo.
+
+    NO se cierra nunca si hay `carrito_activo`: el cliente está armando un
+    pedido y callarse ahí es perder la venta. Caso real (provider 05,
+    2026-11-17): el turno que agregó "OMEGA 3 X 45 CAP NOW" al carrito fue el
+    mismo que marcó stalled_at, y los tres mensajes siguientes del cliente
+    ("listo", "dame el resumen", "hola") quedaron sin respuesta 24 h.
     """
     if fase in ("agendando", "cerrada"):
         return False  # ya hay rumbo: no es asunto del candado
+    if carrito_activo:
+        return False  # hay un pedido en curso: no se cierra
     if racha_vacia(user_texts) >= RACHA_VACIA:
         return True
-    return len(user_texts) >= MAX_MENSAJES_SIN_AVANCE
+    if sin_avance is None:
+        return len(user_texts) >= MAX_MENSAJES_SIN_AVANCE
+    return sin_avance >= MAX_MENSAJES_SIN_AVANCE

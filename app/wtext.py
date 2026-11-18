@@ -9,6 +9,10 @@ WhatsApp NO interpreta Markdown: solo entiende `*negrita*`, `_cursiva_`,
 en vez del nombre en negrita. Todo lo que sale hacia el cliente pasa por
 `a_formato_whatsapp()` (turn.py::_send) para que el dialecto sea siempre el de
 WhatsApp, venga del LLM o de un formateador determinista.
+
+Este módulo también parte los mensajes largos para la entrega (WhatsApp rechaza
+>4096 chars): `partir_mensaje_largo()` + `WA_MAX_CHARS`. Lo usan tanto el turno
+en vivo (turn._send) como el reenvío diferido (sender._attempt).
 """
 
 from __future__ import annotations
@@ -61,3 +65,44 @@ def a_formato_whatsapp(texto: str) -> str:
     t = _RE_ENLACE.sub(r"\1: \2", t)
     t = _RE_ASTERISCOS_DOBLES.sub("", t)
     return t
+
+
+# WhatsApp rechaza mensajes de más de 4096 caracteres (el CRM responde 422 y la
+# respuesta se perdería — incidente receta de 8 medicamentos, 4831 chars). Se
+# recorta por debajo de ese tope con margen.
+WA_MAX_CHARS = 4000
+
+
+def partir_mensaje_largo(texto: str, max_chars: int) -> list[str]:
+    """Divide un mensaje >max_chars en partes enviables por WhatsApp.
+
+    Corta por PÁRRAFOS (líneas vacías) para no romper una opción 💊 a la
+    mitad: acumula párrafos mientras entren; un párrafo individual más largo
+    que max_chars se corta duro por líneas. Nunca devuelve partes vacías.
+    """
+    texto = (texto or "").strip()
+    if len(texto) <= max_chars:
+        return [texto] if texto else []
+    partes: list[str] = []
+    actual = ""
+    for parrafo in re.split(r"\n\s*\n", texto):
+        parrafo = parrafo.strip()
+        if not parrafo:
+            continue
+        candidato = f"{actual}\n\n{parrafo}" if actual else parrafo
+        if len(candidato) <= max_chars:
+            actual = candidato
+            continue
+        if actual:
+            partes.append(actual)
+        # Párrafo individual demasiado largo: cortar por líneas.
+        while len(parrafo) > max_chars:
+            corte = parrafo.rfind("\n", 0, max_chars)
+            if corte <= 0:
+                corte = max_chars
+            partes.append(parrafo[:corte].rstrip())
+            parrafo = parrafo[corte:].lstrip()
+        actual = parrafo
+    if actual:
+        partes.append(actual)
+    return partes

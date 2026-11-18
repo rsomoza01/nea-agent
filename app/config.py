@@ -151,6 +151,11 @@ class Settings(BaseSettings):
     # capturar los formatos reales de Meta (spec 002). Apagar al terminar.
     capture_payloads: bool = False
 
+    # Métricas (Paso 10 / ADR-0009). Apagado = fachada no-op total (sin coste).
+    # Encendido = el sink de logging emite líneas `METRIC ...` a `nea.metrics`.
+    # No instala ninguna dependencia nueva; un proveedor real requiere ADR aparte.
+    metrics_enabled: bool = False
+
     @staticmethod
     def _identities(csv: str) -> frozenset[str]:
         return frozenset(
