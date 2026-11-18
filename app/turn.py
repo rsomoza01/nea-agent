@@ -538,7 +538,15 @@ async def run_turn(
         await ctx.store.cart_items(conv.id, session_hours=settings.cart_session_hours)
     )
     entrega_previa = conv.delivery_method
-    sin_avance = await ctx.store.count_lead_messages_since(conv.id, conv.avance_at)
+    # Si la conversación nunca tuvo un avance sellado (todas las que existían antes
+    # de la migración 019 llegan así), NO se cuenta el hilo entero: eso era
+    # exactamente el bug. Sin sello, el único veredicto de "hilo muerto" es la
+    # racha de relleno.
+    sin_avance = (
+        await ctx.store.count_lead_messages_since(conv.id, conv.avance_at)
+        if conv.avance_at is not None
+        else 0
+    )
     cerrar_sin_rumbo = streak < 3 and sin_rumbo(
         del_lead, conv.phase, carrito_activo=cart_previo, sin_avance=sin_avance
     )

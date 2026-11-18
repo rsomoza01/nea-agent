@@ -85,6 +85,18 @@ def test_fase_con_rumbo_no_se_toca():
         assert sin_rumbo(list(RELLENO) * 5, fase, carrito_activo=False) is False
 
 
+def test_sin_sello_de_avance_no_cierra_por_conteo():
+    """Conversación que nunca selló avance (todas las previas a la migración 019).
+
+    Si no hay sello, el turno pasa sin_avance=0 y el candado NO puede cerrar por
+    número de mensajes: si no, la primera respuesta tras el despliegue habría
+    vuelto a cerrar todas las charlas existentes de más de 14 mensajes — el mismo
+    bug, con otro nombre.
+    """
+    del_lead = [f"consulta {i}" for i in range(40)]
+    assert sin_rumbo(del_lead, "descubrimiento", sin_avance=0, carrito_activo=False) is False
+
+
 # ------------------------------------------------- compatibilidad ----------
 
 
