@@ -89,6 +89,13 @@ class Conversation:
     # Puesta cuando el agente cierra por conversación sin rumbo: mientras
     # viva, el turno guarda silencio (ver app/stall.py).
     stalled_at: datetime | None = None
+    # Cuándo fue el último AVANCE REAL del hilo (se ofreció una lista, se movió
+    # el carrito, se eligió entrega, se derivó). El candado de cierre cuenta los
+    # mensajes del lead POSTERIORES a este sello, no el tamaño del hilo: antes
+    # `len(mensajes_del_lead) >= 14` cerraba cualquier conversación que llegara a
+    # 14 mensajes, aunque estuviera comprando (caso real provider 05, 2026-11-17:
+    # cerró el turno en que el cliente agregó OMEGA 3 al carrito).
+    avance_at: datetime | None = None
 
 
 @dataclass
@@ -226,6 +233,9 @@ class Store(Protocol):
     async def recent_messages(
         self, conversation_id: int, limit: int
     ) -> list[BotMessage]: ...
+    async def count_lead_messages_since(
+        self, conversation_id: int, since: Any | None
+    ) -> int: ...
 
     # slots ofrecidos
     async def replace_offered_slots(
@@ -478,6 +488,22 @@ class MemoryStore:
     ) -> list[BotMessage]:
         msgs = [m for m in self.messages if m.conversation_id == conversation_id]
         return msgs[-limit:]
+
+    async def count_lead_messages_since(
+        self, conversation_id: int, since: Any | None
+    ) -> int:
+        """Mensajes del lead desde el último avance real (misma semántica que PgStore).
+
+        `created_at` puede faltar en el fake, así que se compara solo si hay sello.
+        """
+        msgs = [
+            m
+            for m in self.messages
+            if m.conversation_id == conversation_id and m.role == "user"
+        ]
+        if since is None:
+            return len(msgs)
+        return len([m for m in msgs if getattr(m, "created_at", None) and m.created_at > since])
 
     async def replace_offered_slots(
         self, conversation_id: int, slots: list[OfferedSlot]
