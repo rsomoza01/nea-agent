@@ -1439,6 +1439,31 @@ _CALIFICADORES_DE_NOMBRE = {
     "infantil", "susp", "sol", "gel", "crema", "mr", "od", "sr", "xr",
 }
 
+# SABORES: dos presentaciones del MISMO fármaco con distinto sabor son productos
+# DISTINTOS para el cliente. Sin esto, el dedupe de presentación colapsaba
+# 'BENZODIAZOL TAB MAST MIEL Y LIMON X 16' con 'BENZODIAZOL TAB MAST TUTTI
+# FRUTTI X 16' —mismo núcleo, misma dosis, mismo envase— y el cliente que pedía
+# MIEL Y LIMÓN recibía TUTTI FRUTTI (provider 04, 2026-11-18). Van de más largo a
+# más corto para que 'miel y limon' gane a 'miel'.
+_SABORES = (
+    "miel y limon", "miel limon", "tutti frutti", "frutos rojos", "frutos secos",
+    "miel de abeja", "hierbabuena", "chicle de menta",
+    "miel", "limon", "fresa", "naranja", "menta", "cereza", "uva", "frambuesa",
+    "mora", "durazno", "melocoton", "mango", "pina", "coco", "chocolate",
+    "vainilla", "canela", "eucalipto", "propoleo", "jengibre", "sandia",
+    "mandarina", "toronja", "platano", "guayaba", "parchita", "tamarindo",
+    "anis", "avellana", "almendra", "banana", "pera", "manzana",
+)
+
+
+def _sabor_del_nombre(nombre: str) -> str:
+    """Sabor declarado en el título, para que no se confunda con otra presentación."""
+    limpio = _normalizar_tildes((nombre or "").lower())
+    for s in _SABORES:
+        if re.search(rf"(?<![a-z]){re.escape(s)}(?![a-z])", limpio):
+            return s
+    return ""
+
 
 def _clave_de_presentacion(
     p: dict[str, Any], universo: list[dict[str, Any]] | None = None
@@ -1469,7 +1494,8 @@ def _clave_de_presentacion(
     dosis = _extraer_dosis(nombre)
     m = _RE_CANTIDAD_ENVASE.search(nombre)
     cantidad = m.group(1) if m else ""
-    return (tuple(nucleo), dosis, cantidad)
+    # El sabor discrimina: "miel y limón" y "tutti frutti" son productos distintos.
+    return (tuple(nucleo), dosis, cantidad, _sabor_del_nombre(nombre))
 
 
 def _dedupe_por_presentacion(
