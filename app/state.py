@@ -233,6 +233,9 @@ class Store(Protocol):
     async def recent_messages(
         self, conversation_id: int, limit: int
     ) -> list[BotMessage]: ...
+    async def count_lead_messages_since(
+        self, conversation_id: int, since: Any | None
+    ) -> int: ...
 
     # slots ofrecidos
     async def replace_offered_slots(
@@ -485,6 +488,22 @@ class MemoryStore:
     ) -> list[BotMessage]:
         msgs = [m for m in self.messages if m.conversation_id == conversation_id]
         return msgs[-limit:]
+
+    async def count_lead_messages_since(
+        self, conversation_id: int, since: Any | None
+    ) -> int:
+        """Mensajes del lead desde el último avance real (misma semántica que PgStore).
+
+        `created_at` puede faltar en el fake, así que se compara solo si hay sello.
+        """
+        msgs = [
+            m
+            for m in self.messages
+            if m.conversation_id == conversation_id and m.role == "user"
+        ]
+        if since is None:
+            return len(msgs)
+        return len([m for m in msgs if getattr(m, "created_at", None) and m.created_at > since])
 
     async def replace_offered_slots(
         self, conversation_id: int, slots: list[OfferedSlot]
