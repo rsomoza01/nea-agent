@@ -412,6 +412,28 @@ async def run_turn(
     # Se calcula ANTES de armar el prompt para inyectar el bloque de farmacia.
     provider_id = (context or {}).get("providerId") or settings.provider_id or ""
     farmacia = bool(provider_id)
+
+    # --- Backstop: formas de pago del tenant -------------------------------
+    # Antes del LLM: si preguntan cómo pagar y la farmacia tiene sus formas de
+    # pago cargadas, se citan. El modelo derivaba a un humano teniendo el dato
+    # (caso real provider 04). Si el tenant NO las tiene cargadas, se sigue el
+    # camino normal: no se inventa ni se dice que no hay.
+    if farmacia and _pregunta_formas_de_pago(user_text):
+        try:
+            datos_fp = await ctx.crm.get_providers(provider_id)
+            info_fp = (datos_fp or {}).get("provider") or datos_fp or {}
+            pagos = str(info_fp.get("paymenType") or "").strip()
+        except Exception:
+            logger.warning("guard formas de pago: el CRM no respondió", exc_info=True)
+            pagos = ""
+        if pagos:
+            logger.info(
+                "guard formas de pago: respondo con las del tenant %s", provider_id
+            )
+            texto_pagos = _respuesta_formas_de_pago(pagos)
+            await _send(ctx, conv.id, str(crm_conv_id), texto_pagos)
+            await ctx.store.add_message(conv.id, "assistant", texto_pagos)
+            return
     system = build_system_prompt(
         profile=profile,
         context=context,
@@ -7720,6 +7742,46 @@ def _familia_de_pregunta_contenido(
         ):
             return None
     return familia
+
+
+# --- Formas de pago del tenant ------------------------------------------------
+# El cliente pregunta cómo pagar y el modelo contestaba «esa info la maneja el
+# equipo directo, ya les paso tu consulta»: un handoff por un dato que SÍ está en
+# el CRM (`providers/{id}.paymenType`, el markdown que el dueño edita en el SAAS).
+# Medido en producción con provider 04 (2026-11-18): el endpoint del CRM devolvía
+# las 8 formas de pago y el agente igualmente derivó a un humano. Con el dato
+# disponible, negarlo es mentirle al cliente y perder la venta por una duda de
+# pago, así que se responde determinista.
+_RE_FORMAS_DE_PAGO = re.compile(
+    r"formas?\s+de\s+pago"
+    r"|metodos?\s+de\s+pago"
+    r"|como\s+(?:puedo|podria|se\s+puede|van\s+a|hago\s+para|hace\s+para)\s+pagar"
+    r"|como\s+pago"
+    r"|con\s+que\s+(?:pagan|pago|se\s+paga)"
+    r"|aceptan\s+(?:tarjeta|efectivo|zelle|cashea|pago\s+movil|binance|biopago|divisa|debito|credito|transferencia)"
+    r"|se\s+puede\s+pagar\s+con"
+    r"|pagan\s+(?:por|con)\b"
+    r"|tienen\s+(?:pago\s+movil|punto\s+de\s+venta|biopago|cashea|zelle)"
+    r"|(?:hay|tienen)\s+la\s+opcion\s+de\s+pagar",
+    re.IGNORECASE,
+)
+
+
+def _pregunta_formas_de_pago(texto: str) -> bool:
+    """¿El cliente está preguntando con qué puede pagar?
+
+    Se compara sobre el texto SIN tildes (el cliente escribe de todo) y se exige
+    una fórmula de pregunta: 'tarjeta' suelta no basta, porque aparece en
+    conversaciones sobre otros temas.
+    """
+    limpio = _normalizar_tildes((texto or "").lower())
+    return bool(_RE_FORMAS_DE_PAGO.search(limpio))
+
+
+def _respuesta_formas_de_pago(pagos: str) -> str:
+    """Respuesta con las formas de pago del tenant, tal como las escribió el dueño."""
+    lista = (pagos or "").replace("\\n", "\n").strip()
+    return f"¡Claro! Estas son las formas de pago 💳\n\n{lista}\n\n¿Te ayudo con algo más?"
 
 
 def _respuesta_contenido_equipo(producto: str, consumibles: list[dict[str, Any]]) -> str:
