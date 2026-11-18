@@ -1,0 +1,4 @@
+2026-11-05 19:04:07,502 INFO nea.turn: backstop: forzando buscar_medicamento('vivacina') — consulted=True med_not_found=True
+2026-11-05 19:05:01,415 INFO nea.turn: backstop: forzando buscar_medicamento('vivacina') — consulted=True med_not_found=True
+2026-11-05 19:05:53,731 INFO nea.turn: backstop: forzando buscar_medicamento('vivacina') — consulted=True med_not_found=True
+2026-11-05 19:07:18,108 INFO nea.turn: backstop: forzando buscar_medicamento('vivacina') — consulted=True med_not_found=True

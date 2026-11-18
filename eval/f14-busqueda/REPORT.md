@@ -11,7 +11,9 @@ Artefactos de esta fase (todo reproducible):
 | `eval/f14-busqueda/antes.json` / `ahora.json` | salida cruda de esa simulación: base `1026506` y árbol final mergeado |
 | `eval/f14-busqueda/cliente-9880917.json` | salida cruda del árbol del cliente (los 241 commits) para comparar los tres |
 | `eval/f14-busqueda/sonda_catalogo.py` | sonda contra el catálogo real del CRM desde dentro del contenedor |
-| `tests/test_f14_busqueda.py` + `tests/conftest.py` | 99 regresiones de los 4 casos reales, sus bordes y las NO-regresiones |
+| `eval/f14-busqueda/simular_conversaciones.py` | simulador de CONVERSACIONES completas (código real + modelo real + catálogo controlado) |
+| `eval/f14-busqueda/conversaciones-f14.md` / `-cliente-sin-f14.md` | las 11 conversaciones de cada árbol, legibles (+ `.json` con las respuestas crudas) |
+| `tests/test_f14_busqueda.py` + `tests/conftest.py` | 102 regresiones de los 4 casos reales, sus bordes y las NO-regresiones |
 | `migrations/013_med_aliases.sql` | tabla `med_aliases` + semilla curada (17 pares) |
 
 ---
@@ -166,6 +168,64 @@ funcionaban siguen matcheando (`omeprasol`, `diclofencao`, `amoxicilna`,
 históricos siguen descartados (`hasta`→PASTA PRIMOR, `todo`→DOVE,
 `tarda delivery`→VENDA, `manana hora`→COMPOTA, `amor`→TE AMO PRESERV).
 
+### 2.2 Conversaciones simuladas (código real + modelo real + catálogo controlado)
+
+`eval/f14-busqueda/simular_conversaciones.py` corre **dentro del contenedor `nea`**, con
+el código real del agente (`handle_flush` → `run_turn` → herramientas → vetos), el **modelo
+real** (LongCat por el proxy) y un CRM de mentira que sirve un **catálogo controlado** con
+los nombres reales del diagnóstico (más el ruido histórico: TE AMO PRESERV, VITAMINA K/E,
+PASTA PRIMOR…). Sin catálogo controlado no se podría medir nada: el entorno local no tiene
+credenciales de Firebase y el catálogo del CRM responde vacío.
+
+Artefactos: `conversaciones-f14.md` / `.json` (árbol con F14) y
+`conversaciones-cliente-sin-f14.md` / `.json` (control: árbol del cliente, `9880917`).
+11 escenarios, ~34 turnos por corrida.
+
+| Escenario | Árbol del cliente (sin F14) | Con F14 |
+|---|---|---|
+| 1 · apelativo + nitrofurantoina + vitamina C | lista nitrofurantoina (2) y "VITAMINA C, K, E" | igual en la separación; `TE AMO PRESERV.` nunca aparece |
+| 2 · `vivacina` | muestra **VITAMINA C, K, E** y solo admite el error si el cliente insiste | **no muestra nada**: «no lo tengo en el catálogo» y sostiene el no ante la repregunta |
+| 3 · "opción 2" en mensaje mixto | rechaza la opción y repite la pregunta | **resuelve la opción 2** (agrega VITAMINA K del listado anterior), responde el precio de la macrodantina y aclara «la opción 2 es vitamina K, no C» |
+| 4 · solunoval + pinvex (typo + 2 meds) | ambos productos con precio | ambos productos con precio (y el alias `solunoval→solunovar` deja el término canónico) |
+| 5 · typos ya soportados | correctos | correctos (sin regresión) |
+| 6 · lista de medicamentos + "opción 2" | correcto | correcto (agrega LEPRIT y avisa de EVIGAX) |
+| 7 · dos medicamentos con conector | correcto | correcto (dos búsquedas reales) |
+| 8 · amoxicilina + ácido clavulánico | una sola consulta con el combinado | igual (no se parte) |
+| 9 · cortesía sin consulta | saluda, no lista | saluda, no lista |
+| 10 · macrodantina (marca en catálogo) | la muestra | la muestra (el alias no esconde marcas) |
+| 11 · "vitamina c" / "vitamina k" | C traía también K y E | **solo C**, y K solo K |
+
+#### La simulación de conversaciones encontró dos huecos que el arnés por funciones no veía
+
+El arnés por funciones mide `es_relevante` / `filtrar_relevantes` / la extracción: con eso,
+C2 parecía resuelto. La conversación completa demostró que no:
+
+1. **`vivacina` seguía ofreciendo vitaminas** («Asumí que buscas VITAMINA 👍» → VITAMINA C, K,
+   E). El filtro de relevancia acertaba; la puerta trasera eran las **tres recuperaciones por
+   catálogo** del árbol integrado ("núcleo", "núcleo ausente" y "tercera pasada": typos
+   largos), que validaban el resultado contra el término **ya corregido** (`vitamina`) y
+   nunca contra el original (`vivacina`). Fix: `relevancia.correccion_creible()` — la misma
+   regla de C2 (prefijo 3+ o desplazamiento de un carácter) — en las **tres** puertas. Sus
+   casos documentados siguen pasando (`hidrocoticida→hidroclorotiazida`,
+   `cardevidol→carvedilol`, `omeprasol→omeprazol`, `hialuronico→hialuronato`).
+2. **`vitamina c` traía también VITAMINA K y VITAMINA E**: el guard por producto acertaba,
+   pero el **rescate escalonado** se apoyaba en el token genérico `vitamina`. Fix: en
+   `filtrar_relevantes`, si el término nombra una letra de vitamina, se descartan los
+   productos de otra vitamina **antes** del rescate (`vitamina` sin letra sigue devolviendo
+   todas, que es lo correcto).
+
+Ambos fixes tienen su regresión en `tests/test_f14_busqueda.py` (102 tests en verde).
+
+#### Observaciones que NO son de F14 (código del cliente, quedan reportadas)
+
+- *"dame 2 cajas de la nitro"* → «⚠️ No tengo 2 NITRO»: la referencia coloquial al producto
+  recién listado no se resuelve (debería interpretarse como cantidad del último producto).
+- El aviso de forma dice «No tengo SOLUNOVAL en solución bucal. Lo tengo en: solución oral»
+  mientras lista un producto que **se llama** «SOLUCION BUCAL».
+- Un mensaje con **solo una dosis** (*"que tienen de 500 mg?"*) deja al agente en **silencio**:
+  agota las rondas de herramientas y corta sin texto (`turno: demasiadas rondas de
+  herramientas — corto sin texto`).
+
 ---
 
 ## 3. Validación
@@ -174,7 +234,7 @@ históricos siguen descartados (`hasta`→PASTA PRIMOR, `todo`→DOVE,
 `python -m py_compile app/*.py` → OK (22 módulos).
 
 ### Nivel 2 — regresiones
-`pytest tests -q` → **99 passed**. Cubren los 4 casos reales, los bordes de cada
+`pytest tests -q` → **102 passed**. Cubren los 4 casos reales, los bordes de cada
 fix (apelativos varios, letras de vitamina, negativos de "opción N",
 co-formulación, alias con dosis/forma, fail-safe, semilla del SQL) y la
 **integridad de la cadena de vetos G1-G12** (`guards.py` sigue sin conocer F14,
@@ -197,6 +257,20 @@ nea.aliases: aliases: 17 pares cargados de med_aliases
 ```
 
 Es decir: migración + carga al boot verificadas contra un Postgres real.
+
+### Nivel 3b — simulador de conversaciones
+
+`simular_conversaciones.py` contra el contenedor real: 11 escenarios por árbol,
+código real + `meituan/longcat-2.0` real + catálogo controlado. Salida legible en
+`conversaciones-f14.md` / `conversaciones-cliente-sin-f14.md` (§2.2) y cruda en los `.json`.
+
+Límite medido y declarado: **la corrida de conversaciones OSCILA**. Con el mismo código,
+`vivacina` se resolvió distinto en la batería completa (el modelo buscó por su cuenta el
+término genérico) que en las dos corridas dirigidas del mismo escenario (donde se negó
+limpiamente). Tras apretar la instrucción `sin_resultados` (F14.3c, prohibido mostrar otro
+fármaco «porque suena parecido»), las 2 corridas dirigidas y la batería completa se niegan
+sin inventar equivalencia (3/3). Un solo transcript NO es evidencia suficiente para un caso:
+se repite el escenario dirigido (`--solo <id>`).
 
 ### Nivel 4 — Laboratorio del CRM (juez LongCat vía proxy Nous :11500)
 
@@ -263,7 +337,7 @@ tienen su frase real medida en los JSON de `eval/f14-busqueda/`.
 
 Lo que el Laboratorio no puede medir aquí (precisión de búsqueda, por el catálogo
 Firebase vacío) está medido sin modelo: los 4 casos reales antes/después, la
-matriz de typo, las 99 regresiones y la migración/carga de alias en contenedor.
+matriz de typo, las 102 regresiones y la migración/carga de alias en contenedor.
 En las 7 corridas, los 4 casos de guarda quedaron verdes salvo el amarillo de
 tono de I.
 
@@ -312,6 +386,15 @@ En las 5 corridas F14 (A, B, E, H, I) los **4 casos de guarda**
 
 ---
 
+Los dos hallazgos que salieron de la simulación de CONVERSACIONES (guard C2 en las tres
+recuperaciones por catálogo y la letra de vitamina frente al rescate) se validaron en los
+niveles 1-3b; NO en el Laboratorio, y a propósito: sin credenciales de Firebase el catálogo
+del CRM responde **vacío** en este entorno, así que un cambio de PRECISIÓN no puede medirse
+ahí — solo el comportamiento. La oscilación medida entre corridas idénticas del mismo código
+es **±14** (sampling libre, sin `temperature=0`), de modo que una corrida no distingue un
+cambio pequeño de estilo del ruido. **Pendiente para quien tenga el service account: una
+corrida del Laboratorio con catálogo real** sería la única medición end-to-end de precisión.
+
 ## 4. Hallazgos y límites de este entorno
 
 1. **El catálogo de medicamentos está VACÍO en el entorno local**: el CRM lee el
@@ -320,7 +403,7 @@ En las 5 corridas F14 (A, B, E, H, I) los **4 casos de guarda**
    Daflon 500 en mi catálogo actual"* — o sea, el baseline histórico tampoco
    tenía catálogo. Consecuencia honesta: el Laboratorio mide **comportamiento y
    regresiones** (vetos, honestidad, flujo), NO precisión de búsqueda; esa
-   precisión se mide de forma determinista (sección 2 + 99 regresiones). Para
+   precisión se mide de forma determinista (sección 2 + 102 regresiones). Para
    una corrida del Lab con catálogo real hace falta el service account de
    Firebase en el entorno.
 2. `sonda_catalogo.py` queda incluido para cuando el catálogo esté disponible:
@@ -333,10 +416,14 @@ En las 5 corridas F14 (A, B, E, H, I) los **4 casos de guarda**
 
 ## 5. Entrega
 
-- **Pusheado** a `desarrollo` de **rsomoza01** (`origin`) y de **gentefarma**:
-  el commit del código es `3ed1425` (F14) + merges `4f651f0`/`337ac81`; este
-  reporte cierra con `0f4da4a` + el ajuste de esta línea. Verificado con
-  `git ls-remote` que ambos remotos quedaron idénticos al local.
+- **Pusheado** a `desarrollo` de **rsomoza01** (`origin`) y de **gentefarma**.
+  Commits: `3ed1425` (F14) + merges `4f651f0`/`337ac81` + `0f4da4a` (reporte) +
+  `8b86e97` (conversaciones simuladas y los 3 huecos que encontraron, con su
+  regresión) y el merge `59e6b13` de los 12 commits nuevos del cliente (`b5d328e`,
+  conservando ambos lados — verificado que sobreviven sus arreglos y los de F14).
+  Verificado con `git ls-remote` que `desarrollo` quedó idéntico en los dos
+  remotos (punta `6679693`, que incluye este reporte; 2026-10-30). NADA se pusheó a `main` de nadie ni al upstream
+  `kevinrivm` (solo lectura).
 - Rama de seguridad local `f14-prev-merge` (el estado de F14 antes de integrar).
 - Entorno de laboratorio dejado listo: contenedor `vocerocrm-nea-j` (healthy) con
   su DB desechable `nea-db-qa-j` en la red `vocerocrm_default`; el resto de
@@ -352,5 +439,11 @@ python eval/f14-busqueda/simular_casos.py --root . --out eval/f14-busqueda/ahora
 .venv-test/Scripts/python.exe -m pytest tests -q
 # 3) contenedor: migración + carga de alias al boot
 docker compose build nea && docker logs <nea> 2>&1 | grep -E "013_med_aliases|aliases:"
-# 4) Laboratorio: ver skill vocero-nea-qa (proxy Nous :11500, juez LongCat)
+# 4) simulador de CONVERSACIONES (código real + modelo real + catálogo controlado)
+docker cp eval/f14-busqueda/simular_conversaciones.py <nea>:/tmp/sim.py
+docker exec -e PYTHONPATH=/app -w /app <nea> python /tmp/sim.py --out /tmp/c.json --md /tmp/c.md
+#    un solo escenario (obligatorio cuando un transcript sale raro: la corrida oscila)
+docker exec -e PYTHONPATH=/app -w /app <nea> python /tmp/sim.py --solo 2-vivacina --md /tmp/s2.md
+#    contra el árbol del cliente (control): docker cp del árbol a /them y PYTHONPATH=/them
+# 5) Laboratorio: ver skill vocero-nea-qa (proxy Nous :11500, juez LongCat)
 ```

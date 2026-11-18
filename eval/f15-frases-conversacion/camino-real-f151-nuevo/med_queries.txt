@@ -1,0 +1,16 @@
+       term        | result_count | intent_fuente |     intent_acto      |                       intent_motivo                        
+-------------------+--------------+---------------+----------------------+------------------------------------------------------------
+ vivacina          |            0 | llm           | consulta_medicamento | pregunta si tienen medicamento vivacina
+ vibacina          |            0 | llm           | consulta_medicamento | Pide medicamento vivacina; candidato coincide salvo b/v
+ vivacina          |            0 | capa          | consulta_medicamento | cliente pide medicamento vivacina, aparece en mensaje
+ vivacina          |            0 | llm           | consulta_medicamento | pregunta si tienen vivacina
+ vibacina          |            0 | llm           | consulta_medicamento | pide medicamento vivacina, coincide con candidato vibacina
+ vivacina          |            0 | capa          | consulta_medicamento | pregunta por vivacina, nombre de medicamento
+ losartan          |            0 | llm           | consulta_medicamento | pide dos medicamentos concretos
+ metformina        |            0 | llm           | consulta_medicamento | pide dos medicamentos concretos
+ losartan 50 mg    |            0 | llm           | consulta_medicamento | pide dos medicamentos concretos
+ metformina 500 mg |            0 | llm           | consulta_medicamento | pide dos medicamentos concretos
+ losartan          |            0 | llm           | consulta_medicamento | pide dos medicamentos concretos
+ metformin         |            0 | llm           | consulta_medicamento | cliente pide losartan y metformin
+(12 rows)
+

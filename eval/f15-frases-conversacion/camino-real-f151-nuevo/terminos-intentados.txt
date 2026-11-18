@@ -1,0 +1,10 @@
+--- vivacina
+2026-11-05 18:45:56,730 INFO nea.turn: backstop: forzando buscar_medicamento('vivacina') — consulted=True med_not_found=True
+--- ruido
+2026-11-05 18:48:04,279 INFO nea.turn: backstop: forzando buscar_medicamento('vivacina') — consulted=True med_not_found=True
+--- dos-med
+2026-11-05 18:48:48,637 INFO nea.tools: buscar_medicamento: término 'losartán' → sustantivo 'losartan'
+2026-11-05 18:49:33,888 INFO nea.tools: buscar_medicamento: término 'losartán 50 mg' → sustantivo 'losartan 50 mg'
+2026-11-05 18:49:33,893 INFO nea.tools: buscar_medicamento: 'losartan 50 mg' sin resultados — reintento con 'losartan 50'
+2026-11-05 18:49:38,008 INFO nea.tools: buscar_medicamento: 'metformina 500 mg' sin resultados — reintento con 'metformina 500'
+--- charla

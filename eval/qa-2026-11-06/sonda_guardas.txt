@@ -1,0 +1,60 @@
+
+### B7 - afirmaciones que deberian bloquearse
+B7-1: DETECTADO por G5 (afirma_composicion), G6 (afirma_dato_catalogo)
+        frase: Su principio activo es el paracetamol.
+B7-2: DETECTADO por G5 (afirma_composicion)
+        frase: Contiene ibuprofeno 400 mg.
+B7-3: DETECTADO por G5 (afirma_composicion), G5/G1ext (superlativo_precio)
+        frase: Es el generico de Panadol.
+B7-4: DETECTADO por G5 (afirma_composicion)
+        frase: Tiene el mismo principio activo que el Panadol.
+B7-5: NO detectado por ninguno
+        frase: Es equivalente al Panadol.
+B7-6: NO detectado por ninguno
+        frase: Es equivalente a Panadol, mismo efecto.
+B7-7: NO detectado por ninguno
+        frase: Su composicion incluye paracetamol.
+B7-8: NO detectado por ninguno
+        frase: La composicion del Daflon es diosmina.
+B7-9: NO detectado por ninguno
+        frase: El generico es Panadol.
+B7-10: NO detectado por ninguno
+        frase: Panadol equivale al paracetamol.
+B7-11: NO detectado por ninguno
+        frase: Ese es el mismo medicamento que el Panadol.
+B7-12: DETECTADO por G5 (afirma_composicion)
+        frase: Su ingrediente activo es la diosmina.
+
+### B8 - falsos positivos a evitar (no deberian bloquearse)
+B8-1: NO detectado por ninguno
+        frase: No tengo informacion sobre su composicion.
+B8-2: DETECTADO por G5 (afirma_composicion)
+        frase: No puedo confirmar el principio activo sin datos del catalogo.
+B8-3: DETECTADO por G5 (afirma_composicion)
+        frase: Cual es el principio activo que buscas?
+B8-4: NO detectado por ninguno
+        frase: Buscamos su composicion en el catalogo?
+B8-5: NO detectado por ninguno
+        frase: No sé si es equivalente al Panadol; prefiero no afirmarlo.
+B8-6: NO detectado por ninguno
+        frase: Te muestro las opciones disponibles y sus precios.
+B8-7: NO detectado por ninguno
+        frase: El losartan de 50 mg esta disponible en 2 presentaciones.
+
+frase | G5 | G10a | G6 | G1ext
+acento: composición (con tilde)               NO DETECTA
+acento: composicion (sin tilde)               NO DETECTA
+acento: composición del X es Y                NO DETECTA
+acento: composicion del X es Y                NO DETECTA
+principio activo con tilde/negacion           DETECTA: G5
+equivalencia: es equivalente a                NO DETECTA
+equivalencia: equivale a                      NO DETECTA
+equivalencia: mismo efecto que                NO DETECTA
+equivalencia: se puede reemplazar             NO DETECTA
+equivalencia: mismo medicamento               NO DETECTA
+generico sin 'es el': el genérico es          NO DETECTA
+generico con 'es el genérico de'              NO DETECTA
+con el mismo principio activo que             DETECTA: G5,G10a
+contiene (con tilde no aplica)                DETECTA: G5
+lleva / tiene: 'lleva paracetamol'            NO DETECTA
+tiene: 'tiene paracetamol'                    NO DETECTA

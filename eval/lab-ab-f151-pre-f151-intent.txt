@@ -1,0 +1,33 @@
+ fuente |         acto         | hay_consulta |                  candidato                   
+--------+----------------------+--------------+----------------------------------------------
+ capa   | consulta_medicamento | t            | losartan 50 mg
+ capa   | atributo_producto    | f            | 2 economica
+ capa   | consulta_medicamento | t            | daflon
+ capa   | consulta_medicamento | t            | esoz 40 mg
+ capa   | consulta_medicamento | t            | daflon economico
+ capa   | otro                 | f            | carrito hasta ahora
+ capa   | dilatoria            | f            | pensar
+ llm    | reclamo              | f            | oigan
+ capa   | reclamo              | f            | oigan colmo
+ capa   | saludo               | f            | pregunta
+ capa   | reclamo              | f            | llega vencido cambian
+ capa   | saludo               | f            | 
+ capa   | consulta_medicamento | t            | controlado manejan
+ llm    | consulta_medicamento | t            | panadol
+ capa   | consulta_medicamento | t            | panadol
+ llm    | consulta_medicamento | t            | fexofenadina
+ llm    | consulta_medicamento | t            | esomeprazol
+ capa   | consulta_medicamento | t            | 3 barata esoz
+ capa   | otro                 | f            | receta
+ capa   | atributo_producto    | f            | sale
+ llm    | consulta_medicamento | t            | paracetamol
+ capa   | consulta_medicamento | t            | paracetamol
+ capa   | consulta_medicamento | t            | sale numero
+ llm    | reclamo              | f            | compre pastillas
+ capa   | reclamo              | f            | compre pastillas sirvieron puedo devolverlas
+ capa   | otro                 | f            | receta
+ capa   | otro                 | f            | llego receta abuela
+ llm    | reclamo              | f            | estafa
+ capa   | reclamo              | f            | estafa ladrones
+(29 rows)
+

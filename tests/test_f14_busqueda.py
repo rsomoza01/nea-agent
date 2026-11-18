@@ -445,6 +445,51 @@ class TestC2TypoNoCruzaDeCategoria:
         filtrados = filtrar_relevantes(nuevo, productos, permitir_typo=False)
         assert [p["nombre"] for p in filtrados] == ["SOLUNOVAR SOLUCION BUCAL X 1 FCO"]
 
+    def test_correccion_creible_no_cruza_de_categoria(self):
+        """Hallazgo de la simulación de CONVERSACIONES (no del arnés por funciones):
+        la recuperación por 'núcleo' corregía 'vivacina' → 'vitamina' y el cliente
+        recibía VITAMINA C/K/E con un «Asumí que buscas VITAMINA». La corrección se
+        valida contra el término ORIGINAL, no contra el corregido."""
+        from app.relevancia import correccion_creible
+
+        assert correccion_creible("vivacina", "vitamina") is False
+        assert correccion_creible("morfina", "formina") is False
+        for original, corregido in (
+            ("omeprasol", "omeprazol"),
+            ("diclofencao", "diclofenaco"),
+            ("solunoval", "solunovar"),
+            ("lorsatan", "losartan"),
+            ("hialuronico", "hialuronato"),
+            ("omeprasol 20", "omeprazol 20"),
+            ("acido acetalicio", "acido acetilsalicilico"),
+        ):
+            assert correccion_creible(original, corregido) is True, original
+
+    def test_las_dos_puertas_de_correccion_usan_la_regla_c2(self):
+        """La regla C2 se aplica en el filtro de relevancia Y en las correcciones
+        hacia el catálogo (término corregido y núcleo)."""
+        fuente = (RAIZ / "app" / "tools.py").read_text(encoding="utf-8")
+        assert "correccion_creible," in fuente            # importada
+        assert fuente.count("correccion_creible(") >= 2   # las dos puertas
+
+    def test_letra_de_vitamina_manda_tambien_en_el_rescate(self):
+        """Hallazgo de la simulación de conversaciones: el guard por producto
+        acertaba pero el rescate escalonado volvía a colar K y E."""
+        catalogo = [
+            {"nombre": "VITAMINA C 500 MG X 10 TAB"},
+            {"nombre": "VITAMINA K 10 MG X 30 TAB"},
+            {"nombre": "VITAMINA E 400 UI X 10 CAP"},
+            {"nombre": "VITAMINA C + ZINC X 30 TAB"},
+        ]
+        assert [p["nombre"] for p in filtrar_relevantes("vitamina c", catalogo)] == [
+            "VITAMINA C 500 MG X 10 TAB", "VITAMINA C + ZINC X 30 TAB",
+        ]
+        assert [p["nombre"] for p in filtrar_relevantes("vitamina k", catalogo)] == [
+            "VITAMINA K 10 MG X 30 TAB",
+        ]
+        # Sin letra, el término genérico sigue devolviendo todas.
+        assert len(filtrar_relevantes("vitamina", catalogo)) == 4
+
     def test_fuzzy_del_catalogo_no_se_endurecio_para_tokens_cortos(self):
         """Los nombres cortos ('esoz', 'epax') siguen matcheando."""
         assert es_relevante("esoz", "ESOZ 40 MG X 7 CAP") is True

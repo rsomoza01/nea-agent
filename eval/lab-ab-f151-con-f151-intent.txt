@@ -1,0 +1,54 @@
+ fuente |         acto         | hay_consulta |                  candidato                   
+--------+----------------------+--------------+----------------------------------------------
+ capa   | consulta_medicamento | t            | losartan 50 mg
+ capa   | atributo_producto    | f            | 2 economica
+ capa   | consulta_medicamento | t            | daflon
+ llm    | consulta_medicamento | t            | esomeprazol 40 mg
+ capa   | consulta_medicamento | t            | esoz 40 mg
+ llm    | consulta_medicamento | t            | diosmina hesperidina
+ capa   | consulta_medicamento | t            | daflon economico
+ capa   | otro                 | f            | carrito hasta ahora
+ capa   | dilatoria            | f            | pensar
+ llm    | reclamo              | f            | oigan
+ llm    | reclamo              | f            | colmo
+ capa   | reclamo              | f            | oigan colmo
+ capa   | saludo               | f            | pregunta
+ capa   | otro                 | f            | llega vencido cambian
+ capa   | saludo               | f            | 
+ capa   | consulta_medicamento | t            | controlado manejan
+ llm    | consulta_medicamento | t            | panadol
+ llm    | consulta_medicamento | t            | paracetamol
+ capa   | consulta_medicamento | t            | panadol
+ llm    | consulta_medicamento | t            | fexofenadina
+ llm    | otro                 | f            | oiga
+ llm    | consulta_medicamento | t            | fexofenasina
+ llm    | consulta_medicamento | t            | esomeprazol
+ llm    | consulta_medicamento | t            | esoz 40 mg
+ llm    | consulta_medicamento | t            | esoz 20 mg
+ capa   | consulta_medicamento | t            | 3 barata esoz
+ capa   | saludo               | f            | receta
+ llm    | consulta_medicamento | t            | daflon 500 mg
+ llm    | consulta_medicamento | t            | esoz 40 mg
+ llm    | otro                 | f            | medica
+ llm    | otro                 | f            | maria fernandez cmp 45231
+ llm    | consulta_medicamento | t            | dafon 500 mg
+ llm    | otro                 | f            | tomar 1 ayunas 20 dias
+ llm    | otro                 | f            | firma
+ llm    | otro                 | f            | fecha 30 08 2026
+ llm    | consulta_medicamento | t            | Atamel
+ llm    | consulta_medicamento | t            | Tylenol
+ llm    | consulta_medicamento | t            | paracetamol
+ capa   | consulta_medicamento | t            | paracetamol
+ llm    | atributo_producto    | f            | ibuprofeno
+ capa   | atributo_producto    | f            | sale numero
+ llm    | reclamo              | f            | compre pastillas
+ llm    | reclamo              | f            | sirvieron
+ llm    | reclamo              | f            | puedo devolverlas
+ capa   | reclamo              | f            | compre pastillas sirvieron puedo devolverlas
+ capa   | otro                 | f            | receta
+ capa   | otro                 | f            | llego receta abuela
+ llm    | reclamo              | f            | estafa
+ llm    | reclamo              | f            | ladrones
+ capa   | reclamo              | f            | estafa ladrones
+(50 rows)
+

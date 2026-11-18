@@ -5,5 +5,5 @@ asyncpg>=0.29,<0.31
 openai>=1.40,<3
 pydantic-settings>=2.4,<3.0
 tzdata>=2024.1
-pypdf>=5.1
+pypdf==6.21.4
 langfuse>=2.50,<4.0

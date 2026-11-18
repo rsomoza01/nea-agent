@@ -1,0 +1,12 @@
+ candidato | termino  | hay_consulta |         acto         |                               motivo                                
+-----------+----------+--------------+----------------------+---------------------------------------------------------------------
+ vivacina  | vivacina | t            | consulta_medicamento | pregunta si tienen medicamento vivacina
+ vivacina  | vivacina | t            | consulta_medicamento | pregunta si tienen medicamento vivacina
+ vivacina  | vivacina | t            | consulta_medicamento | pregunta si tienen medicamento vivacina
+ vivacina  | vivacina | t            | consulta_medicamento | pregunta por medicamento concreto vivacina
+ vivacina  | vivacina | t            | consulta_medicamento | pregunta si tienen un medicamento concreto
+ vivacina  | vivacina | t            | consulta_medicamento | pide medicamento vivacina
+ vivacina  | vivacina | t            | consulta_medicamento | pregunta si tienen medicamento vivacina
+ vivacina  | vivacina | t            | consulta_medicamento | pregunta por medicamento concreto, nombre probablemente mal escrito
+(8 rows)
+

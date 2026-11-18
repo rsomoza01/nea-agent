@@ -1,0 +1,173 @@
+[
+  {
+    "escenario": "A1 agotamiento normal",
+    "mensaje": "busco losartan 50 mg",
+    "llamadas_llm": [
+      {
+        "n": 1,
+        "tools_ofrecidas": 8,
+        "devuelve": "tool_calls:['buscar_medicamento']"
+      },
+      {
+        "n": 2,
+        "tools_ofrecidas": 8,
+        "devuelve": "tool_calls:['buscar_medicamento']"
+      },
+      {
+        "n": 3,
+        "tools_ofrecidas": 8,
+        "devuelve": "tool_calls:['buscar_medicamento']"
+      },
+      {
+        "n": 4,
+        "tools_ofrecidas": 8,
+        "devuelve": "tool_calls:['buscar_medicamento']"
+      },
+      {
+        "n": 5,
+        "tools_ofrecidas": 8,
+        "devuelve": "tool_calls:['buscar_medicamento']"
+      }
+    ],
+    "respuestas": []
+  },
+  {
+    "escenario": "A2 llamadas repetitivas",
+    "mensaje": "busco losartan 50 mg",
+    "llamadas_llm": [
+      {
+        "n": 1,
+        "tools_ofrecidas": 8,
+        "devuelve": "tool_calls:['buscar_medicamento']"
+      },
+      {
+        "n": 2,
+        "tools_ofrecidas": 8,
+        "devuelve": "tool_calls:['buscar_medicamento']"
+      },
+      {
+        "n": 3,
+        "tools_ofrecidas": 8,
+        "devuelve": "tool_calls:['buscar_medicamento']"
+      },
+      {
+        "n": 4,
+        "tools_ofrecidas": 8,
+        "devuelve": "tool_calls:['buscar_medicamento']"
+      },
+      {
+        "n": 5,
+        "tools_ofrecidas": 8,
+        "devuelve": "tool_calls:['buscar_medicamento']"
+      }
+    ],
+    "respuestas": []
+  },
+  {
+    "escenario": "A3 argumentos vacios",
+    "mensaje": "busco losartan 50 mg",
+    "llamadas_llm": [
+      {
+        "n": 1,
+        "tools_ofrecidas": 8,
+        "devuelve": "tool_calls:['buscar_medicamento']"
+      },
+      {
+        "n": 2,
+        "tools_ofrecidas": 8,
+        "devuelve": "tool_calls:['buscar_medicamento']"
+      },
+      {
+        "n": 3,
+        "tools_ofrecidas": 8,
+        "devuelve": "tool_calls:['buscar_medicamento']"
+      }
+    ],
+    "respuestas": []
+  },
+  {
+    "escenario": "A4 seis medicamentos",
+    "mensaje": "necesito losartan, metformina, ibuprofeno, omeprazol, amoxicilina y vitamina c",
+    "llamadas_llm": [
+      {
+        "n": 1,
+        "tools_ofrecidas": 8,
+        "devuelve": "tool_calls:['buscar_medicamento']"
+      },
+      {
+        "n": 2,
+        "tools_ofrecidas": 8,
+        "devuelve": "tool_calls:['buscar_medicamento']"
+      },
+      {
+        "n": 3,
+        "tools_ofrecidas": 8,
+        "devuelve": "tool_calls:['buscar_medicamento']"
+      },
+      {
+        "n": 4,
+        "tools_ofrecidas": 8,
+        "devuelve": "tool_calls:['buscar_medicamento']"
+      },
+      {
+        "n": 5,
+        "tools_ofrecidas": 8,
+        "devuelve": "tool_calls:['buscar_medicamento']"
+      }
+    ],
+    "respuestas": []
+  },
+  {
+    "escenario": "A7 texto en la ronda 5",
+    "mensaje": "busco losartan",
+    "llamadas_llm": [
+      {
+        "n": 1,
+        "tools_ofrecidas": 8,
+        "devuelve": "tool_calls:['buscar_medicamento']"
+      },
+      {
+        "n": 2,
+        "tools_ofrecidas": 8,
+        "devuelve": "tool_calls:['buscar_medicamento']"
+      },
+      {
+        "n": 3,
+        "tools_ofrecidas": 8,
+        "devuelve": "tool_calls:['buscar_medicamento']"
+      },
+      {
+        "n": 4,
+        "tools_ofrecidas": 8,
+        "devuelve": "tool_calls:['buscar_medicamento']"
+      },
+      {
+        "n": 5,
+        "tools_ofrecidas": 8,
+        "devuelve": "texto"
+      }
+    ],
+    "respuestas": [
+      "Tengo LOSARTAN  (3.5 USD) y LOSARTAN  (5.0 USD). ¿Cuál te sirvo?\n\n👉 Para agregar al carrito: quiero X cajas de la opción Z\n   Ejemplo: quiero 2 cajas de la opción 3\n🛒 ¿Otro medicamento? Escríbeme el nombre y lo busco.\n✅ Cuando termines, escribe LISTO y te muestro el resumen de tu pedido."
+    ]
+  },
+  {
+    "escenario": "C0 control flujo normal",
+    "mensaje": "busco losartan 50 mg",
+    "llamadas_llm": [
+      {
+        "n": 1,
+        "tools_ofrecidas": 8,
+        "devuelve": "tool_calls:['buscar_medicamento']"
+      },
+      {
+        "n": 2,
+        "tools_ofrecidas": 8,
+        "devuelve": "texto"
+      }
+    ],
+    "respuestas": [
+      "Tengo LOSARTAN 50 mg x 30 tabletas a 3.5 USD (120 Bs). ¿Te la agrego?\n\n👉 Para agregar al carrito: quiero X cajas de la opción Z\n   Ejemplo: quiero 2 cajas de la opción 3\n🛒 ¿Otro medicamento? Escríbeme el nombre y lo busco.\n✅ Cuando termines, escribe LISTO y te muestro el resumen de tu pedido."
+    ]
+  }
+]

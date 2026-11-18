@@ -1,0 +1,284 @@
+{
+  "root": "D:\\Proyectos\\GenteFarma\\agentNEA",
+  "extraccion": {
+    "caso1_termino_unico": "nitrofurantoina 50mg vitamina c",
+    "caso1_parece_lista": true,
+    "caso1_multi": [
+      "nitrofurantoina 50mg",
+      "vitamina c"
+    ],
+    "caso2_termino_unico": "vivacina",
+    "caso2_parece_lista": false,
+    "caso2_multi": [],
+    "caso3_termino_unico": "macrodantina vitamina c",
+    "caso3_parece_lista": true,
+    "caso3_multi": [],
+    "caso4_termino_unico": "solunoval solucion bucal pinvex solucion bucal",
+    "caso4_parece_lista": true,
+    "caso4_multi": [
+      "solunoval solucion bucal",
+      "pinvex solucion bucal"
+    ],
+    "caso3_menciona_opcion": true,
+    "opcion_negativos": {
+      "la opción es buena": false,
+      "dame opciones": false,
+      "quiero 2 cajas": false,
+      "opción 11 y 12": true,
+      "de la opción 9": true
+    },
+    "caso3_eleccion_multiple": [
+      [
+        1,
+        9
+      ]
+    ],
+    "no_parte": {
+      "tienes atamel y su precio": [],
+      "amoxicilina y acido clavulanico": [],
+      "vitamina c y zinc": [],
+      "disponen de clopidogrel de 75 losartan de 50 atorvastatina de 30": [
+        "clopidogrel 75",
+        "losartan 50",
+        "atorvastatina 30"
+      ]
+    }
+  },
+  "relevancia": {
+    "caso1_relevancia_por_producto": {
+      "TE AMO PRESERV. 3PCS": false,
+      "VITAMINA K 10 MG X 30 TAB": true,
+      "VITAMINA C 500 MG X 10 TAB": true,
+      "NITROFURANTOINA 100 MG X 20 CAP": true
+    },
+    "caso1_filtrados": [
+      "NITROFURANTOINA 100 MG X 20 CAP"
+    ],
+    "caso2_relevancia_por_producto": {
+      "VITAMINA K 10 MG X 30 TAB": false,
+      "VITAMINA C 500 MG X 10 TAB": false,
+      "VITAMINAS B12 COMPLEJO X 30 CAP": false
+    },
+    "caso2_filtrados": [],
+    "typo_ok": {
+      "omeprasol": true,
+      "diclofencao": true,
+      "amoxicilna": true,
+      "solunoval": true,
+      "lorsatan": true,
+      "fexofenasina": true,
+      "azitromisina": true,
+      "metmorfina": true,
+      "clonacepan": true,
+      "shampo dreene": true,
+      "acetaminofen 650 mg": true
+    },
+    "falsos_positivos": {
+      "hasta": false,
+      "todo": false,
+      "tarda delivery": false,
+      "manana hora": false,
+      "amor": false
+    },
+    "caso4_filtrados": [
+      "SOLUNOVAR SOLUCION BUCAL X 1 FCO"
+    ]
+  },
+  "alias": {
+    "alias_modulo": "ok",
+    "pares_sembrados": 17,
+    "total_registrado": 17,
+    "solunoval": [
+      "solunovar",
+      true
+    ],
+    "solunoval_dosis": [
+      "solunovar 500 mg",
+      true
+    ],
+    "solunoval_bucal": [
+      "solunovar solucion bucal",
+      true
+    ],
+    "typo_del_log": [
+      "fexofenadina",
+      true
+    ],
+    "typo_dos_ediciones": [
+      "losartan",
+      true
+    ],
+    "marca_no_se_toca": [
+      "macrodantina",
+      false
+    ],
+    "frase_larga_no_aplica": [
+      "solunoval mas otra cosa",
+      false
+    ],
+    "vitamina_b": [
+      "vitamina c",
+      true
+    ]
+  },
+  "matriz_typo": {
+    "typos_reales": {
+      "omeprasol->omeprazol": {
+        "dist": 1,
+        "prefijo": 6,
+        "desplazamiento": false,
+        "es_relevante": true,
+        "es_relevante_laxo": true
+      },
+      "diclofencao->diclofenaco": {
+        "dist": 2,
+        "prefijo": 8,
+        "desplazamiento": true,
+        "es_relevante": true,
+        "es_relevante_laxo": true
+      },
+      "amoxicilna->amoxicilina": {
+        "dist": 1,
+        "prefijo": 8,
+        "desplazamiento": false,
+        "es_relevante": true,
+        "es_relevante_laxo": true
+      },
+      "solunoval->solunovar": {
+        "dist": 1,
+        "prefijo": 8,
+        "desplazamiento": false,
+        "es_relevante": true,
+        "es_relevante_laxo": true
+      },
+      "lorsatan->losartan": {
+        "dist": 2,
+        "prefijo": 2,
+        "desplazamiento": true,
+        "es_relevante": true,
+        "es_relevante_laxo": true
+      },
+      "fexofenasina->fexofenadina": {
+        "dist": 1,
+        "prefijo": 8,
+        "desplazamiento": false,
+        "es_relevante": true,
+        "es_relevante_laxo": true
+      },
+      "azitromisina->azitromicina": {
+        "dist": 1,
+        "prefijo": 8,
+        "desplazamiento": false,
+        "es_relevante": true,
+        "es_relevante_laxo": true
+      },
+      "metmorfina->metformina": {
+        "dist": 2,
+        "prefijo": 3,
+        "desplazamiento": false,
+        "es_relevante": true,
+        "es_relevante_laxo": true
+      },
+      "clonacepan->clonazepam": {
+        "dist": 2,
+        "prefijo": 5,
+        "desplazamiento": false,
+        "es_relevante": true,
+        "es_relevante_laxo": true
+      },
+      "ceftriasona->ceftriaxona": {
+        "dist": 1,
+        "prefijo": 7,
+        "desplazamiento": false,
+        "es_relevante": true,
+        "es_relevante_laxo": true
+      },
+      "flucozanol->fluconazol": {
+        "dist": 2,
+        "prefijo": 5,
+        "desplazamiento": false,
+        "es_relevante": true,
+        "es_relevante_laxo": true
+      },
+      "amoxacilina->amoxicilina": {
+        "dist": 1,
+        "prefijo": 4,
+        "desplazamiento": false,
+        "es_relevante": true,
+        "es_relevante_laxo": true
+      },
+      "prednizona->prednisona": {
+        "dist": 1,
+        "prefijo": 6,
+        "desplazamiento": false,
+        "es_relevante": true,
+        "es_relevante_laxo": true
+      },
+      "gentamisina->gentamicina": {
+        "dist": 1,
+        "prefijo": 7,
+        "desplazamiento": false,
+        "es_relevante": true,
+        "es_relevante_laxo": true
+      },
+      "lozartan->losartan": {
+        "dist": 1,
+        "prefijo": 2,
+        "desplazamiento": false,
+        "es_relevante": true,
+        "es_relevante_laxo": true
+      }
+    },
+    "cruces_de_categoria": {
+      "vivacina->vitamina": {
+        "dist": 2,
+        "prefijo": 2,
+        "desplazamiento": false,
+        "es_relevante": false,
+        "es_relevante_laxo": true
+      },
+      "todo->dove": {
+        "dist": 3,
+        "prefijo": 0,
+        "desplazamiento": false,
+        "es_relevante": false,
+        "es_relevante_laxo": false
+      },
+      "tarda->venda": {
+        "dist": 3,
+        "prefijo": 0,
+        "desplazamiento": false,
+        "es_relevante": false,
+        "es_relevante_laxo": false
+      },
+      "terapia->tortilla": {
+        "dist": 5,
+        "prefijo": 1,
+        "desplazamiento": false,
+        "es_relevante": false,
+        "es_relevante_laxo": false
+      },
+      "morfina->formina": {
+        "dist": 2,
+        "prefijo": 0,
+        "desplazamiento": false,
+        "es_relevante": false,
+        "es_relevante_laxo": true
+      },
+      "captopril->carotida": {
+        "dist": 6,
+        "prefijo": 2,
+        "desplazamiento": false,
+        "es_relevante": false,
+        "es_relevante_laxo": false
+      },
+      "insulina->insultos": {
+        "dist": 3,
+        "prefijo": 5,
+        "desplazamiento": false,
+        "es_relevante": false,
+        "es_relevante_laxo": false
+      }
+    }
+  }
+}

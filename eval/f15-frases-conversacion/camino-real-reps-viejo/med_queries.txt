@@ -1,0 +1,15 @@
+   term    | result_count | intent_fuente |     intent_acto      
+-----------+--------------+---------------+----------------------
+ vivacina  |            0 | llm           | consulta_medicamento
+ vivacina  |            0 | capa          | consulta_medicamento
+ vivacina  |            0 | llm           | consulta_medicamento
+ vibracina |            0 | llm           | consulta_medicamento
+ vivacina  |            0 | capa          | consulta_medicamento
+ vivacina  |            0 | llm           | consulta_medicamento
+ vibracina |            0 | llm           | consulta_medicamento
+ vivacina  |            0 | capa          | consulta_medicamento
+ vivacina  |            0 | llm           | consulta_medicamento
+ vibracina |            0 | llm           | consulta_medicamento
+ vivacina  |            0 | capa          | consulta_medicamento
+(11 rows)
+
