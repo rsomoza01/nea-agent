@@ -8550,6 +8550,56 @@ def _es_solo_presentacion(linea: str) -> bool:
     return all(w in presentacion for w in palabras)
 
 
+# COMPOSICIÓN Y CONTENIDO DE LA CAJA: no son medicamentos.
+#
+# El OCR de una caja lee el prospecto además del nombre. La foto de MIOVIT
+# (provider 04, 2026-11-18) se leyó como:
+#
+#     MIOVIT
+#     COMPOSITUM CON LIDOCAÍNA
+#     Vitaminas B1+B6+B12
+#     SOLUCIÓN INYECTABLE VÍA INTRAMUSCULAR
+#     CONTENIDO NETO 3 AMPOLLAS DE 3 mL
+#
+# Solo la PRIMERA línea es un medicamento. Las demás describen la fórmula y el
+# envase, y buscarlas como productos produce respuestas absurdas: el agente ofreció
+# MIOVIT y ADEMÁS buscó "VITAMINAS B1 B6" —que el cliente nunca pidió— y contestó
+# "⚠️ No tengo B12. De VITAMINAS B1 B6 hay esto:" con tres VITAMINA C.
+_RE_COMPOSICION = re.compile(
+    r"^\s*(?:"
+    r"composici[oó]n|compositum|componentes|ingredientes|excipientes|"
+    r"f[oó]rmula|contiene|contienen|"
+    r"cada\s+(?:ampolla|tableta|c[aá]psula|sobre|frasco|pomo)\s+contiene|"
+    r"contenido\s+neto|cantidad\s+neta|"
+    r"soluci[oó]n(?:es)?\s+(?:inyectable|oral|t[oó]pica|est[eé]ril)|"
+    r"v[ií]a\s+(?:intramuscular|intravenosa|oral|t[oó]pica|subcut[aá]nea)|"
+    r"con\s+lidoca[ií]na|con\s+\w+ca[ií]na|"
+    r"compresas?|gasas?|alcohol|"
+    # "3 AMPOLLAS DE 3 mL", "2 COMPRIMIDOS": cantidad + forma del envase. NO se
+    # incluyen 'cajas' ni 'unidades': un cliente puede escribir "3 cajas de X".
+    r"\d{1,3}\s*(?:ampollas?|comprimidos?|c[aá]psulas?|sobres?|tabletas?|ml|"
+    r"mililitros?|gramos?|grs?)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+# Complejo B escrito como lista: "B1+B6+B12", "B1 B6 B12", "VITAMINAS B1 B6".
+# OJO: 'vitamina' SINGULAR no entra (un cliente pide "vitamina C" de verdad); y el
+# plural solo cuenta si lo que sigue son números del complejo B.
+_RE_SOLO_VITAMINAS = re.compile(
+    r"^\s*(?:vitaminas\s+)?(?:B\d{1,2}\s*[+\-/,]?\s*)+$",
+    re.IGNORECASE,
+)
+
+
+def _es_composicion(linea: str) -> bool:
+    """¿La línea describe la fórmula o el contenido de la caja, no un producto?"""
+    if not linea:
+        return False
+    limpio = linea.strip()
+    return bool(_RE_COMPOSICION.match(limpio) or _RE_SOLO_VITAMINAS.match(limpio))
+
+
 def _parsear_medicamentos_receta(texto: str) -> list[str]:
     """Extrae la lista de medicamentos de un texto de receta (OCR o lista en
     texto). Cada línea con contenido es un medicamento candidato; se normaliza
@@ -8573,6 +8623,10 @@ def _parsear_medicamentos_receta(texto: str) -> list[str]:
         # Metadato de una notificación del sistema (reserva/cita/confirmación):
         # "*Fecha:* ...", "*Nombre:* ...", "*Farmacia:* ..." NO son medicamentos.
         if _es_linea_notificacion_admin(linea):
+            continue
+        # Composición / contenido de la caja (no es un medicamento pedido).
+        if _es_composicion(linea):
+            logger.info("receta: '%s' es composición/contenido, no un medicamento", linea[:50])
             continue
         # Líneas que parecen instrucciones de la receta, no medicamentos.
         if re.fullmatch(
