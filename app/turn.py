@@ -977,6 +977,13 @@ async def run_turn(
     #               4 MG y 2 toallas securezza x 15"
     #     el LLM enumeró GLYMAR y SECUREZZA  →  este backstop los borró y dejó solo el
     #     resumen del carrito (COLAYTE). El cliente no volvió a ver lo que pidió.
+    # AUTO-AGREGADO: la búsqueda cerró sola (una sola presentación + cantidad dicha).
+    # El texto es determinista y no se le deja al modelo: reescribirlo es justo cómo se
+    # pierde el "✅ Agregado al carrito: … ×N" canónico.
+    if runtime.auto_agregado_texto:
+        logger.info("auto-agregado: enviando texto determinista del carrito")
+        final_text = runtime.auto_agregado_texto
+
     if farmacia and runtime.cart_summary_text and not _tambien_pide_agregar(user_text):
         logger.info(
             "backstop resumen determinista: reemplazando texto del LLM por el resumen canónico del carrito"
@@ -1694,6 +1701,36 @@ async def _tool_loop(
                 ctx, runtime._conv.id, runtime._crm_conv_id, MENSAJE_HANDOFF_HUMANO
             )
             return None
+
+    # CUÁNTAS CAJAS PIDE COMPRAR EN ESTE MENSAJE ('quiero 1 caja de atamel forte').
+    # Se guarda ANTES del LLM para que la búsqueda pueda cerrar sola cuando el
+    # catálogo tiene UNA sola presentación (ver `_buscar_medicamento`).
+    runtime.cantidad_de_compra = _cantidad_de_compra(user_text) if farmacia else 0
+
+    # CARRITO VACÍO + UN "SI" SUELTO: no hay nada que confirmar.
+    #
+    # Caso real (provider 04, 2026-11-18): el cliente pidió "1 caja de atamel forte",
+    # el agente le mostró la lista sin agregarla, y su siguiente "si" recibió
+    #     "¿Me confirmas que son 2 cajas de ATAMEL FORTE 650MG X 10 a $4,20 cada una?"
+    # — una cantidad que el cliente nunca dijo, sobre un carrito vacío. Pedirle que
+    # confirme algo inexistente es la peor forma de cerrar un pedido.
+    carrito_vacio_ahora = not bool(
+        await ctx.store.cart_items(
+            runtime._conv.id, session_hours=ctx.settings.cart_session_hours
+        )
+    ) if farmacia else False
+    if (
+        farmacia
+        and carrito_vacio_ahora
+        and _es_confirmacion_resumen(user_text)
+        and not runtime._conv.confirmacion_pendiente
+    ):
+        logger.info("carrito vacío + confirmación: no hay pedido que confirmar — pido el medicamento")
+        await _send(
+            ctx, runtime._conv.id, runtime._crm_conv_id,
+            MENSAJE_CARRITO_VACIO_AL_CONFIRMAR,
+        )
+        return None
 
     resuelto, texto_entrega = await _resolver_paso_entrega(
         ctx, runtime, user_text, farmacia=farmacia
@@ -4096,6 +4133,11 @@ def _resumen_corto_de_entrega(conv: Any) -> str:
     return ""
 
 
+MENSAJE_CARRITO_VACIO_AL_CONFIRMAR = (
+    "Todavía no tienes nada en el pedido 🙂\n\n"
+    "Dime qué medicamento buscas (y cuántas cajas quieres) y te lo agrego al instante."
+)
+
 MENSAJE_CONFIRMACION_SIGUE = (
     "Sin problema 👍 Dejo tu pedido tal cual{entrega}.\n\n"
     "Si quieres agregar otro medicamento, dime cuál y lo busco. "
@@ -4698,6 +4740,83 @@ _RE_CANTIDAD_PEDIDA = re.compile(
     r"sobres?|rollos?|cajitas?)\b",
     re.IGNORECASE,
 )
+
+
+# Cantidad de compra en una frase libre: "quiero 1 caja de atamel forte".
+#
+# `_RE_CANTIDAD_PEDIDA` está anclada al principio ("3 cajas de glymar"), así que la
+# forma más natural de pedir —con el verbo delante— no se detectaba: el cliente
+# escribía "quiero 1 caja de atamel forte" y el agente le mostraba la lista de una
+# sola presentación en vez de agregarla. Después su "listo" recibía
+#     "Tu pedido todavía está vacío — la caja de ATAMEL FORTE no llegó a agregarse".
+# (provider 04, 2026-11-18). Ese "no llegó a agregarse" es cierto pero inútil: el
+# cliente YA había dicho cuántas quería.
+_RE_CANTIDAD_EN_FRASE = re.compile(
+    r"\b(\d{1,2})\s*(cajas?|cajitas?|unidades?|frascos?|paquetes?|blisters?|"
+    r"pomos?|tubos?|sobres?|rollos?|toallas?)\b",
+    re.IGNORECASE,
+)
+
+# Verbos/frases que convierten el mensaje en una PETICIÓN DE COMPRA. "quiero" solo no
+# basta para adivinar (quiero saber el precio), por eso va con la cantidad al lado.
+_RE_INTENCION_COMPRA = re.compile(
+    r"\b(quiero|quisiera|necesito|dame|deme|damelos|damelas|mandame|mándame|"
+    r"enviame|envíame|pideme|pídeme|vendeme|véndeme|reservame|resérvame|"
+    r"me\s+llevo|me\s+das|me\s+vendes|apartame|apártame)\b",
+    re.IGNORECASE,
+)
+
+
+_RE_PIDE_PRECIO = re.compile(
+    r"\b(precio|precios|cuanto|cuánto|cuanta|cuánta|cuesta|cuestan|vale|valen|"
+    r"saber|informacion|información|cotizacion|cotización)\b",
+    re.IGNORECASE,
+)
+
+
+def _cantidad_de_compra(texto: str) -> int:
+    """Cuántas cajas/unidades quiere comprar en ESTE mensaje (0 si no lo dice).
+
+    A diferencia de `_cantidad_pedida`, no exige que el número abra el mensaje. Solo
+    cuenta si además hay intención de compra (verbo de pedido) o si el mensaje EMPIEZA
+    por número+unidad. Un "de 1 caja de 30" (envase) no es una compra.
+
+    Los números que acompañan dosis o envase ("x 10 tab", "650 mg") no cuentan: la
+    regex exige una unidad de empaque (cajas, frascos, pomos...).
+    """
+    t = (texto or "").strip().lower()
+    if not t:
+        return 0
+    # Elegir desde una lista ya mostrada ("1 caja de la opción 3") lo resuelve el
+    # backstop del carrito: aquí no se toca.
+    if "opcion" in t or "opción" in t:
+        return 0
+    m = _RE_CANTIDAD_EN_FRASE.search(t)
+    if not m:
+        return 0
+    empieza_con_cantidad = bool(
+        re.match(
+            r"\s*\d{1,2}\s*(?:cajas?|cajitas?|unidades?|frascos?|paquetes?|"
+            r"blisters?|pomos?|tubos?|sobres?|rollos?|toallas?)\b",
+            t,
+        )
+    )
+    # PREGUNTAR POR EL PRECIO no es comprar: "¿cuánto cuestan 2 cajas?" o "quiero saber
+    # el precio de 2 cajas" no autorizan agregar nada al carrito.
+    if _RE_PIDE_PRECIO.search(t) and not _RE_PIDE_AGREGAR.search(t):
+        if not re.search(
+            r"\b(dame|deme|mandame|mándame|enviame|envíame|pideme|pídeme|vendeme|"
+            r"véndeme|apartame|apártame|me\s+llevo|me\s+das|me\s+vendes)\b",
+            t,
+        ):
+            return 0
+    if not (_RE_INTENCION_COMPRA.search(t) or _RE_PIDE_AGREGAR.search(t) or empieza_con_cantidad):
+        return 0
+    try:
+        n = int(m.group(1))
+    except (TypeError, ValueError):
+        return 0
+    return n if 1 <= n <= 99 else 0
 
 
 def _cantidad_pedida(texto: str) -> int:

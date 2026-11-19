@@ -2431,6 +2431,14 @@ class ToolRuntime:
         # que el monto SIEMPRE aparezca en Bs y por medicamento aunque el modelo
         # omita ese formato.
         self.cart_summary_text: str | None = None
+        # Cuántas cajas/unidades pidió comprar el cliente en ESTE mensaje (0 = no lo
+        # dijo). Lo llena el turno antes del LLM; `_buscar_medicamento` lo consume para
+        # agregar directo cuando hay UNA sola presentación (una sola opción no se
+        # pregunta: se agrega).
+        self.cantidad_de_compra: int = 0
+        # Texto determinista cuando la búsqueda agregó sola al carrito: el turno lo
+        # envía tal cual (no se le deja al modelo reescribirlo).
+        self.auto_agregado_texto: str | None = None
         # PASO DE ENTREGA (delivery / retiro). Coordina la pregunta dentro del turno:
         #   delivery_pregunta_enviada → ya se envió el menú 1/2 en ESTE turno (evita
         #     repetirlo si el loop vuelve a pasar por el backstop).
@@ -3941,6 +3949,46 @@ class ToolRuntime:
         # Si el LLM llamó handoff por un sin_resultados previo (basura), se
         # cancela: ahora SÍ hay productos que ofrecer.
         self._cancelar_handoff_por_no_disponible()
+        # ── UNA SOLA PRESENTACIÓN + CANTIDAD DICHA = SE AGREGA, NO SE PREGUNTA ──
+        #
+        # El cliente escribió "quiero 1 caja de atamel forte": ya eligió producto (solo
+        # hay uno) y ya dijo cuántas. Preguntarle "¿cuál de estas?" mostrando una única
+        # opción es hacerle repetir lo que dijo; peor: su siguiente "listo" recibía
+        # "tu pedido todavía está vacío".
+        # Con DOS o más presentaciones NO se adivina: se ofrece la lista.
+        _cant_auto = int(getattr(self, "cantidad_de_compra", 0) or 0)
+        if _cant_auto and len(self.last_options) == 1:
+            _unico = self.last_options[0]
+            logger.info(
+                "búsqueda '%s': UNA sola presentación y el cliente pidió %d — se agrega "
+                "al carrito sin preguntar", nombre, _cant_auto,
+            )
+            _res_alta = await self._agregar_al_carrito(
+                {
+                    "productId": _unico.get("productId"),
+                    "producto": _unico.get("producto"),
+                    "cantidad": _cant_auto,
+                }
+            )
+            if _res_alta.get("ok"):
+                _it = _res_alta.get("item") or {}
+                self.cantidad_de_compra = 0
+                self.last_options = []
+                self.auto_agregado_texto = (
+                    f"✅ Agregado al carrito: {_it.get('producto')} ×{_it.get('cantidad')}\n\n"
+                    "¿Buscas otro medicamento?"
+                )
+                await self._log_med_query(nombre, products, added_to_cart=True)
+                return {
+                    "ok": True,
+                    "auto_agregado": True,
+                    "item": _it,
+                    "instrucciones": (
+                        "YA se agregó al carrito (no vuelvas a llamar herramientas). "
+                        "Responde EXACTAMENTE con este texto, sin agregar ni quitar nada:\n"
+                        + self.auto_agregado_texto
+                    ),
+                }
         await self._log_med_query(nombre, products, added_to_cart=False)
         instrucciones = self._formatear_instrucciones_busqueda(products, nombre)
         if self.aviso_forma:
