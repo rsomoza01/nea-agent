@@ -1494,8 +1494,35 @@ def _clave_de_presentacion(
     dosis = _extraer_dosis(nombre)
     m = _RE_CANTIDAD_ENVASE.search(nombre)
     cantidad = m.group(1) if m else ""
+    sabor = _sabor_del_nombre(nombre)
+    # ── CLAVE DEGENERADA: NO HAY NADA QUE DISTINGA UNA PRESENTACIÓN ──
+    #
+    # Sin dosis, sin envase y sin sabor, el núcleo solo NO identifica un producto:
+    # identifica una CATEGORÍA. Colapsar por él borra productos distintos de verdad.
+    #
+    # Caso real (provider 04, 2026-11-18): el cliente escribió "Tensiometro" y el
+    # agente ofreció UNO cuando el catálogo tiene dos:
+    #     TENSIOMETRO DIGITAL PORTATIL VERDE   $33,00
+    #     TENSIOMETRO MANUAL AZUL              $36,05
+    # Los dos dan clave ('tensiometro', '', '', ''), así que el dedupe se quedaba con
+    # el más barato y el cliente nunca supo que existía el manual.
+    #
+    # En ese caso la clave pasa a ser el conjunto de palabras SIGNIFICATIVAS del
+    # título: dos renglones idénticos de distinto laboratorio siguen colapsando (es el
+    # motivo por el que el dedupe existe), pero "digital portátil verde" y "manual
+    # azul" son productos distintos, igual que dos sabores.
+    if not dosis and not cantidad and not sabor:
+        significativas = tuple(
+            sorted(
+                w
+                for w in utiles[1:]
+                if len(w) >= 3 and not w.isdigit() and w not in _CALIFICADORES_DE_NOMBRE
+            )
+        )
+        if significativas:
+            return (tuple(nucleo), "", "", "", significativas)
     # El sabor discrimina: "miel y limón" y "tutti frutti" son productos distintos.
-    return (tuple(nucleo), dosis, cantidad, _sabor_del_nombre(nombre))
+    return (tuple(nucleo), dosis, cantidad, sabor)
 
 
 def _dedupe_por_presentacion(

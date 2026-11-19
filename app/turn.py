@@ -5473,6 +5473,19 @@ def _farmaco_distinto(user_text: str, runtime: Any) -> str | None:
         return None
     if _es_solo_saludo(cliente) or _es_solo_saludo(cliente.split()[0]):
         return None  # 'gracias muy amable' no es un fármaco
+    # ── EL PRODUCTO PEDIDO ESTÁ EN LO COTIZADO: NO ES "OTRO FÁRMACO" ──
+    #
+    # Este guard comparaba el término del cliente con `last_term` (la última búsqueda)
+    # y, si no se parecían, contestaba "⚠️ No tengo X". Pero `last_term` puede quedar
+    # apuntando a OTRA búsqueda del mismo turno —la que devuelve cero resultados NO lo
+    # limpia a propósito, para el backstop de refinamiento— y entonces el aviso salía
+    # sobre un producto que SÍ estaba cotizado delante del cliente.
+    #
+    # Caso real (provider 04, 2026-11-19 18:20): el cliente escribió "Tapabocas" (no hay
+    # en el catálogo) y después "Mascarilla", con DOS mascarillas devueltas. La respuesta
+    # fue "⚠️ No tengo MASCARILLA. No te ofrezco otro medicamento parecido…" teniéndolas
+    # ahí mismo. La comprobación de fondo no depende del orden de las búsquedas: si la
+    # palabra que pidió el cliente aparece en los títulos cotizados, hay producto.
     # Se comparan las PALABRAS CON CONTENIDO, y basta con que UNA pareja se parezca: antes
     # se miraba solo la primera palabra, así que 'venta aceite oregano' (el cliente dijo
     # "tienen a la venta…") contra 'aceite oregano' daba 'venta' vs 'aceite' y el guard
@@ -5482,6 +5495,17 @@ def _farmaco_distinto(user_text: str, runtime: Any) -> str | None:
         w for w in re.findall(r"[a-záéíóúüñ0-9]+", cliente.lower())
         if len(w) >= 3 and w not in _FUNC_COMP
     ] or (cliente.split() or [""])
+    # Si alguna palabra con contenido que dijo el cliente está en los títulos que se
+    # cotizaron, el producto ES el que pidió: no hay nada que corregir.
+    _titulos = " ".join(
+        _normalizar_tildes(str(p.get("nombre") or p.get("producto") or "").lower())
+        for p in (runtime.last_products or [])
+    )
+    if _titulos and any(
+        re.search(rf"(?<![a-z0-9]){re.escape(w)}(?![a-z0-9])", _titulos)
+        for w in cli_palabras
+    ):
+        return None
     bus_palabras = [
         w for w in re.findall(r"[a-záéíóúüñ0-9]+", term_buscado.lower())
         if len(w) >= 3 and w not in _FUNC_COMP
