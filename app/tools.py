@@ -2195,6 +2195,58 @@ def _es_nombre_de_laboratorio(term: str, products: list[dict[str, Any]]) -> bool
     return False
 
 
+# SINÓNIMOS DE PRODUCTO (no de fármaco): la misma cosa con otro nombre.
+#
+# Caso real (provider 04, 2026-11-19 18:16): el cliente escribió "Tapabocas" —la
+# palabra que se usa en Venezuela— y el catálogo no la tiene porque las guarda como
+# MASCARILLA. El agente contestó:
+#     "No tengo información confirmada sobre ese medicamento en este momento…"
+# con cuatro mascarillas en el catálogo. Ni el cliente supo que sí había, ni la venta
+# se cerró.
+#
+# Esto NO es el registro de alias de medicamentos (`app/aliases.py` + `med_aliases`):
+# ahí se resuelve MARCA → PRINCIPIO ACTIVO con criterio clínico. Aquí es vocabulario:
+# el mismo objeto llamado distinto según el país.
+_SINONIMOS_PRODUCTO: dict[str, str] = {
+    "tapabocas": "mascarilla",
+    "tapaboca": "mascarilla",
+    "barbijo": "mascarilla",
+    "barbijos": "mascarilla",
+    "cubrebocas": "mascarilla",
+    "cubreboca": "mascarilla",
+    "nasobuco": "mascarilla",
+    "mascarillas": "mascarilla",
+    "mascarilla quirurgica": "mascarilla",
+    "guantes": "guante",
+    "jeringuillas": "jeringa",
+}
+
+
+def _con_sinonimo_conocido(term: str) -> tuple[str, str]:
+    """(término a buscar, aviso para el cliente). Aviso '' si no hubo cambio.
+
+    Se sustituye SOLO el token conocido, sin tocar el resto del término: "tapabocas
+    quirurgico" busca "mascarilla quirurgico".
+    """
+    normalizado = _normalizar_tildes((term or "").strip().lower())
+    if not normalizado:
+        return term, ""
+    for sinonimo, canonico in _SINONIMOS_PRODUCTO.items():
+        if normalizado == sinonimo:
+            return canonico, (
+                f"Ojo: a lo que te refieres lo tengo como *{canonico.upper()}*. "
+                "Esto es lo que hay:"
+            )
+        patron = rf"(?<![a-z0-9]){re.escape(sinonimo)}(?![a-z0-9])"
+        if re.search(patron, normalizado):
+            nuevo = re.sub(patron, canonico, normalizado)
+            return nuevo, (
+                f"Ojo: a lo que te refieres lo tengo como *{canonico.upper()}*. "
+                "Esto es lo que hay:"
+            )
+    return term, ""
+
+
 def _nucleo_ausente(term: str, products: list[dict[str, Any]]) -> str | None:
     """El fármaco que el cliente NOMBRÓ no aparece en NINGÚN producto devuelto.
 
@@ -3413,6 +3465,17 @@ class ToolRuntime:
         # Normalizar tildes: el catálogo guarda 'potasico' sin tilde; si el
         # cliente escribe 'potásico', el motor no matchea (AND sobre tokens).
         nombre = _normalizar_tildes(nombre)
+        # VOCABULARIO: "tapabocas" → "mascarilla". El aviso se antepone al texto final
+        # (mismo canal que el aviso de forma), para que el cliente vea que se le
+        # entendió y no que el agente cambió de tema.
+        _nombre_sin, _aviso_sin = _con_sinonimo_conocido(nombre)
+        if _aviso_sin and _nombre_sin != nombre:
+            logger.info(
+                "buscar_medicamento: '%s' es un sinónimo conocido — busco '%s'",
+                nombre, _nombre_sin,
+            )
+            nombre = _nombre_sin
+            self.aviso_forma = _aviso_sin
         data = await self._ctx.crm.get_products(self._provider_id, q=nombre, limit=20)
         self.last_term = nombre
         # Formas de pago del tenant (markdown `paymenType` de providers/{id}).
