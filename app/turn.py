@@ -5463,6 +5463,11 @@ def _farmaco_distinto(user_text: str, runtime: Any) -> str | None:
     """El término del cliente si lo que se cotizó es OTRO fármaco. None si todo cuadra."""
     if getattr(runtime, "busqueda_por_principio", False):
         return None  # marca → principio activo: cambio legítimo
+    if getattr(runtime, "busqueda_por_sinonimo", False):
+        # "tapabocas" → "mascarilla": el cliente y el catálogo llaman distinto a lo
+        # mismo. Sin esto, el guard negaba el producto ("No tengo TAPABOCAS") justo
+        # después de haberlo encontrado por su otro nombre.
+        return None
     term_buscado = str(getattr(runtime, "last_term", "") or "").strip()
     if not term_buscado or not getattr(runtime, "last_products", None):
         return None  # sin productos cotizados no hay nada que corregir

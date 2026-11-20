@@ -2515,6 +2515,10 @@ class ToolRuntime:
         # agregar directo cuando hay UNA sola presentación (una sola opción no se
         # pregunta: se agrega).
         self.cantidad_de_compra: int = 0
+        # Se enciende cuando el término se tradujo por VOCABULARIO ("tapabocas" →
+        # "mascarilla"). El guard de "otro fármaco" lo consulta: cambiar de palabra
+        # aquí es legítimo, como marca → principio activo.
+        self.busqueda_por_sinonimo: bool = False
         # Texto determinista cuando la búsqueda agregó sola al carrito: el turno lo
         # envía tal cual (no se le deja al modelo reescribirlo).
         self.auto_agregado_texto: str | None = None
@@ -3125,6 +3129,7 @@ class ToolRuntime:
         self.es_laboratorio = False
         self.es_sal = False
         self.aviso_forma = ""
+        self.busqueda_por_sinonimo = False
         # Se enciende cuando el cliente DESCRIBE el producto sin nombrarlo ('crema para
         # cabello rizado'): el turno lo usa para no quedarse en silencio si el modelo gasta
         # las rondas reintentando búsquedas.
@@ -3476,6 +3481,7 @@ class ToolRuntime:
             )
             nombre = _nombre_sin
             self.aviso_forma = _aviso_sin
+            self.busqueda_por_sinonimo = True
         data = await self._ctx.crm.get_products(self._provider_id, q=nombre, limit=20)
         self.last_term = nombre
         # Formas de pago del tenant (markdown `paymenType` de providers/{id}).
