@@ -2519,6 +2519,11 @@ class ToolRuntime:
         # "mascarilla"). El guard de "otro fármaco" lo consulta: cambiar de palabra
         # aquí es legítimo, como marca → principio activo.
         self.busqueda_por_sinonimo: bool = False
+        # Aviso de vocabulario para el cliente ("a lo que te refieres lo tengo como
+        # MASCARILLA"). Vive TODO el turno: `aviso_forma` se limpia en cada búsqueda y
+        # una segunda búsqueda del mismo turno lo borraba antes de que el turno lo
+        # antepusiera al texto final.
+        self.aviso_sinonimo: str = ""
         # Texto determinista cuando la búsqueda agregó sola al carrito: el turno lo
         # envía tal cual (no se le deja al modelo reescribirlo).
         self.auto_agregado_texto: str | None = None
@@ -3481,6 +3486,7 @@ class ToolRuntime:
             )
             nombre = _nombre_sin
             self.aviso_forma = _aviso_sin
+            self.aviso_sinonimo = _aviso_sin
             self.busqueda_por_sinonimo = True
         data = await self._ctx.crm.get_products(self._provider_id, q=nombre, limit=20)
         self.last_term = nombre

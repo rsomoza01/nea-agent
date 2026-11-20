@@ -935,6 +935,13 @@ async def run_turn(
         logger.info("backstop forma: antepongo el aviso — %s", _aviso_forma_rt)
         final_text = _aviso_forma_rt + "\n\n" + final_text
 
+    # Aviso de VOCABULARIO: el cliente pidió "tapabocas" y el catálogo lo llama
+    # mascarilla. Se le dice, para que no parezca que el agente cambió de tema.
+    _aviso_sin_rt = getattr(runtime, "aviso_sinonimo", "") or ""
+    if farmacia and final_text and _aviso_sin_rt and _aviso_sin_rt not in final_text:
+        logger.info("backstop sinónimo: antepongo el aviso — %s", _aviso_sin_rt)
+        final_text = _aviso_sin_rt + "\n\n" + final_text
+
     # Backstop de bloque de carrito: SIEMPRE que se consultaron productos
     # (last_products) y el texto final es una lista de presentaciones (no un
     # handoff), garantizar que el MENSAJE_SUGERIDO_CARRITO esté al final. El
