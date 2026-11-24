@@ -763,6 +763,12 @@ _CATEGORIAS_TERAPEUTICAS = {
     # apoyó en cualquier cosa y la respuesta acabó en "⚠️ No disponibles: ANTICONCEPTIVAS".
     "anticonceptivo", "anticonceptiva", "anticonceptivos", "anticonceptivas",
     "anticoncepcion", "anticoncepción",
+    # «PROTECTORES» no es un producto: es un descriptor. Buscarlo devuelve cualquier cosa
+    # con «PROTECTORA» en el título. Caso real (receta, 2026-11-24 18:12): el cliente pidió
+    # «Protectores securezza» y el agente cotizó un CEPILLO DENTAL «c/ tapa protectora» y
+    # una loción «dermo protectora». Con la palabra fuera, el término es la marca
+    # ('securezza') y, si no existe, se dice que no está.
+    "protector", "protectores", "protectora", "protectoras", "proteccion", "protección",
 }
 
 

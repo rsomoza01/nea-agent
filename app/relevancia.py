@@ -375,11 +375,20 @@ def _es_letra_de_vitamina(w: str, termino: str = "") -> bool:
 
     Tiene que ir INMEDIATAMENTE después: con solo "el término dice vitamina" se colaba la
     preposición 'a' de "¡Voy a querer una vitamina C!" como si fuera VITAMINA A.
+
+    Acepta la abreviatura 'vit' ('VIt e.' → 'vit e'): sin esto la letra se descartaba por
+    corta y el término quedaba en 'vit', que el catálogo resuelve como cualquier VIT (C, K,
+    complejo B…). Caso real (receta, 2026-11-24 18:12): pidió «VIt e.» y recibió 12
+    productos de VIT C, VIT K y hasta una loción HIDRAMER.
     """
     if w not in _VITAMINAS:
         return False
     return bool(
-        re.search(rf"\bvitaminas?\s*[-/+]?\s*{re.escape(w)}\b", termino or "", re.IGNORECASE)
+        re.search(
+            rf"\b(?:vitaminas?|vits?|multivit)\s*[-/+]?\s*{re.escape(w)}\b",
+            termino or "",
+            re.IGNORECASE,
+        )
     )
 
 

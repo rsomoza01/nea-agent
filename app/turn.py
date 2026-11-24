@@ -8614,18 +8614,59 @@ def _partir_consulta_multi(texto: str) -> list[str]:
     return terminos if len(terminos) >= 2 else []
 
 
+def _es_continuacion_de_presentacion(fragmento: str) -> bool:
+    """¿El trozo que sigue a un « y » es solo PRESENTACIÓN del mismo producto?
+
+    'magnesio en polvo y efervescente' → True (un solo producto)
+    'esoz y leprit'                   → False (dos medicamentos)
+
+    Se acepta el typo del habla ('efervecente' ≈ 'efervescente'): el cliente escribe
+    como habla y partir la línea creaba DOS grupos en la receta —uno con los magnesios
+    y otro titulado «EFERVECENTE» con REDOZINC— (caso real, 2026-11-24 18:12).
+    """
+    palabras = [
+        w for w in re.findall(r"[a-záéíóúüñ]+", _normalizar_tildes((fragmento or "").lower()))
+        if w
+    ]
+    if not palabras:
+        return True
+    conocidas = _PALABRAS_PRESENTACION_ENVASE
+    for w in palabras:
+        if w in conocidas or _ES_FORMA_FARMACEUTICA(w):
+            continue
+        if any(difflib.SequenceMatcher(None, w, f).ratio() >= 0.85 for f in conocidas):
+            continue
+        return False
+    return True
+
+
 def _lineas_lista_medicamentos(texto: str) -> list[str]:
     """Convierte una lista de medicamentos en texto en líneas individuales.
 
     'esoz, leprit y evigax' → ['esoz', 'leprit', 'evigax']
     'ESOZ\nLEPRIT\nEVIGAX' → ['ESOZ', 'LEPRIT', 'EVIGAX']
+    'Magnesio en polvo y efervecente' → ['Magnesio en polvo y efervecente']  (UN producto)
+
+    POR QUÉ SE PARTE POR LÍNEAS PRIMERO: antes, si el texto traía UNA coma en cualquier
+    parte, se separaba todo por comas y por « y » y las líneas se ignoraban; una lista de
+    11 medicamentos con una sola coma acababa en trozos con saltos de línea dentro y el
+    último producto partido por un « y » que era parte de su nombre.
     """
-    t = texto.strip()
-    if re.search(r"[,;]", t) or re.search(r"\s+y\s+", t.lower()):
-        # Separar por comas/puntos y coma, luego por 'y' como conector.
-        trozos = re.split(r"[,;]+|\s+y\s+", t, flags=re.IGNORECASE)
-        return [p.strip() for p in trozos if p.strip()]
-    return [l.strip() for l in t.splitlines() if l.strip()]
+    t = (texto or "").strip()
+    if not t:
+        return []
+    resultado: list[str] = []
+    for linea in (l.strip() for l in t.splitlines() if l.strip()):
+        for trozo in re.split(r"[,;]+", linea):
+            trozo = trozo.strip()
+            if not trozo:
+                continue
+            partes = re.split(r"\s+y\s+", trozo, flags=re.IGNORECASE)
+            if len(partes) > 1 and _es_continuacion_de_presentacion(partes[-1]):
+                resultado.append(trozo)
+            else:
+                resultado.extend(p.strip() for p in partes if p.strip())
+    return [r for r in resultado if r]
 
 
 def _es_linea_notificacion_admin(linea: str) -> bool:
