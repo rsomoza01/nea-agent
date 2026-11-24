@@ -3681,6 +3681,14 @@ MENSAJE_OPCIONES_NO_ENCAJAN = (
 )
 
 
+_SEP_LISTA_NUMEROS = r"(?:\s*[,;./\-]\s*|\s+y\s+|\s+e\s+|\s+)"
+# El mensaje ES una lista de números (y nada más): separadores , ; . / - y espacios.
+# "1, 10, 17, 19,21,23,30,33," · "1 10 17" · "1, 4 y 8".
+_RE_LISTA_DE_NUMEROS = re.compile(
+    rf"\d{{1,3}}(?:{_SEP_LISTA_NUMEROS}\d{{1,3}})*[\s,;./\-]*"
+)
+
+
 def _extraer_eleccion_multiple(texto: str) -> list[tuple[int, int]] | None:
     """Detecta la selección de opciones por número, con cantidades por grupo.
 
@@ -3688,6 +3696,7 @@ def _extraer_eleccion_multiple(texto: str) -> list[tuple[int, int]] | None:
     'quiero 2 cajas de la opción 3' → [(2,3)]
     'la opción 1' → [(1,1)]
     'quiero 2 cajas de 1 y 1 caja de 3,4,5 y 7' → [(2,1), (1,3), (1,4), (1,5), (1,7)]
+    '1, 10, 17, 19,21,23,30,33,' → las ocho opciones, cantidad 1 cada una
     Devuelve None si el texto no es una elección de opciones.
     """
     if not texto:
@@ -3700,6 +3709,21 @@ def _extraer_eleccion_multiple(texto: str) -> list[tuple[int, int]] | None:
         v = int(t)
         if v >= 1:
             return [(1, v)]
+    # ── LISTA DE NÚMEROS PELADOS: "1, 10, 17, 19,21,23,30,33," ────────────────────
+    # El cliente marca con números las opciones que acaba de recibir. El parser exigía
+    # la palabra "opción", la unidad "cajas" o un verbo ("quiero 1,4,7"), así que una
+    # lista suelta no era elección: caía al guard de «otro fármaco» y contestaba
+    # «⚠️ No tengo 1 10 17 19.21 23.30 33» (caso real, 2026-11-24 20:43, receta de 36
+    # opciones). Se exige que TODO el mensaje sean números y separadores para no comerse
+    # «vitamina 12» ni «500 mg»; el llamador, además, exige `last_options`.
+    if _RE_LISTA_DE_NUMEROS.fullmatch(t):
+        numeros: list[tuple[int, int]] = []
+        for n in re.findall(r"\d{1,3}", t):
+            v = int(n)
+            if v >= 1 and (1, v) not in numeros:
+                numeros.append((1, v))
+        if numeros:
+            return numeros
     # "1 caja de cada uno/a" (tras una receta/lista): selecciona TODAS las
     # opciones mostradas con esa cantidad. Va ANTES de es_eleccion porque no
     # lleva lista de números ("de cada uno" sin comas). La lista concreta la
@@ -5534,6 +5558,9 @@ def _farmaco_distinto(user_text: str, runtime: Any) -> str | None:
         _texto_cliente_sin_marcadores(user_text) or user_text or ""
     )
     if not cliente or not _termino_es_medicamento_plausible(cliente):
+        return None
+    if not re.search(r"[a-záéíóúñ]", cliente):
+        # Una lista de números es una SELECCIÓN de opciones, no un fármaco.
         return None
     if _es_solo_saludo(cliente) or _es_solo_saludo(cliente.split()[0]):
         return None  # 'gracias muy amable' no es un fármaco
@@ -8990,4 +9017,12 @@ def _extraer_termino_medicamento(texto: str) -> str | None:
         terminos.pop()
     if not terminos:
         return None
-    return " ".join(terminos)
+    # SIN UNA SOLA LETRA NO HAY MEDICAMENTO. "1, 10, 17, 19,21,23,30,33," (el cliente
+    # marcando opciones) se convertía en el término '1 10 17 19.21 23.30 33' y el guard
+    # de «otro fármaco» respondía «⚠️ No tengo 1 10 17 19.21 23.30 33» (2026-11-24 20:43).
+    # Un nombre de producto siempre trae letras; una dosis suelta ('500 mg') también las
+    # trae por la unidad, así que este filtro no borra nada legítimo.
+    termino = " ".join(terminos)
+    if not re.search(r"[a-záéíóúñ]", termino):
+        return None
+    return termino
