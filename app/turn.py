@@ -1790,6 +1790,38 @@ async def _tool_loop(
             await _send(ctx, runtime._conv.id, runtime._crm_conv_id, RESPUESTA_FOTO)
             return None  # turno atendido: no dejar que el LLM reescriba
 
+        # ¿PIDE MÁS OPCIONES DE LO QUE YA SE LE COTIZÓ? Se responde con la lista real
+        # (o con la verdad: hay una sola presentación) en vez de buscar la palabra
+        # 'mostrame' en el catálogo. Si el mensaje además nombra un fármaco distinto
+        # ("¿tienes otra marca de losartán?"), manda el flujo normal.
+        if (
+            farmacia
+            and _pide_mas_opciones(user_text)
+            and not _texto_ocr_completo(user_text)
+        ):
+            _prods_op = list(
+                getattr(runtime, "last_products", None) or runtime.last_options or []
+            )
+            _term_pedido = _extraer_termino_medicamento(
+                _texto_cliente_sin_marcadores(user_text) or user_text
+            )
+            if _prods_op and not (
+                _term_pedido and _termino_es_medicamento_plausible(_term_pedido)
+            ):
+                _term_op = str(runtime.last_term or "").strip()
+                logger.info(
+                    "guard más opciones: %d producto(s) ya cotizados de '%s' — se re-muestra "
+                    "la lista sin buscar",
+                    len(_prods_op), _term_op,
+                )
+                await _send(
+                    ctx,
+                    runtime._conv.id,
+                    runtime._crm_conv_id,
+                    _respuesta_mas_opciones(_prods_op, _term_op),
+                )
+                return None  # turno atendido: no dejar que el LLM reescriba
+
         familia = _familia_de_pregunta_contenido(
             user_text, runtime.last_term, runtime.last_product
         )
@@ -3336,6 +3368,25 @@ REFERENCIA_LISTA_T = {
     "opcion", "opción", "opciones", "opcioncita", "numerito",
 }
 
+# «¿PODRÍAS MOSTRARME MÁS OPCIONES?»: es una PETICIÓN sobre la respuesta anterior,
+# no un medicamento. Sin esto, el troceador tomaba el verbo como nombre de producto y
+# el guard de «otro fármaco» negaba algo que el cliente nunca pidió.
+# Caso real (conv de ácido valproico, 2026-11-23 09:33):
+#     cliente: «podrias mostrame mas opciones por favor»
+#     agente : «⚠️ No tengo MOSTRAME. No te ofrezco otro medicamento parecido…»
+# 'opciones' ya estaba en REFERENCIA_LISTA_T; faltaban los verbos de mostrar y los
+# cuantificadores de variedad, que son los que quedaban como término de búsqueda
+# ('mostrame', 'muestrame', 'otras', 'alternativas').
+PETICION_OPCIONES_T = {
+    "mostrar", "mostrarme", "mostrame", "muestrame", "muéstrame", "mostrarte",
+    "muestre", "muestren", "muestrenme", "muestrame", "muestrame", "muestras",
+    "mostrarles", "ensename", "enséñame", "ensenarme", "verlas", "verlos",
+    "otras", "otros", "otra", "otro",
+    "alternativas", "alternativa", "adicionales", "adicional",
+    "distintas", "distintos", "diferentes", "variedades", "variedad",
+    "presentaciones", "presentacion", "versiones",
+}
+
 # «¿SOLO LO TIENES POR SEPARADO?» — es una PREGUNTA sobre la respuesta anterior, no un
 # producto. Caso real (provider 32, 2026-10-29): tras cotizar la caja de FIN-AL-GRIP FORTE
 # como si fueran cuatro medicamentos, el cliente preguntó "No entendí?? Solo lo tienes por
@@ -3413,6 +3464,7 @@ _FILLER = {
     "cotizar", "cotizame", "cotizacion", "cotizaciones", "cotizarlos",
     # Vocativo, intención de compra y referencia a la lista (gemelos de tools).
     *VOCATIVOS_T, *INTENCION_COMPRA_T, *REFERENCIA_LISTA_T,
+    *PETICION_OPCIONES_T,
     *POR_SEPARADO_T,
     *COMPRENSION_T,
     *FELICITACION_T,
@@ -7901,6 +7953,57 @@ RESPUESTA_FOTO = (
 )
 
 
+# ── «¿ME MUESTRAS MÁS OPCIONES?» ──────────────────────────────────────────────────
+# Petición sobre la respuesta ANTERIOR, no sobre un medicamento nuevo. Dos cosas:
+# (1) el término no puede salir de aquí ('mostrame', 'otras' llegaban al catálogo y el
+# guard de «otro fármaco» negaba lo mostrado: «⚠️ No tengo MOSTRAME»), y (2) la respuesta
+# correcta es VOLVER A MOSTRAR la lista que ya se cotizó —diciendo la verdad cuando hay
+# una sola presentación—, no negar un fármaco que el cliente no pidió.
+# Caso real (conv de ácido valproico, 2026-11-23 09:33).
+_RE_PIDE_MAS_OPCIONES = re.compile(
+    r"\b(?:mas|otras?|otros?|adicionales?|distintas?|distintos?|diferentes|varias?|"
+    r"todas|todos)\s+"
+    r"(?:opciones?|alternativas?|presentaciones?|marcas?|variedades?|productos?|"
+    r"laboratorios?)\b"
+    r"|\b(?:mostrame|muestrame|mostrarme|muestrame|mostrar|muestrame|muestre|muestren|"
+    r"muestras|ensename|ensenarme|ver)\b[^.?!]{0,25}\b(?:mas|otras?|otros?|opciones?|"
+    r"alternativas?|presentaciones?|todo|todas)\b"
+    r"|\b(?:hay|tienen|tienes|manejan|tendra|tendran)\s+(?:mas|otras?|otros?)\b",
+    re.IGNORECASE,
+)
+
+
+def _pide_mas_opciones(texto: str) -> bool:
+    """¿El cliente pide MÁS opciones/alternativas de lo que ya se le cotizó?"""
+    t = _normalizar_tildes((texto or "").lower())
+    if not t:
+        return False
+    return bool(_RE_PIDE_MAS_OPCIONES.search(t))
+
+
+def _respuesta_mas_opciones(productos: list[dict], termino: str) -> str:
+    """Re-muestra la lista ya cotizada, diciendo la verdad si hay una sola presentación.
+
+    No se busca nada: lo que el cliente pide es MÁS de lo mismo, y lo que hay es lo que
+    ya se cotizó. Prometer «otras opciones» que no existen es tan malo como negar el
+    fármaco.
+    """
+    if not productos:
+        return ""
+    intro = (
+        "Es la única presentación que tengo en este momento:"
+        if len(productos) == 1
+        else "Estas son todas las que tengo en este momento:"
+    )
+    return (
+        intro
+        + "\n\n"
+        + _lista_con_aviso(list(productos), termino)
+        + "\n\n"
+        + MENSAJE_SUGERIDO_CARRITO
+    )
+
+
 # ── RECETA ESCRITA A MANO ─────────────────────────────────────────────────────────
 # La letra a mano NO se lee con fiabilidad: el OCR adivina nombres y el agente acaba
 # cotizando fármacos que nadie recetó. Caso real (provider 32, 2026-10-28): receta
@@ -8806,11 +8909,26 @@ def _extraer_termino_medicamento(texto: str) -> str | None:
     # 'de la opción 9' es una REFERENCIA A LA LISTA, no una dosis: el '9' no puede entrar
     # en el término (el catálogo recibía 'macrodantina vitamina c 9').
     texto = re.sub(r"\b(?:opci[oó]n|opciones|n[uú]mero)\s+\d+", " ", texto)
+    # DOS CONCENTRACIONES EN EL MISMO MENSAJE = el cliente pide la FAMILIA, no una.
+    # "acido valproico 500mg y 250mg" entraba al motor como 'acido valproico 500mg 250mg';
+    # la dosis se leía del PRIMER número y el aviso contestaba «No tengo de 500 mg. Lo
+    # tengo en: 250 mg.» — negando justo lo que acababa de cotizar (VASTRON CLEO 500).
+    # Sin dosis en el término, la búsqueda devuelve todas las presentaciones y no hay
+    # aviso falso. Caso real (conv de ácido valproico, 2026-11-23 09:34).
+    _dosis_en_texto = re.findall(
+        r"\b(\d+(?:[.,]\d+)?)\s*(?:mg|ml|mcg|gr|g|ui|cc)\b", texto
+    )
+    if len({d.replace(",", ".") for d in _dosis_en_texto}) >= 2:
+        texto = re.sub(
+            r"\b\d+(?:[.,]\d+)?\s*(?:mg|ml|mcg|gr|g|ui|cc)\b", " ", texto
+        )
     palabras = _tokens_con_decimal(texto)
     # La unidad HABLADA se normaliza ANTES de decidir ("nifedipina 30 miligramos"
     # → "nifedipina 30 mg"). Sin esto el 30 se descarta por ir seguido de una
     # palabra que no está en la lista de unidades y la dosis se pierde.
     palabras = [_normalizar_unidad(w) for w in palabras]
+    # (Las dos dosis del mismo mensaje ya se quitaron del texto antes de trocear; ver
+    # el bloque «DOS CONCENTRACIONES EN EL MISMO MENSAJE» más arriba.)
     # Verbos de consulta, relleno y apelativos de cortesía: nunca son parte del
     # medicamento.
     verbos = set(re.findall(r"[a-záéíóúüñ]+", _VERBOS_MEDICAMENTO.pattern))

@@ -53,6 +53,18 @@ REFERENCIA_LISTA_R = {
     "opcion", "opción", "opciones", "opcioncita", "numerito",
 }
 
+# «¿PODRÍAS MOSTRARME MÁS OPCIONES?»: PETICIÓN sobre la respuesta anterior, no un
+# medicamento. Gemelo de turn._FILLER y tools._PALABRAS_FUNCIONALES.
+PETICION_OPCIONES_R = {
+    "mostrar", "mostrarme", "mostrame", "muestrame", "muéstrame", "mostrarte",
+    "muestre", "muestren", "muestrenme", "muestrame", "muestras",
+    "mostrarles", "ensename", "enséñame", "ensenarme", "verlas", "verlos",
+    "otras", "otros", "otra", "otro",
+    "alternativas", "alternativa", "adicionales", "adicional",
+    "distintas", "distintos", "diferentes", "variedades", "variedad",
+    "presentaciones", "presentacion", "versiones",
+}
+
 # «¿SOLO LO TIENES POR SEPARADO?» — es una PREGUNTA sobre la respuesta anterior, no un
 # producto. Caso real (provider 32, 2026-10-29): tras cotizar la caja de FIN-AL-GRIP FORTE
 # como si fueran cuatro medicamentos, el cliente preguntó "No entendí?? Solo lo tienes por
@@ -125,6 +137,7 @@ _FUNCIONALES = {
     "nombre", "nombres", "rotulo", "etiqueta", "descripcion", "presentacion",
     # Vocativo, intención de compra y referencia a la lista (gemelos de tools/turn).
     *VOCATIVOS_R, *INTENCION_COMPRA_R, *REFERENCIA_LISTA_R,
+    *PETICION_OPCIONES_R,
     *POR_SEPARADO_R,
     *COMPRENSION_R,
     *FELICITACION_R,

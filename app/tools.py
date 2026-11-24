@@ -198,6 +198,19 @@ REFERENCIA_LISTA = {
     "opcion", "opción", "opciones", "opcioncita", "numerito",
 }
 
+# «¿PODRÍAS MOSTRARME MÁS OPCIONES?»: PETICIÓN sobre la respuesta anterior, no un
+# medicamento. Gemelo de turn._FILLER (ver el comentario largo allí): sin estos verbos,
+# 'mostrame' / 'otras' / 'alternativas' se buscan como si fueran un fármaco.
+PETICION_OPCIONES = {
+    "mostrar", "mostrarme", "mostrame", "muestrame", "muéstrame", "mostrarte",
+    "muestre", "muestren", "muestrenme", "muestrame", "muestras",
+    "mostrarles", "ensename", "enséñame", "ensenarme", "verlas", "verlos",
+    "otras", "otros", "otra", "otro",
+    "alternativas", "alternativa", "adicionales", "adicional",
+    "distintas", "distintos", "diferentes", "variedades", "variedad",
+    "presentaciones", "presentacion", "versiones",
+}
+
 # «¿SOLO LO TIENES POR SEPARADO?» — es una PREGUNTA sobre la respuesta anterior, no un
 # producto. Caso real (provider 32, 2026-10-29): tras cotizar la caja de FIN-AL-GRIP FORTE
 # como si fueran cuatro medicamentos, el cliente preguntó "No entendí?? Solo lo tienes por
@@ -272,6 +285,7 @@ _PALABRAS_FUNCIONALES = {
     "siguiente", "siguientes", "presupuesto",
     # Vocativo, intención de compra y referencia a la lista: NO son el nombre de nada.
     *VOCATIVOS, *INTENCION_COMPRA, *REFERENCIA_LISTA,
+    *PETICION_OPCIONES,
     *POR_SEPARADO,
     *COMPRENSION,
     *FELICITACION,
