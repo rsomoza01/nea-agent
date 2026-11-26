@@ -2387,6 +2387,16 @@ async def _tool_loop(
                     # omeprazol"): da un solo trozo. `_medicamentos_enumerados` respeta
                     # los separadores y devuelve cada medicamento por separado.
                     medicamentos = _medicamentos_enumerados(contenido_cliente)
+                    if len(medicamentos) < 2:
+                        # Lista pegada con DOBLES ESPACIOS y sin comas: los
+                        # separadores de `_RE_SEP_LISTA` no la ven.
+                        por_espacios = _medicamentos_por_espacios(contenido_cliente)
+                        if len(por_espacios) >= 2:
+                            logger.info(
+                                "backstop lista (dobles espacios): %d medicamento(s) — %s",
+                                len(por_espacios), por_espacios[:6],
+                            )
+                            medicamentos = por_espacios
                     if not medicamentos:
                         # CADA LÍNEA SE PASA POR `_sin_motivo` ANTES DE PARSEAR. Sin esto el
                         # verbo del motivo queda PEGADO al nombre y llega al cliente como si
@@ -7470,6 +7480,60 @@ def _medicamentos_enumerados(texto: str) -> list[str]:
     return out
 
 
+# Palabras del MOTIVO de la consulta: no son medicamentos aunque queden en el trozo
+# ("… precio de estos medicamentos farma  D2000 K2D3  …" deja "de estos medicamentos
+# farma" al primer trozo).
+_RE_RUIDO_LISTA = re.compile(
+    r"\b(?:estos?|estas?|medicamentos?|medicinas?|precios?|cuanto|cuánto|vale[n]?|"
+    r"gracias|favor|saludos?|buen[oa]s?|dias?|días?|tardes?|noches?|farma|farmacia|"
+    r"necesito|quisiera|quiero|tienen|tienes|disponen|dispone|busco|saber|si)\b",
+    re.IGNORECASE,
+)
+
+
+def _medicamentos_por_espacios(texto: str) -> list[str]:
+    """Medicamentos de una consulta separada por DOBLES ESPACIOS en UNA línea.
+
+    Caso real (2026-11-26): el cliente pegó la lista desde otro lado y llegó como
+    una sola línea sin comas, con los productos separados por doble espacio:
+
+        'Buenos días saludos por favor precio de estos medicamentos farma  D2000 K2D3
+         alodipina 10  vitamina B12 centrum y magnesio gracias'
+
+    `_medicamentos_enumerados` solo corta por comas y « y », así que devolvía
+    ['magnesio'] y `_parece_lista_medicamentos` daba False: el agente buscaba «K2» y
+    «VITAMINA» y respondía con TRES VITAMINA C, dejando fuera D2000, amlodipina y
+    magnesio. Aquí se parte por 2+ espacios (y por los separadores de lista dentro de
+    cada trozo) y se descarta el motivo de la consulta.
+
+    'D2000 K2D3  alodipina 10  vitamina B12 centrum y magnesio'
+      → ['d2000 k2d3', 'alodipina 10', 'vitamina b12 centrum', 'magnesio']
+    """
+    if not texto:
+        return []
+    t = " ".join(_sin_motivo(texto).split(" ")) if texto else texto
+    trozos: list[str] = []
+    for pedazo in re.split(r"\s{2,}", (t or texto).strip()):
+        trozos.extend(p for p in _RE_SEP_LISTA.split(pedazo) if p.strip())
+    out: list[str] = []
+    vistos: set[str] = set()
+    for trozo in trozos:
+        limpio = " ".join(_RE_RUIDO_LISTA.sub(" ", trozo).split())
+        if not limpio:
+            continue
+        cand = _limpiar_termino_medicamento(limpio) or limpio
+        if _es_solo_saludo(cand) or _es_solo_saludo(limpio):
+            continue
+        cand = _extraer_termino_medicamento(cand) or cand
+        cand = " ".join(cand.split())
+        if not cand or cand in vistos:
+            continue
+        if _termino_es_medicamento_plausible(cand):
+            vistos.add(cand)
+            out.append(cand)
+    return out
+
+
 def _filtrar_por_dosis(
     products: list[dict[str, Any]], dosis: str
 ) -> list[dict[str, Any]]:
@@ -8500,12 +8564,23 @@ def _parece_lista_medicamentos(texto: str) -> bool:
 
     # Con separadores de enumeración: contar los medicamentos de cada trozo.
     if _RE_SEP_LISTA.search(texto):
-        return len(_medicamentos_enumerados(texto)) >= 2
+        if len(_medicamentos_enumerados(texto)) >= 2:
+            return True
+        # El separador puede cortar UN solo trozo (la 'y' de 'centrum y magnesio')
+        # y el resto de la lista venir pegada con DOBLES ESPACIOS:
+        # '… D2000 K2D3  alodipina 10  vitamina B12 centrum y magnesio'.
+        return len(_medicamentos_por_espacios(texto)) >= 2
 
     # Sin separadores: varias LÍNEAS con medicamento (receta escrita en vertical).
     lineas = [l.strip() for l in texto.splitlines() if l.strip()]
     if len(lineas) >= 2:
         return len(_parsear_medicamentos_receta(_sin_motivo(texto))) >= 2
+
+    # UNA LÍNEA con los medicamentos separados por DOBLES ESPACIOS: el cliente pegó
+    # la lista y no puso comas. Sin esto el agente buscaba solo una parte
+    # ('… D2000 K2D3  alodipina 10  vitamina B12 centrum y magnesio …').
+    if len(_medicamentos_por_espacios(texto)) >= 2:
+        return True
     return False
 
 
