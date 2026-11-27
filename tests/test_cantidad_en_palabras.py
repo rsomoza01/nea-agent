@@ -44,3 +44,21 @@ def test_no_toca_palabras_que_contienen_un_numero():
     assert T._numeros_en_palabra("adios") == "adios"
     assert T._numeros_en_palabra("unico") == "unico"
     assert T._numeros_en_palabra("dos cajas") == "2 cajas"
+
+
+def test_varios_grupos_con_cantidad():
+    """«4 cajas de la opción 2 y 2 de la 3»: dos grupos, cada uno con su cantidad.
+
+    Antes se devolvía solo el último grupo: el primero se agregaba con la cantidad
+    por defecto (1) o no se agregaba.
+    """
+    assert T._extraer_eleccion_multiple("4 cajas de la opción 2 y 2 de la 3") == [(4, 2), (2, 3)]
+    assert T._extraer_eleccion_multiple("Quiero 4 cajas de la opción 2 y 2 de la 3") == [(4, 2), (2, 3)]
+    assert T._extraer_eleccion_multiple("quiero 2 cajas de la opción 1 y 3 de la 2") == [(2, 1), (3, 2)]
+
+
+def test_la_lista_con_comas_sigue_siendo_una_lista():
+    """Con comas es UNA cantidad para varias opciones, no varios grupos."""
+    assert T._extraer_eleccion_multiple("2 cajas de 1 y 1 caja de 3,4,5 y 7") == [
+        (2, 1), (1, 3), (1, 4), (1, 5), (1, 7)
+    ]

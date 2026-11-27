@@ -3828,6 +3828,40 @@ def _extraer_eleccion_multiple(texto: str) -> list[tuple[int, int]] | None:
         cant_each = max(1, int(m_cant_each.group(1))) if m_cant_each else 1
         # Cantidad máxima razonable: el pre-check la recorta a last_options.
         return [(cant_each, i) for i in range(1, 51)]
+    # ── VARIOS GRUPOS CON CANTIDAD: "4 cajas de la opción 2 y 2 de la 3" ──────────
+    # El atajo de "<N> de la <M>" de más abajo devolvía SOLO el último grupo (el
+    # primero se leía como si no hubiera selección). Aquí se recogen todos los pares
+    # (cantidad, opción) del mensaje y, si hay dos o más, se devuelven en orden.
+    #
+    # NO se aplica cuando el mensaje lleva COMAS: ahí es una lista de opciones con la
+    # misma cantidad ("2 cajas de 1 y 1 caja de 3,4,5 y 7"), que resuelve el camino de
+    # grupos de más abajo.
+    if "," not in t:
+        pares_multi: list[tuple[int, int]] = []
+        usados: list[tuple[int, int]] = []  # rangos [inicio, fin) ya capturados
+        # (a) "<N> cajas/unidades de [la] [opción] <M>"
+        for m in re.finditer(
+            r"(\d{1,2})\s*(?:cajas?|unidades?)\s+de\s+(?:la\s+)?(?:opci[oó]n\s*)?(\d{1,2})\b",
+            t,
+        ):
+            cant, opc = int(m.group(1)), int(m.group(2))
+            if 1 <= cant <= 99 and 1 <= opc <= 99 and (cant, opc) not in pares_multi:
+                pares_multi.append((cant, opc))
+                usados.append((m.start(), m.end()))
+        # (b) "<N> de la <M>" / "<N> del <M>" (la segunda mitad de "… y 2 de la 3")
+        for m in re.finditer(
+            r"\b(\d{1,2})\s*(?:de\s+la|del)\s+(\d{1,2})\b(?!\s*(?:mg|ml|gr|g|mcg|ui|%))",
+            t,
+        ):
+            if any(a <= m.start() < b for a, b in usados):
+                continue
+            cant, opc = int(m.group(1)), int(m.group(2))
+            if 1 <= cant <= 99 and 1 <= opc <= 99 and (cant, opc) not in pares_multi:
+                pares_multi.append((cant, opc))
+                usados.append((m.start(), m.end()))
+        if len(pares_multi) >= 2:
+            return pares_multi
+
     # "<N> del <M>" / "<N> de la <M>" — la forma más corta de elegir: "agrégame 3 del 1",
     # "quiero 3 de la 1", "ponme 2 de la 4".
     #
