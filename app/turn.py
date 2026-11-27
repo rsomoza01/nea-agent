@@ -1775,6 +1775,21 @@ async def _tool_loop(
     # condicionado a esa bandera nunca dispararía. Es el mismo error que tuvo el paso de
     # entrega. Los pasos obligatorios se resuelven ANTES del modelo.
     if farmacia:
+        # ¿PRIMER MENSAJE Y SOLO PREGUNTA EL PRECIO? El cliente viene de un ESTADO de
+        # WhatsApp: no hay producto en la conversación, así que cualquier precio que
+        # responda el modelo es inventado. Se avisa y se pasa a un auxiliar.
+        if _es_primer_turno(messages) and _pregunta_precio_sin_producto(user_text):
+            logger.info(
+                "primer turno y solo pregunta el precio sin nombrar producto — "
+                "aviso de auxiliar + handoff (no se consulta el catálogo)"
+            )
+            await _send(
+                ctx, runtime._conv.id, runtime._crm_conv_id,
+                RESPUESTA_PRECIO_SIN_PRODUCTO,
+            )
+            await _safe_handoff(ctx, str(runtime._crm_conv_id), "modelo")
+            return None
+
         # ¿PREGUNTA SI EL EQUIPO VIENE CON LOS MATERIALES?
         # El catálogo no guarda el contenido de la caja (ver `_EQUIPOS_CONSUMIBLES`), así
         # que no se puede asegurar. Lo que sí se puede es ofrecer los insumos que se venden
@@ -4206,6 +4221,54 @@ def _es_peticion_de_envio(texto: str) -> bool:
 # Menú del MÉTODO DE ENTREGA y petición de la dirección. Mensajes DETERMINISTAS:
 # se envían tal cual (no pasan por el LLM) para que las opciones 1/2 sean siempre
 # las mismas y el cliente pueda responder con un número.
+# PRECIO SIN PRODUCTO. El cliente ve el producto en un ESTADO de WhatsApp y escribe
+# solo "precio" / "cuál es el precio?". En una sesión NUEVA no hay contexto de qué
+# producto es: el modelo inventa uno (o cotiza el medicamento que le parece) y el
+# cliente recibe un precio que no es. La respuesta honesta es avisar que un auxiliar
+# lo atiende y pasar la conversación a un humano.
+RESPUESTA_PRECIO_SIN_PRODUCTO = "En un momento un auxiliar te atiende y te cotiza. ✅"
+
+# Palabras que pueden aparecer en una pregunta de precio SIN nombrar el producto.
+_PALABRAS_PREGUNTA_PRECIO = {
+    "precio", "precios", "cuesta", "cuestan", "vale", "valen", "sale", "salen",
+    "costo", "costos", "cuanto", "cuanta", "es", "el", "la", "los", "las", "de",
+    "del", "por", "favor", "hola", "buenas", "buenos", "dias", "dia", "tardes",
+    "tarde", "noches", "noche", "gracias", "esta", "estan", "cual", "cuales",
+    "seria", "serian", "me", "dice", "dices", "decir", "info", "informacion",
+    "y", "a", "en", "su", "este", "senor", "senora", "amigo", "amiga", "disculpe",
+    "oye", "ola", "sabes", "podria", "puede", "decirme", "quisiera", "saber",
+    "cuanto", "q", "x", "favor",
+}
+
+
+def _es_primer_turno(messages: list[dict[str, Any]]) -> bool:
+    """¿Este es el PRIMER mensaje del cliente en la sesión?
+
+    `messages` trae el system + el historial + el mensaje de este turno. Si hay un solo
+    `user`, la conversación arranca aquí: no hay producto previo del que hablar.
+    """
+    return sum(1 for m in messages if m.get("role") == "user") <= 1
+
+
+def _pregunta_precio_sin_producto(texto: str) -> bool:
+    """¿El mensaje pregunta SOLO el precio, sin nombrar ningún producto?
+
+    'precio' · 'cuál es el precio?' · 'cuanto cuesta' · 'buenas, en cuanto sale?'
+      → True (no hay forma de saber de qué producto habla)
+    'precio del atamel' · 'cuanto cuesta la insulina'
+      → False (hay producto: lo resuelve el flujo normal)
+    """
+    t = _normalizar_tildes((texto or "").lower())
+    palabras = [w for w in re.findall(r"[a-zñ]+", t) if w]
+    if not palabras or len(palabras) > 8:
+        return False
+    if not any(w in {"precio", "precios", "cuesta", "cuestan", "vale", "valen",
+                     "sale", "salen", "costo", "costos", "cuanto", "cuanta"}
+               for w in palabras):
+        return False
+    return all(w in _PALABRAS_PREGUNTA_PRECIO for w in palabras)
+
+
 MENSAJE_METODO_ENTREGA = (
     "Antes de cerrar tu pedido, ¿cómo prefieres recibirlo?\n\n"
     "1️⃣ Delivery (envío a tu dirección)\n"
