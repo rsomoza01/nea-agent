@@ -2485,6 +2485,14 @@ class ToolRuntime:
         # en ESTE turno? pedido_finalizado solo si _finalizar_pedido devolvió ok;
         # carrito_agregado_turno si _agregar_al_carrito agregó (modelo o backstop).
         self.pedido_finalizado = False
+        # MÉTODO DE ENTREGA con el que se CERRÓ el pedido en este turno.
+        # `_finalizar_pedido` limpia `delivery_method`/`delivery_address` para que el
+        # pedido SIGUIENTE vuelva a preguntar, pero el resumen de cierre tiene que
+        # seguir mostrando cómo se entrega: sin este snapshot el resumen salía sin
+        # MÉTODO DE ENTREGA y el guard lo interpretaba como "nunca se preguntó" —
+        # volvía a pedir delivery/retiro DESPUÉS de que el cliente ya había dicho SI
+        # (provider 33, 2026-11-27 13:27: pedido cerrado y menú de entrega otra vez).
+        self.entrega_cerrada: tuple[str | None, str | None] | None = None
         self.carrito_agregado_turno = False
         # true si este turno se consultó un medicamento que NO está en el catálogo.
         # Lo usa el turno para escalar a humano de forma determinista (no depender
@@ -4885,9 +4893,14 @@ class ToolRuntime:
         # farmacia ANTES de llegar al resumen. Se muestra siempre que haya elección,
         # para que el pedido quede sin ambigüedad sobre cómo se entrega.
         metodo = self._conv.delivery_method
+        direccion = self._conv.delivery_address
+        if not metodo and self.entrega_cerrada:
+            # El pedido se cerró en este mismo turno y el estado ya se limpió: se
+            # muestra la entrega con la que se cerró (snapshot), no se omite.
+            metodo, direccion = self.entrega_cerrada
         if metodo == "delivery":
             bloque.append("🚚 *MÉTODO DE ENTREGA:*")
-            bloque.append(f"Delivery — {self._conv.delivery_address or ''}".rstrip(" —"))
+            bloque.append(f"Delivery — {direccion or ''}".rstrip(" —"))
             bloque.append("")
         elif metodo == "pickup":
             bloque.append("🏥 *MÉTODO DE ENTREGA:*")
@@ -4999,6 +5012,9 @@ class ToolRuntime:
         #
         # Solo se limpia AQUÍ (pedido cerrado): ver el resumen NO cierra nada, el
         # cliente puede seguir agregando.
+        # Snapshot ANTES de limpiar: el resumen de este turno (el que confirma el
+        # pedido) debe seguir mostrando el método elegido.
+        self.entrega_cerrada = (self._conv.delivery_method, self._conv.delivery_address)
         await self._ctx.store.update_conversation(
             self._conv.id,
             delivery_method=None,

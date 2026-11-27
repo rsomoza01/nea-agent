@@ -991,7 +991,16 @@ async def run_turn(
         logger.info("auto-agregado: enviando texto determinista del carrito")
         final_text = runtime.auto_agregado_texto
 
-    if farmacia and runtime.cart_summary_text and not _tambien_pide_agregar(user_text):
+    # SI EL PEDIDO YA SE CERRÓ EN ESTE TURNO, el texto que toca es la CONFIRMACIÓN
+    # ("quedó registrado, un humano lo procesa"), no el resumen: reponerlo le devuelve
+    # al cliente "¿Confirmas el pedido con un *SI*?" justo después de haberlo confirmado
+    # (provider 33, 2026-11-27 13:27).
+    if (
+        farmacia
+        and runtime.cart_summary_text
+        and not _tambien_pide_agregar(user_text)
+        and not getattr(runtime, "pedido_finalizado", False)
+    ):
         logger.info(
             "backstop resumen determinista: reemplazando texto del LLM por el resumen canónico del carrito"
         )
@@ -1256,6 +1265,10 @@ async def run_turn(
             and clean
             and _es_resumen_de_pedido(clean)
             and not runtime._conv.delivery_method
+            # Si el pedido YA se cerró en este turno, `delivery_method` está vacío a
+            # propósito (se limpió para el pedido siguiente): preguntar aquí le
+            # reemplaza al cliente la confirmación por el menú de entrega.
+            and not getattr(runtime, "pedido_finalizado", False)
             and not _pide_el_total(user_text)
         ):
             logger.info(
