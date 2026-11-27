@@ -990,6 +990,14 @@ async def run_turn(
     if runtime.auto_agregado_texto:
         logger.info("auto-agregado: enviando texto determinista del carrito")
         final_text = runtime.auto_agregado_texto
+        # EL AGREGADO Y EL MENÚ DE ENTREGA VAN JUNTOS, NO UNO EN LUGAR DEL OTRO.
+        #
+        # El "✅ Agregado al carrito: … ×N" es lo que confirma al cliente que su
+        # selección se aplicó. Antes, el guard de entrega reemplazaba ese texto por el
+        # menú delivery/retiro y el cliente nunca sabía si se había agregado (provider
+        # 36, 2026-11-27: pidió 2 cajas y no vio confirmación). Se envía el agregado y
+        # DESPUÉS el menú; el `delivery_pending` queda puesto para que su "1"/"2"
+        # resuelva la entrega en el turno siguiente.
 
     # SI EL PEDIDO YA SE CERRÓ EN ESTE TURNO, el texto que toca es la CONFIRMACIÓN
     # ("quedó registrado, un humano lo procesa"), no el resumen: reponerlo le devuelve
@@ -1255,6 +1263,32 @@ async def run_turn(
         clean = _con_confirmacion_carrito(clean, runtime)
         # Ninguna respuesta puede AFIRMAR que una marca es un principio activo adivinado.
         clean = _sin_equivalencia_inventada(clean, runtime)
+        # AGREGADO AL CARRITO + MENÚ DE ENTREGA EN EL MISMO TURNO.
+        #
+        # Si el cliente acaba de elegir una opción ("quiero dos cajas de la opción 1"),
+        # tiene que VER que se agregó; y el menú de entrega tiene que salir en ese
+        # mismo turno, porque si sale después (como respuesta a su próximo mensaje) su
+        # "1"/"2" ya no contesta nada y el flujo se queda en bucle preguntando.
+        # Antes el guard de abajo reemplazaba el "✅ Agregado ×N" por el menú, así que
+        # el cliente nunca sabía si la selección se había aplicado (provider 36,
+        # 2026-11-27: pidió 2 cajas, vio el menú, y el resumen decía 1 y después 3).
+        if (
+            farmacia
+            and clean
+            and runtime.cart_confirmaciones
+            and not runtime._conv.delivery_method
+            and not runtime._conv.delivery_pending
+        ):
+            logger.info(
+                "agregado al carrito + entrega pendiente: envío la confirmación y "
+                "después el menú delivery/retiro"
+            )
+            sent_conf = await _send(ctx, conv.id, str(crm_conv_id), clean)
+            if sent_conf:
+                await ctx.store.add_message(conv.id, "assistant", clean)
+            await _preguntar_metodo_entrega(ctx, runtime)
+            return
+
         # EL RESUMEN NO SE PRESENTA SIN EL MÉTODO DE ENTREGA.
         #
         # Caso real (provider 19, 2026-10-31): el cliente "Agrégame 3 del 1" y recibió el
@@ -3727,6 +3761,29 @@ _RE_LISTA_DE_NUMEROS = re.compile(
 )
 
 
+_NUMEROS_EN_PALABRA = {
+    "un": 1, "una": 1, "uno": 1, "dos": 2, "tres": 3, "cuatro": 4, "cinco": 5,
+    "seis": 6, "siete": 7, "ocho": 8, "nueve": 9, "diez": 10, "once": 11, "doce": 12,
+}
+
+
+def _numeros_en_palabra(texto: str) -> str:
+    """'Quiero dos cajas de la opción 1' → 'Quiero 2 cajas de la opción 1'.
+
+    El cliente escribe la cantidad en palabras («dos cajas», «una caja») y el parser
+    exigía dígitos: la selección se aplicaba con cantidad 1 y el modelo, que sí entiende
+    «dos», volvía a agregar 2 → el carrito quedaba en 3 cajas (providerId 36,
+    2026-11-27). Se normaliza ANTES de parsear.
+    """
+    if not texto:
+        return texto
+
+    def _sub(m: "re.Match[str]") -> str:
+        return str(_NUMEROS_EN_PALABRA.get(m.group(1).lower(), m.group(1)))
+
+    return re.sub(r"\b(" + "|".join(_NUMEROS_EN_PALABRA) + r")\b", _sub, texto, flags=re.IGNORECASE)
+
+
 def _extraer_eleccion_multiple(texto: str) -> list[tuple[int, int]] | None:
     """Detecta la selección de opciones por número, con cantidades por grupo.
 
@@ -3739,7 +3796,7 @@ def _extraer_eleccion_multiple(texto: str) -> list[tuple[int, int]] | None:
     """
     if not texto:
         return None
-    t = texto.strip().lower()
+    t = _numeros_en_palabra(texto).strip().lower()
     # Número suelto ("2") tras "¿Cuál prefieres?": es la elección de la opción
     # 2 (cantidad 1). El pre-check solo actúa si hay last_options (lista
     # mostrada), así que no choca con "2 cajas" (cantidad).
