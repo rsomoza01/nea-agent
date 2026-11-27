@@ -7504,6 +7504,32 @@ _RE_RUIDO_LISTA = re.compile(
 )
 
 
+# Genéricos de producto que NO son un medicamento por sí solos: "jabón", "crema",
+# "gel", "aceite"… El trozo que les sigue es su CALIFICADOR ("íntimo", "de bebé",
+# "hidratante"), no otro medicamento.
+_GENERICOS_PRODUCTO = {
+    "jabon", "jabones", "crema", "cremas", "gel", "geles", "locion", "shampoo",
+    "champu", "aceite", "agua", "alcohol", "polvo", "solucion", "gotas", "spray",
+    "suero", "leche", "papel", "panal", "panales", "toalla", "toallas", "cepillo",
+    "hilo", "protector", "protectores", "preservativo", "preservativos",
+    "lubricante", "lubricantes", "jaboncillo", "desodorante", "talco", "enjuague",
+}
+
+# Calificadores que acompañan a un genérico: si quedan SOLOS como término, no son un
+# medicamento que buscar (generaban "⚠️ No disponibles en el catálogo: INTIMO" y una
+# cascada de 8 búsquedas con permutaciones del typo: nitimo, itnimo, initmo…).
+_CALIFICADORES_PRODUCTO = {
+    "intimo", "intima", "intimos", "intimas", "femenino", "femenina", "masculino",
+    "masculina", "infantil", "bebe", "bebes", "natural", "hidratante", "sensitive",
+    "sensitivo", "antibacterial", "liquido", "liquida", "barra", "glicerinado",
+    "manzanilla", "avena", "pepino", "neutro", "ph", "fresco", "fresh",
+}
+
+
+def _palabras_simples(texto: str) -> list[str]:
+    return [w for w in re.findall(r"[a-záéíóúüñ]+", _normalizar_tildes((texto or "").lower())) if w]
+
+
 def _medicamentos_por_espacios(texto: str) -> list[str]:
     """Medicamentos de una consulta separada por DOBLES ESPACIOS en UNA línea.
 
@@ -7528,11 +7554,43 @@ def _medicamentos_por_espacios(texto: str) -> list[str]:
     trozos: list[str] = []
     for pedazo in re.split(r"\s{2,}", (t or texto).strip()):
         trozos.extend(p for p in _RE_SEP_LISTA.split(pedazo) if p.strip())
+    # "jabón  íntimo" llega como DOS trozos por los dobles espacios, pero es UN solo
+    # producto: se une el genérico con el trozo que lo califica. Sin esto, el agente
+    # buscaba "jabon" e "intimo" por separado, respondía dos bloques con el MISMO
+    # producto repetido y encabezaba con "⚠️ No disponibles: INTIMO".
+    unidos: list[str] = []
+    i = 0
+    while i < len(trozos):
+        actual = trozos[i]
+        palabras_act = _palabras_simples(actual)
+        # El trozo puede traer artículos pegados ("del jabón"), así que se busca un
+        # GENÉRICO en cualquier posición y se une solo si lo que sigue es un
+        # CALIFICADOR conocido ("íntimo", "hidratante", "de bebé").
+        tiene_generico = any(w in _GENERICOS_PRODUCTO for w in palabras_act)
+        if tiene_generico and i + 1 < len(trozos):
+            siguiente = trozos[i + 1]
+            palabras_sig = _palabras_simples(siguiente)
+            es_calificador = bool(palabras_sig) and all(
+                w in _CALIFICADORES_PRODUCTO or len(w) <= 2 for w in palabras_sig
+            )
+            if es_calificador and not re.search(r"\d", siguiente):
+                unidos.append(f"{actual.strip()} {siguiente.strip()}")
+                i += 2
+                continue
+        unidos.append(actual)
+        i += 1
+
     out: list[str] = []
     vistos: set[str] = set()
-    for trozo in trozos:
+    for trozo in unidos:
         limpio = " ".join(_RE_RUIDO_LISTA.sub(" ", trozo).split())
         if not limpio:
+            continue
+        # Un CALIFICADOR suelto ("intimo") no es un medicamento: es la segunda mitad de
+        # "jabón íntimo". Buscarlo devolvía lubricantes y encabezaba la lista con un
+        # "no disponible" que no existe.
+        palabras_limpias = _palabras_simples(limpio)
+        if len(palabras_limpias) == 1 and palabras_limpias[0] in _CALIFICADORES_PRODUCTO:
             continue
         cand = _limpiar_termino_medicamento(limpio) or limpio
         if _es_solo_saludo(cand) or _es_solo_saludo(limpio):
