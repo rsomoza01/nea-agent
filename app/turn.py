@@ -6930,6 +6930,11 @@ def _son_varios_envases(lineas: list[str]) -> bool:
     """
     if not lineas:
         return False
+    # Una caja de COMBINACIÓN también declara dosis en varios renglones (el nombre arriba
+    # y la composición abajo: "Flebosmin 450 mg - 50 mg" / "Diosmina 450 mg - Hesperidina
+    # 50 mg"). La señal de "varios envases" la partía en dos medicamentos.
+    if media.es_caja_con_composicion("\n".join(lineas)):
+        return False
     if _declaraciones_de_envase(lineas) >= 2:
         return True
     con_dosis = sum(1 for ln in lineas if _linea_trae_dosis(ln))
@@ -7153,6 +7158,13 @@ async def _medicamentos_de_ocr(
         distintos = {_clave_busqueda(t) for t in terminos if t}
         if len(distintos) >= 2:
             return terminos, f"receta con pautas ({len(distintos)} fármacos)"
+
+    # UNA CAJA CON SU COMPOSICIÓN es UN medicamento (el nombre comercial). Los
+    # componentes ("Diosmina 450 mg - Hesperidina 50 mg") son la fórmula, no una lista.
+    if media.es_caja_con_composicion(ocr) and _pautas_en_ocr(ocr) < 2:
+        _marca = media.marca_de_caja(ocr)
+        if _marca:
+            return [_marca], "caja (el envase declara su composición)"
 
     lineas = _lineas_candidatas_medicamento(ocr)
     if not lineas:

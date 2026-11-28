@@ -114,6 +114,38 @@ _RE_SENAL_RECETA = re.compile(
 )
 
 
+# ── CAJA vs RECETA ───────────────────────────────────────────────────────────
+# "Flebosmin® 450 mg - 50 mg / Fracción flavonoica micronizada y purificada /
+#  Diosmina 450 mg - Hesperidina 50 mg / Tabletas recubiertas" es la foto de UNA caja.
+# Las líneas de COMPOSICIÓN no son medicamentos pedidos por separado: el agente cotizaba
+# DIOSMINA y HESPERIDINA y respondía "No tengo HESPERIDINA" (provider 33, 2026-11-28).
+_RE_COMPOSICION_CAJA = re.compile(
+    r"\b(?:principios?\s+activos?|composici[oó]n|fracci[oó]n|cada\s+"
+    r"(?:tableta|comprimido|c[aá]psula|sobre|ml)\s+contiene)\b",
+    re.IGNORECASE,
+)
+
+
+def es_caja_con_composicion(texto: str) -> bool:
+    """¿El OCR declara la composición de UN envase? (⇒ caja, no receta)."""
+    return bool(_RE_COMPOSICION_CAJA.search(texto or ""))
+
+
+def marca_de_caja(texto: str) -> str:
+    """Nombre comercial del envase: primera línea útil, sin ® ni dosis."""
+    for linea in (texto or "").splitlines():
+        t = re.sub(r"[®™©]", "", linea).strip()
+        if not t or _RE_COMPOSICION_CAJA.search(t):
+            continue
+        if re.match(r"^(?:tabletas?|comprimidos?|c[aá]psulas?|sobres?|polvo)\b", t, re.I):
+            continue
+        t = re.split(r"\b\d", t)[0].strip(" -.,:;")
+        t = " ".join(re.findall(r"[a-záéíóúüñ0-9]+", t.lower()))
+        if len(t) >= 4:
+            return t
+    return ""
+
+
 def parece_receta(ocr_text: str) -> bool:
     """¿El texto del OCR parece una receta (varias líneas de medicamentos)?"""
     t = (ocr_text or "").strip()
@@ -370,6 +402,17 @@ async def _image(ctx: AppContext, msg: InboundMessage) -> MediaPart:
             " Si es un medicamento/receta, consúltalo en el catálogo "
             "(buscar_medicamento) y no inventes precios ni disponibilidad."
         )
+        # FOTO DE UNA CAJA: el nombre comercial es el medicamento; lo demás es la
+        # composición. Sin esto el modelo trocea los principios activos y los cotiza
+        # como fármacos distintos.
+        if es_caja_con_composicion(ocr_text):
+            _marca = marca_de_caja(ocr_text)
+            if _marca:
+                extra += (
+                    f' Es la foto de UNA caja: el producto es "{_marca}". Las demás líneas'
+                    " son su COMPOSICIÓN (principios activos), NO medicamentos separados:"
+                    f' busca solo "{_marca}" en el catálogo y no cotices los componentes.'
+                )
         if manuscrita:
             extra += (
                 " OJO: la receta está ESCRITA A MANO y ese texto es TU lectura de la foto."
