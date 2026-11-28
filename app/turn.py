@@ -650,7 +650,25 @@ async def run_turn(
     # presentaciones (inyectables, gel, gotas oftálmicas, supositorios) en vez de responder al
     # envío. Se contesta al ENVÍO: con carrito armado, se guarda 'delivery' y se pide la
     # dirección; sin carrito, se confirma que hay delivery y se pregunta qué producto y a dónde.
-    if farmacia and _es_peticion_de_envio(user_text):
+    # RECETA A MANO O ILEGIBLE PRIMERO. Este turno ya no tiene nada que buscar ni que
+    # enviar: se avisa al cliente y se registra el handoff. Sin esta prioridad, el
+    # marcador de la imagen (que dice "no prometas enviarle fotos") disparaba el backstop
+    # de envío y el cliente recibía "¡Claro que sí! 🛵 Hacemos entregas a domicilio" en vez
+    # de una respuesta a su receta.
+    _tipo_receta_prev = _receta_ilegible(user_text)
+    if _tipo_receta_prev:
+        logger.info(
+            "guard receta ilegible (%s) antes de los backstops: aviso al auxiliar + handoff",
+            _tipo_receta_prev,
+        )
+        await _send(
+            ctx, conv.id, str(crm_conv_id),
+            RESPUESTA_RECETA_MANUSCRITA if _tipo_receta_prev == "mano" else RESPUESTA_RECETA_DUDOSA,
+        )
+        await _safe_handoff(ctx, str(crm_conv_id), "modelo")
+        return None  # turno atendido: no se consulta el catálogo
+
+    if farmacia and _es_peticion_de_envio(_texto_cliente_sin_marcadores(user_text) or ""):
         _term_env = _extraer_termino_medicamento(
             _texto_cliente_sin_marcadores(user_text) or user_text or ""
         )
