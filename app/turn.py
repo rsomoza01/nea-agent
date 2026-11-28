@@ -7500,6 +7500,16 @@ def _es_negativa_o_despedida(texto: str) -> bool:
 # medicamentos (valsartán+hidroclorotiazida es una combinación, y omeprazol aparte).
 _VERBOS_MOTIVO = re.compile(
     r"\b(?:precio|precios|cuesta|cuestan|cuanto|cuánto|vale|valen|"
+    # CORTESÍA Y MOTIVO EN NOMBRE, no en verbo. Casos reales (2026-11-27):
+    #   "Me gustaría conocer el precio de nifedipina de 10 y 30 MG"
+    #      → el término salía "gustaria conocer nifedipina 10" y el cliente leía
+    #        "⚠️ No disponibles en el catálogo: GUSTARIA".
+    #   "Hola xfavor para saber disponibilidad y precio de Diosmina tabletas de 500mg"
+    #      → "⚠️ No disponibles en el catálogo: XFAVOR DISPONIBILIDAD".
+    r"disponibilidad|disponibilidad|gustaria|gustaría|me gustaria|me gustaría|"
+    r"conocer|saber|consultar|cotizar|cotizacion|cotización|informacion|información|"
+    r"xfavor|x favor|porfavor|por favor|porfa|xfa|favor|deseo|desearia|desearía|"
+    r"queria|quería|necesitaria|necesitaría|ayuda|ayudame|ayúdame|"
     r"disponible|disponibles|disponen|disponemos|tienen|tienes|tiene|tenemos|"
     r"venden|vendes|consigo|consigues|conseguir|hay|manejan|trabajan|"
     r"necesito|busco|quiero|quisiera|dame|me das|"
