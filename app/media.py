@@ -258,16 +258,26 @@ async def _image(ctx: AppContext, msg: InboundMessage) -> MediaPart:
                 dudosa = bool(await comprobar(data, mime_clean))
             except Exception:
                 dudosa = True  # no se pudo comprobar → no se arriesga
+        # La manuscritura se pregunta SIEMPRE que el texto parezca receta. Antes solo se
+        # preguntaba cuando la lectura ya era dudosa, así que una receta a mano de lectura
+        # CLARA se transcribía sin avisar — o, peor, no había forma de distinguirla.
+        # Regla vigente: a mano + lectura clara = SÍ se cotiza, avisando que se leyó de la
+        # foto y pidiendo confirmación; a mano + dudosa = aviso al auxiliar.
+        preg = getattr(ctx.llm, "es_manuscrita", None)
+        if preg is not None:
+            try:
+                manuscrita = bool(await preg(data, mime_clean))
+            except Exception:
+                manuscrita = False
         if dudosa:
-            preg = getattr(ctx.llm, "es_manuscrita", None)
-            if preg is not None:
-                try:
-                    manuscrita = bool(await preg(data, mime_clean))
-                except Exception:
-                    manuscrita = False
             logger.info(
                 "media image: receta de LECTURA DUDOSA (manuscrita=%s) — no se transcribe: %r",
                 manuscrita, ocr_text[:60],
+            )
+        elif manuscrita:
+            logger.info(
+                "media image: receta A MANO de lectura CLARA — se cotiza con aviso: %r",
+                ocr_text[:80],
             )
     # OCR que NO describe un medicamento: el cliente mandó otra cosa (un
     # COMPROBANTE DE PAGO, una foto de un producto no medicinal). El prompt del OCR
@@ -360,6 +370,13 @@ async def _image(ctx: AppContext, msg: InboundMessage) -> MediaPart:
             " Si es un medicamento/receta, consúltalo en el catálogo "
             "(buscar_medicamento) y no inventes precios ni disponibilidad."
         )
+        if manuscrita:
+            extra += (
+                " OJO: la receta está ESCRITA A MANO y ese texto es TU lectura de la foto."
+                " Cotiza lo que leíste, con naturalidad, pero dile al cliente que lo leíste"
+                " de su foto y pídele que confirme el nombre y el miligramaje antes de"
+                " agregar al carrito (la letra a mano se presta a confusión)."
+            )
     else:
         # Sin OCR de medicamento: dejar claro que la imagen NO trae texto de
         # medicamento, para que el LLM no busque en el catálogo y atienda el

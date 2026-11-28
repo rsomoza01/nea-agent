@@ -2535,11 +2535,18 @@ async def _tool_loop(
                     # El ENVASE que pidió el cliente, también por línea. Se extrae igual
                     # que la dosis: de la LÍNEA original (donde vive el número).
                     envase_por_term: dict[str, str] = {}
-                    for _linea in _lineas_lista_medicamentos(contenido_cliente or ""):
-                        _term = _extraer_termino_medicamento(_sin_motivo(_linea))
+                    # El ENVASE también por RENGLÓN DE LA RECETA: con el párrafo completo,
+                    # el "tabletas" del segundo fármaco se le asignaba al primero y el cliente
+                    # leía "No tengo AMOXICILINA en tabletas, lo tengo en cápsulas" cuando
+                    # nunca pidió tabletas.
+                    for _linea in _lineas_lista_medicamentos(
+                        _separar_receta_en_lineas(contenido_cliente or "")
+                    ):
+                        _nucleo = _nucleo_receta(_linea) or _linea
+                        _term = _extraer_termino_medicamento(_sin_motivo(_nucleo))
                         if not _term:
                             continue
-                        _env = _envase_pedido_en_linea(_linea)
+                        _env = _envase_pedido_en_linea(_nucleo)
                         if _env:
                             envase_por_term[_term] = _env
                     logger.info(
@@ -2696,7 +2703,15 @@ async def _tool_loop(
                             antes_e = len(prods)
                             # El aviso se calcula ANTES de filtrar, sobre la lista completa:
                             # necesita saber qué envases HAY para poder decir "lo tengo en".
-                            aviso_envase = _aviso_envase_agotado(prods, envase_pedido)
+                            # El AVISO solo si el envase está en el término de ESTE grupo.
+                            # En una receta leída de una foto, el "tabletas" del segundo
+                            # renglón se colaba al primero y el cliente leía "No tengo
+                            # AMOXICILINA 500 MG en tabletas, lo tengo en cápsulas" cuando
+                            # nunca pidió tabletas (provider 33, 2026-11-27).
+                            if envase_pedido in _normalizar_tildes(med.lower()):
+                                aviso_envase = _aviso_envase_agotado(prods, envase_pedido)
+                            else:
+                                aviso_envase = ""
                             prods = _filtrar_por_envase(prods, envase_pedido)
                             logger.info(
                                 "receta: '%s' envase %s → %d de %d productos%s",
@@ -2713,6 +2728,16 @@ async def _tool_loop(
                         # suspensión" y no hay suspensión, el aviso lo dice y el encabezado
                         # no puede seguir prometiéndola (misma regla que con la dosis).
                         aviso_forma_receta = getattr(runtime, "aviso_forma", "") or ""
+                        # El aviso de FORMA se hereda de una búsqueda del LLM. Si el término
+                        # de este grupo no menciona NINGUNA forma farmacéutica, el aviso no le
+                        # pertenece: el cliente leyó "No tengo AMOXICILINA 500 MG en tabletas"
+                        # cuando la receta decía cápsulas (provider 33, 2026-11-27).
+                        if aviso_forma_receta and not _menciona_forma_farmaceutica(med):
+                            logger.info(
+                                "receta: '%s' no menciona ninguna forma — descarto el aviso de "
+                                "forma heredado (%r)", med, aviso_forma_receta[:60],
+                            )
+                            aviso_forma_receta = ""
                         _base_titulo = runtime.corregido_a or med
                         if aviso_forma_receta:
                             _base_titulo = _termino_sin_forma(_base_titulo)
@@ -2869,6 +2894,11 @@ async def _tool_loop(
                         receta_final = _formatear_receta(
                             grupos, no_disponibles, avisos,
                             sin_consultar=sin_consultar,
+                            nota=(
+                                NOTA_RECETA_FOTO
+                                if "ESCRITA A MANO" in (user_text or "")
+                                else None
+                            ),
                         )
                         # La receta se envía DIRECTO desde aquí, así que no pasa por el
                         # post-proceso de `run_turn`: el encabezado se corrige aquí.
@@ -7112,6 +7142,18 @@ async def _medicamentos_de_ocr(
     Medido: TRIMIC FORTE L (caja) → 1 término; ESOZ/LEPRIT, ACETAMINOFEN/IBUPROFENO/
     OMEPRAZOL y LOSARTAN/METFORMINA/ATORVASTATINA (recetas) → 3 términos cada una.
     """
+    # RECETA CON INDICACIONES. Una receta —escrita a mano sobre todo— trae, por cada
+    # fármaco, su pauta ("Tomar 1 capsula cada 8 horas por 7 dias", "Dale 8 cc c/12 hrs
+    # por 7 dias"). Cuando el OCR la devuelve como un párrafo, `_lineas_candidatas_medicamento`
+    # ve UNA sola línea, `componentes` queda vacío y la regla de "caja" la reducía a UN
+    # medicamento: el cliente pedía dos y solo recibía el último (provider 33, 2026-11-27).
+    # La caja NO lleva pautas, así que esta señal no la confunde con una receta.
+    if _pautas_en_ocr(ocr) >= 2:
+        terminos = _parsear_medicamentos_receta(ocr)
+        distintos = {_clave_busqueda(t) for t in terminos if t}
+        if len(distintos) >= 2:
+            return terminos, f"receta con pautas ({len(distintos)} fármacos)"
+
     lineas = _lineas_candidatas_medicamento(ocr)
     if not lineas:
         return [], "sin líneas claras"
@@ -8374,6 +8416,12 @@ PREGUNTA_RECOMENDACION = (
 )
 
 
+# Se pega al pie de la lista cuando la receta salió de una FOTO escrita a mano: el
+# cliente tiene que saber que el nombre es nuestra lectura y confirmarlo antes de pedir.
+NOTA_RECETA_FOTO = (
+    "📸 Lo leí de tu foto: confírmame el nombre y el miligramaje antes de agregar al carrito."
+)
+
 RESPUESTA_RECETA_MANUSCRITA = (
     "Recibí tu receta. 🙏 Como está escrita a mano, prefiero no interpretarla antes que "
     "darte un medicamento equivocado.\n"
@@ -8760,7 +8808,14 @@ def _medicamentos_con_dosis(texto: str) -> list[tuple[str, str]]:
         return []
     pares: list[tuple[str, str]] = []
     vistos: set[str] = set()
+    # Receta que el OCR devolvió como un párrafo: sin separar, la "línea" trae los dos
+    # fármacos y el segundo se pierde ("amoxicilina … Ibuprofeno …" → solo la primera).
+    texto = _separar_receta_en_lineas(texto)
     for linea in _lineas_lista_medicamentos(texto):
+        original = linea
+        # Receta con la indicación pegada ("... 1 tableta cada 8 horas por 3 dias"):
+        # el fármaco es el núcleo del renglón.
+        linea = _nucleo_receta(linea) or linea
         limpia = _sin_motivo(linea)
         term = _extraer_termino_medicamento(limpia)
         if not term or not _termino_es_medicamento_plausible(term):
@@ -8773,8 +8828,8 @@ def _medicamentos_con_dosis(texto: str) -> list[tuple[str, str]]:
         # término puede acabar con el tamaño de caja ('metformina 30') y colarse como si
         # fuera la concentración, pisando el '500' que sí está en la línea.
         dosis = (
-            _extraer_dosis(linea)
-            or _dosis_antes_del_envase(linea)
+            _extraer_dosis(original)      # la dosis vive en el renglón ORIGINAL
+            or _dosis_antes_del_envase(original)
             or _dosis_sin_unidad(limpia)
             or _dosis_sin_unidad(term)
         )
@@ -9147,6 +9202,89 @@ def _es_composicion(linea: str) -> bool:
     return bool(_RE_COMPOSICION.match(limpio) or _RE_SOLO_VITAMINAS.match(limpio))
 
 
+# Recetas ESCRITAS A MANO: cada renglón suele traer el fármaco y, detrás, la indicación
+# ("Rp. Amoxicilina 500 mg capsulas. Tomar 1 capsula cada 8 horas por 7 dias." o
+# "- Alproloxilo: Dale 8 cc c/12 hrs por 7 dias."). Pegada al nombre, la indicación
+# convierte el término en basura ("amoxicilina 500 mg capsulas tomar 1 capsula cada 8
+# horas 7") y el catálogo no encuentra nada, así que la receta se quedaba sin cotizar.
+_RE_CORTE_RECETA = re.compile(
+    r"\b(?:tomar|t[oó]mese|tomarse|dales?|darle|dar|coloca|colocar|col[oó]quese|"
+    r"aplicar|apl[ií]quese|aplicarse|administrar|administrese|"
+    r"usar|usese|indicaciones?|via|v[ií]a|segun|seg[uú]n)\b",
+    re.IGNORECASE,
+)
+_RE_CORTE_POSOLOGIA = re.compile(
+    r"\b\d+\s*(?:c[aá]ps?ulas?|comp(?:rimidos?)?|tabletas?|tabs?|sobres?|cucharadas?|"
+    r"cucharaditas?|gotas?|ml|cc|aplicaciones?|[oó]vulos?|supositorios?|parches?)\b",
+    re.IGNORECASE,
+)
+# "cada 8 horas", "por 7 días", "al día": marcan el FINAL de un renglón en una receta
+# que el OCR devolvió como un solo párrafo.
+_RE_FIN_POSOLOGIA = re.compile(
+    r"(?:\bcada\s+\d+(?:\s*(?:h|hrs|horas))?|\bpor\s+\d+\s*d[ií]as|\bal\s+d[ií]a|"
+    r"\bc/\s*\d+\s*(?:h|hrs|horas))\b[.;,]?",
+    re.IGNORECASE,
+)
+
+
+# Pauta posológica: la señal que distingue una RECETA de la foto de UNA caja.
+_RE_PAUTA = re.compile(
+    r"(?:\bcada\s+\d+(?:\s*(?:h|hrs|horas))?|\bc/\s*\d+\s*(?:h|hrs|horas)|"
+    r"\bpor\s+\d+\s*d[ií]as|\b\d+\s*veces\s+al\s+d[ií]a|"
+    r"\b(?:tomar|t[oó]mese|dale|dales|coloca|colocar|aplicar|apl[ií]quese|"
+    r"administrar|administrese)\b)",
+    re.IGNORECASE,
+)
+
+
+# Formas farmacéuticas que el cliente puede pedir EXPLÍCITAMENTE ("en tabletas").
+_RE_FORMA_FARMACEUTICA = re.compile(
+    r"\b(?:tabletas?|tabs?|comprimidos?|capsulas?|c[aá]psulas?|grageas?|"
+    r"jarabes?|suspensi[oó]n|gotas?|cremas?|ung[uü]entos?|[oó]vulos?|"
+    r"supositorios?|sobres?|ampollas?|inyectables?|polvos?)\b",
+    re.IGNORECASE,
+)
+
+
+def _menciona_forma_farmaceutica(texto: str) -> bool:
+    return bool(_RE_FORMA_FARMACEUTICA.search(texto or ""))
+
+
+def _pautas_en_ocr(texto: str) -> int:
+    """Cuántas pautas posológicas trae el OCR (2+ ⇒ es una receta, no una caja)."""
+    return len(_RE_PAUTA.findall(texto or ""))
+
+
+def _separar_receta_en_lineas(texto: str) -> str:
+    """Receta devuelta por el OCR como un solo párrafo → un renglón por medicamento."""
+    t = texto or ""
+    if "\n" in t.strip():
+        return t
+    return _RE_FIN_POSOLOGIA.sub(lambda m: m.group(0) + "\n", t)
+
+
+def _nucleo_receta(linea: str) -> str:
+    """Del renglón de una receta, solo el fármaco: sin numeración, "Rp." ni indicación."""
+    t = (linea or "").strip(" \t-–—•*·")
+    t = re.sub(r"^\s*\d{1,2}\s*[.)\-]\s*", "", t)
+    t = re.sub(r"^\s*(?:rp|r/p|receta)\s*[.:]?\s*", "", t, flags=re.IGNORECASE)
+    corte = len(t)
+    for rx in (_RE_CORTE_RECETA, _RE_CORTE_POSOLOGIA):
+        m = rx.search(t)
+        if m and m.start() > 0:
+            corte = min(corte, m.start())
+    t = t[:corte].strip(" \t-–—:.,;")
+    # La forma farmacéutica al final no ayuda a buscar: "amoxicilina 500 mg capsulas"
+    # no matchea el catálogo ("AMOXICILINA 500MG CAPS X 12"), "amoxicilina 500 mg" sí.
+    t = re.sub(
+        r"\s+(?:c[aá]ps?ulas?|comprimidos?|tabletas?|tabs?|jarabes?|suspensi[oó]n|"
+        r"gotas?|cremas?|ung[uü]entos?|[oó]vulos?|supositorios?|sobres?|"
+        r"grageas?|recubiert[oa]s?|ampollas?)\s*$",
+        "", t, flags=re.IGNORECASE,
+    )
+    return t.strip(" \t-–—:.,;")
+
+
 def _parsear_medicamentos_receta(texto: str) -> list[str]:
     """Extrae la lista de medicamentos de un texto de receta (OCR o lista en
     texto). Cada línea con contenido es un medicamento candidato; se normaliza
@@ -9159,8 +9297,11 @@ def _parsear_medicamentos_receta(texto: str) -> list[str]:
         return []
     out: list[str] = []
     vistos: set[str] = set()
+    texto = _separar_receta_en_lineas(texto)
     for linea in texto.splitlines():
         linea = linea.strip()
+        # El fármaco vive al principio del renglón; detrás viene la indicación.
+        linea = _nucleo_receta(linea)
         if not linea:
             continue
         # Línea que es SOLO dosis/presentación (sin fármaco): fragmento del
@@ -9228,6 +9369,7 @@ def _formatear_receta(
     no_disponibles: list[str] | None = None,
     avisos: dict[str, str] | None = None,
     sin_consultar: list[str] | None = None,
+    nota: str | None = None,
 ) -> str:
     """Genera la respuesta de receta en formato determinista, con numeración
     GLOBAL corrida entre medicamentos:
@@ -9289,6 +9431,11 @@ def _formatear_receta(
     # Cierre con el flujo del carrito: cómo pedir cantidades, pedir otro
     # medicamento y ver el resumen.
     lineas.append("")
+    # Aviso de origen (receta leída de una foto a mano): va justo antes del cierre,
+    # donde el cliente ya vio los precios y va a pedir cantidades.
+    if nota:
+        lineas.append(nota)
+        lineas.append("")
     lineas.append("👉 Para agregar al carrito: quiero X cajas de la opción Z")
     lineas.append("   Ejemplo: quiero 2 cajas de la opción 3")
     lineas.append("🛒 ¿Otro medicamento? Escríbeme el nombre y lo busco.")
