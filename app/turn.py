@@ -1079,7 +1079,13 @@ async def run_turn(
             and guards.afirma_recibir_media(final_text)
         ):
             logger.warning("guarda G3 VETO: el agente afirmó recibir media inexistente — plantilla sin-media")
-            final_text = guards.TPL_SIN_MEDIA
+            # Si la conversación YA tiene una imagen leída (OCR guardado), la plantilla
+            # no puede negar que llegó: se le recuerda al cliente que la vimos.
+            final_text = (
+                guards.TPL_SIN_MEDIA_CON_OCR
+                if getattr(conv, "last_ocr_term", None)
+                else guards.TPL_SIN_MEDIA
+            )
         # G1 — precio citado sin respaldo del catálogo.
         elif (
             not runtime.last_products

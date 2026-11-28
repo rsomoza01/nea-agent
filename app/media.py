@@ -344,6 +344,12 @@ async def _image(ctx: AppContext, msg: InboundMessage) -> MediaPart:
         return MediaPart(
             text=(
                 "[El lead mandó una imagen — la tienes adjunta, puedes verla."
+                # El modelo respondía "¡Con gusto! En un momento le enviaremos la foto
+                # del producto" (provider 33, 2026-11-27 19:36) porque el marcador solo
+                # decía "puedes verla". Por este canal el agente SOLO manda texto: no
+                # puede enviar fotos, y prometerlo deja al cliente esperándolas.
+                " NO ofrezcas ni prometas enviarle fotos: por este canal solo puedes"
+                " enviar texto. Responde con lo que leíste en la imagen."
                 f"{caption}{extra}]"
             ),
             image_data_uri=uri,

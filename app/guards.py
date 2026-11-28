@@ -82,6 +82,16 @@ TPL_SIN_MEDIA = (
     "tienes) y te digo al instante qué tenemos disponible."
 )
 
+# La MISMA guarda (G3) cuando la conversación SÍ tiene una imagen ya leída: decirle
+# "no me llegó ninguna imagen" a quien acaba de mandarla es contradecirlo y deja la
+# consulta sin respuesta (provider 33, 2026-11-27 19:53: había OCR de "Cafeína al 10%"
+# y el cliente recibió "No me llegó ninguna imagen por este canal").
+TPL_SIN_MEDIA_CON_OCR = (
+    "Revisé la imagen que me enviaste. Si necesitas otra cosa, escríbeme el nombre "
+    "del medicamento (con el miligramaje si lo tienes) y te confirmo disponibilidad "
+    "y precio al instante."
+)
+
 # ---------------------------------------------------------------------------
 # G4 — Hostilidad: acusación de fraude → escalado inmediato
 # ---------------------------------------------------------------------------
