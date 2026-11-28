@@ -7516,6 +7516,12 @@ _VERBOS_MOTIVO = re.compile(
     r"conocer|saber|consultar|cotizar|cotizacion|cotización|informacion|información|"
     r"xfavor|x favor|porfavor|por favor|porfa|xfa|favor|deseo|desearia|desearía|"
     r"queria|quería|necesitaria|necesitaría|ayuda|ayudame|ayúdame|"
+    # "¿CÓMO SE LLAMA?" NO ES PARTE DEL NOMBRE. El cliente identifica el producto
+    # ("llamados ilana", "el medicamento se llama ilana") y ese verbo quedaba pegado al
+    # término: el agente respondía "⚠️ No disponibles en el catálogo: LLAMADOS ILANA,
+    # 600MG" (provider 33, 2026-11-27 20:26).
+    r"llamado|llamada|llamados|llamadas|llama|llaman|se llama|denominado|denominada|"
+    r"conocido como|nombre|medicamento|medicamentos|producto|productos|"
     r"disponible|disponibles|disponen|disponemos|tienen|tienes|tiene|tenemos|"
     r"venden|vendes|consigo|consigues|conseguir|hay|manejan|trabajan|"
     r"necesito|busco|quiero|quisiera|dame|me das|"
